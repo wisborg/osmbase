@@ -1,0 +1,58 @@
+osmbase
+Copyright 2026 Jesper Wisborg Krogh
+
+This product includes software developed by third parties, and renders data
+published by third parties.  The two are listed separately and deliberately:
+a software licence obliges this PROGRAM, and a data licence obliges its
+OUTPUT.  Collapsing them is how the obligation attached to a rendered image
+gets forgotten by whoever ships the image.
+
+
+-------------------------------------------------------------------------------
+Software
+-------------------------------------------------------------------------------
+
+Nothing is implemented yet, so go.mod currently requires nothing.  The entry
+below records the ONE dependency the design admits, so that a second one
+arriving is a visible edit to this file rather than a quiet line in go.sum.
+
+golang.org/x/image         Copyright (c) 2009 The Go Authors.  BSD 3-Clause.
+                           The `vector` package rasterizes every filled path
+                           this library draws.  It is the only non-standard-
+                           library import in the module, and keeping it that
+                           way is a deliberate constraint -- see
+                           docs/architecture.md, "Zero third-party modules".
+
+There are no other software dependencies.  The PMTiles reader, the Mapbox
+Vector Tile decoder, the OpenStreetMap PBF reader and the rasterizer's path
+and stroke construction are all written here, for reasons recorded in
+docs/architecture.md.
+
+
+-------------------------------------------------------------------------------
+Data
+-------------------------------------------------------------------------------
+
+The obligations below attach to anything rendered from data this library
+reads -- an image, a video, a printed map -- and they travel with that output
+to whoever receives it.  They are NOT discharged by this file alone.
+
+OpenStreetMap              Map data is © OpenStreetMap contributors, available
+                           under the Open Database License (ODbL).
+                           https://www.openstreetmap.org/copyright
+
+                           A rendered image is a Produced Work under the ODbL,
+                           so it must carry the credit above; share-alike does
+                           not reach it.  The credit string travels in the
+                           slice manifest rather than being written here as a
+                           constant, so a slice built from another source
+                           carries that source's own credit instead.
+
+Protomaps                  The public planet builds this library takes tiles
+                           from are themselves a Produced Work over OpenStreet-
+                           Map data.  https://protomaps.com
+
+Natural Earth              Public domain.  Used by the Protomaps builds for the
+                           lowest zoom levels.  No attribution is required;
+                           crediting it is courteous.
+                           https://www.naturalearthdata.com

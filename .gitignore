@@ -1,0 +1,22 @@
+# macOS Finder metadata. Not anchored: these appear in any directory.
+.DS_Store
+
+# The built CLI. Anchored to the repo root so it cannot shadow a future source
+# directory that happens to share the name.
+/osmbase
+
+# Anything a session writes: fetched slices, derived boundary files, rendered
+# PNGs, inspected output. One path, gitignored, so it can be allowlisted once
+# and cleaned in one step.
+/.scratch/
+
+# OpenStreetMap data, in every form it arrives in. A country extract is a
+# gigabyte and a slice is tens of megabytes; neither belongs in a git history,
+# and both are reproducible from a URL and a bounding box.
+*.osm.pbf
+*.pmtiles
+*.mvt
+*.osmb
+
+# Local agent definitions.
+/.claude/agents/
