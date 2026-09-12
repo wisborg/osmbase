@@ -302,6 +302,47 @@ somebody's bucket is a library that puts its consumer's traffic on a host the co
 never chose. The default belongs in the application, where a flag can name it and
 documentation can explain it.
 
+This is also the published constraint rather than a precaution. Protomaps discourage
+hotlinking their builds and say the URLs may change, which is a statement about where a
+default should live and not about how often it may be used.
+
+### A file you already have is a first-class source, not an escape hatch
+
+Every acquisition path must have a manual twin: point the source at a `.pmtiles` archive
+or an `.osm.pbf` extract already on disk, obtained however the user likes, and nothing is
+requested from anyone.
+
+This is documented beside the fetch command rather than under it, because the cases it
+covers are ordinary rather than exotic: a machine with no network, a mirror, a torrent, a
+copy from a colleague, a regional archive built with somebody else's tool. It is also the
+only answer that survives a host changing its mind, which is why it is a peer of fetching
+and not a fallback from it.
+
+The two sources degrade differently and the documentation should say so. A country extract
+is under a gigabyte, so downloading one in a browser is entirely ordinary and the manual
+path is complete. The planet archive is over a hundred gigabytes, so the manual path there
+means a regional archive rather than clicking a link.
+
+### What the hosts actually ask for
+
+Neither of the hosts this design names publishes an acceptable-use policy covering
+automated range requests. Geofabrik's download page states that the data may be used for
+any purpose provided OpenStreetMap is acknowledged, with no rate limit given. Source
+Cooperative states that hosted data is public and may be accessed by anyone, and documents
+no consumer obligations at all.
+
+Two conclusions follow, and the second matters more.
+
+**Triggering is not the variable.** A command a human typed and a script running unattended
+are the same request to a server; what a host cares about is load and shape. The acquisition
+step is a subcommand rather than something a render performs, and that is good design for
+the user's sake -- it is not, and must not be described as, a way of satisfying a policy.
+
+**Identify the program.** A `User-Agent` naming osmbase, its version and a contact address
+is what these hosts want, because it lets them reach a person instead of blocking a range
+of addresses. The contact is `osmbase@wisborg.dk`, which exists for this. Every request
+this library makes carries it, and it belongs in `acquire` where the requests are built.
+
 ## Place names: containment, with an honest fallback
 
 Two sources, and the API says which one answered.

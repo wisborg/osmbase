@@ -12,9 +12,9 @@ gets forgotten by whoever ships the image.
 Software
 -------------------------------------------------------------------------------
 
-Nothing is implemented yet, so go.mod currently requires nothing.  The entry
-below records the ONE dependency the design admits, so that a second one
-arriving is a visible edit to this file rather than a quiet line in go.sum.
+go.mod requires nothing, and the entry below records the ONE dependency the
+design admits before anything imports it -- so that a second one arriving is a
+visible edit to this file rather than a quiet line in go.sum.
 
 golang.org/x/image         Copyright (c) 2009 The Go Authors.  BSD 3-Clause.
                            The `vector` package rasterizes every filled path

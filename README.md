@@ -12,7 +12,8 @@ that program is for.
 
 ## Status
 
-Design only. Nothing is implemented yet.
+Early. The archive reader, the vector tile decoder and the synthetic fixtures they are
+tested against are written; nothing draws a map yet.
 
 **[docs/architecture.md](docs/architecture.md) is the design this is being built to.** It
 carries the reasoning behind every decision, including the alternatives that were rejected
