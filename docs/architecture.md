@@ -145,16 +145,30 @@ if a > 1 { a = 1 }
 That is **absolute accumulated winding, clamped to one**. Not non-zero, not even-odd.
 Three consequences follow, and all three are load bearing.
 
-**1. Duplicate geometry is free.** A feature appearing in two tiles' buffers contributes
-winding 2, which clamps to 1 and fills identically to winding 1. Overlapping stroke quads
-wound the same way clamp the same way. There is no darkening at overlaps, and the whole
-class of seam artefact that this would otherwise produce does not exist.
+**1. Duplicate geometry is free in the interior, and not on the rim.** A feature appearing
+in two tiles' buffers contributes winding 2, which clamps to 1 and fills identically to
+winding 1 wherever the shape is more than a pixel thick. Overlapping stroke quads clamp the
+same way, which is what lets a stroke be a heap of quads and discs.
+
+On an antialiased EDGE it is different, and the correction is worth having because the
+first draft of this section got it wrong. Two copies of an edge pixel at 0.4 coverage sum
+to 0.8; they do not clamp to 0.4. Duplicates do not darken, they HARDEN -- the antialiasing
+disappears. It is the same arithmetic as the seam property below and cannot be had one way
+without the other. So deduplicating a feature that arrives in two tiles' buffers is a real
+improvement to the picture rather than only an optimisation.
 
 **2. One rasterizer per layer, fed by every tile, is structurally required.** It is not an
 optimisation. At a pixel straddling a tile boundary, tile A's clipped ring contributes
 0.4 coverage and tile B's contributes 0.6. Summed in one accumulator that is exactly 1.0.
 Composited as two separate rasterizations it is `0.4 + 0.6*(1-0.4) = 0.76`, a permanent
 24% hairline along every tile edge. See trap T1.
+
+Both halves of this are pinned by a PAIR of tests, one asserting the full coverage and one
+asserting that separate passes give exactly 0.75, so the expected value is a derivation
+rather than a number somebody recorded. They run at two surface sizes, because
+`x/image/vector` switches from fixed-point to floating-point arithmetic above 512 pixels
+and those are two separate implementations of the accumulator. The reading above was taken
+from the floating-point one; the small case is what checks the other.
 
 **3. Absolute winding means a reversed ring still fills.** A hole whose exterior ring is
 absent from the same path fills solid, and two copies of one ring arriving with opposite
@@ -187,6 +201,15 @@ in one path is a better mechanism than a mask, and fitdash already learned that 
 clip rasterizes a full-frame image per text draw.
 
 Dashing, for footpaths and tracks, is a walk along arc length emitting sub-polylines.
+
+### Off-surface geometry is correct and not free
+
+A segment beginning far above the surface is walked scanline by scanline down to the top
+edge before anything is drawn. Measured at 600 by 600: a segment starting a million pixels
+up costs 12 ms, and a billion costs 4.5 seconds. The world at zoom 22 is about a billion
+pixels across, so **the renderer must cull and clip before it fills**. The rasterizer does
+not do it, because clipping changes geometry and belongs to whoever knows what the geometry
+means.
 
 ## The cache
 
@@ -502,8 +525,18 @@ entirely offline.
 structure, root directory size, and the byte-range layout of one cell's sub-pyramid. It is
 a measurement rather than a gate, and what it decides is how requests are coalesced and how
 long the planning phase takes. It is now permanent as `cmd/osmbase inspect`, so the
-measurement can be repeated against any archive rather than living in a throwaway. P2: actual bytes for one dense cell and one rural one. P3:
-which place kind a suburb lands under, which now affects only the fallback path. P5:
+measurement can be repeated against any archive rather than living in a throwaway. P2 is MEASURED and the design stands: a zoom-12
+cell's zoom-12-to-15 pyramid is 8.9 MB for the City of London, 3.7 MB for central Sydney,
+2.0 MB for the Blue Mountains, 21 KB for outback New South Wales and 6 KB mid-Pacific.
+The assumption was five to fifteen megabytes for an urban cell, so nothing moves -- and the
+tail matters as much as the head: an empty or oceanic cell is effectively free, so rounding
+generously outward to whole cells costs nothing where there is nothing. P3 is MEASURED and
+the guess was wrong in a useful direction: suburbs are `neighbourhood`, not `macrohood`.
+Inner Sydney returns 88 of them including Newtown, Surry Hills, Redfern, Glebe and
+Marrickville, so the nearest-place fallback is a usable product rather than a degraded
+mode. Two caveats it brings: the entries carry `min_zoom` 13, so a lookup must reach that
+deep to find one, and `population` is zero with `population_rank` 1 for every suburb, so
+distance is the only usable discriminator. P5:
 stroker quality on a switchback, a multi-way junction and a dashed path, at both
 resolutions. P6: boundary derivation wall time, peak memory, polygon count and output size.
 

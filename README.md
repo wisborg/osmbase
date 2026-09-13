@@ -12,9 +12,10 @@ that program is for.
 
 ## Status
 
-Early. The archive reader, the vector tile decoder and the synthetic fixtures they are
-tested against are written, and a command-line tool reads real archives with them.
-Nothing draws a map yet.
+Early. The archive reader, the vector tile decoder, the rasterizer that fills, strokes
+and dashes paths, and the synthetic fixtures they are tested against are written, and a
+command-line tool reads real archives with them. Nothing joins the two halves into a map
+yet.
 
 **[docs/architecture.md](docs/architecture.md) is the design this is being built to.** It
 carries the reasoning behind every decision, including the alternatives that were rejected
@@ -22,8 +23,9 @@ and why, and the list of things it assumes but has not yet verified.
 
 ## Trying it out
 
-There is no rasterizer yet, so there is no picture. There is a command that reads real
-tiles and says what is in them, and writes one tile as GeoJSON you can paste straight into
+The rasterizer draws what it is given, but nothing yet turns tiles into paths for it, so
+there is no map to look at. There is a command that reads real tiles and says what is in
+them, and writes one tile as GeoJSON you can paste straight into
 [geojson.io](https://geojson.io):
 
 ```
