@@ -133,13 +133,18 @@ func openRemote(url string, usingDefault bool, stderr io.Writer) (*archive, erro
 	if err != nil {
 		return nil, err
 	}
+	// Everything printed from here on uses the reader's own form of the URL
+	// rather than the string the user typed. A private mirror behind userinfo
+	// and a presigned URL with a signature in its query are both ordinary, and
+	// this command's output is meant to be pasted into a bug report.
+	shown := src.URL()
 	if usingDefault {
 		fmt.Fprintf(stderr, "osmbase: no SOURCE given, so reading the default archive over the network:\n")
-		fmt.Fprintf(stderr, "osmbase:   %s\n", url)
+		fmt.Fprintf(stderr, "osmbase:   %s\n", shown)
 		fmt.Fprintf(stderr, "osmbase: this tells that host which part of the map you asked about. Pass a local\n")
 		fmt.Fprintf(stderr, "osmbase:   .pmtiles file to avoid it, or run \"osmbase help\" to read why.\n")
 	} else {
-		fmt.Fprintf(stderr, "osmbase: reading %s over HTTP range requests\n", url)
+		fmt.Fprintf(stderr, "osmbase: reading %s over HTTP range requests\n", shown)
 	}
 	src.Trace = func(off int64, n int, elapsed time.Duration) {
 		reqs, _ := src.Stats()
@@ -151,7 +156,7 @@ func openRemote(url string, usingDefault bool, stderr io.Writer) (*archive, erro
 	if err != nil {
 		return nil, err
 	}
-	a := &archive{Reader: r, name: url, remote: true, stats: src.Stats}
+	a := &archive{Reader: r, name: shown, remote: true, stats: src.Stats}
 	a.size, a.hasSize = src.Size()
 	return a, nil
 }

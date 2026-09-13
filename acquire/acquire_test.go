@@ -22,11 +22,15 @@ import (
 func serve(t *testing.T, body []byte) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.ServeContent(w, r, "archive.pmtiles", time.Unix(0, 0), bytes.NewReader(body))
+		http.ServeContent(w, r, "archive.pmtiles", epoch, bytes.NewReader(body))
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL + "/archive.pmtiles"
 }
+
+// epoch is the modification time every test server reports. A fixed one keeps
+// the responses identical between runs.
+var epoch = time.Unix(0, 0)
 
 // pattern is a body whose every byte says where it is, so a read at the wrong
 // offset produces wrong content rather than plausible zeroes.
@@ -86,7 +90,7 @@ func TestRangeReader_SendsTheRangeAndTheContact(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotRange = r.Header.Get("Range")
 		gotAgent = r.Header.Get("User-Agent")
-		http.ServeContent(w, r, "a.pmtiles", time.Unix(0, 0), bytes.NewReader(pattern(4096)))
+		http.ServeContent(w, r, "a.pmtiles", epoch, bytes.NewReader(pattern(4096)))
 	}))
 	defer srv.Close()
 

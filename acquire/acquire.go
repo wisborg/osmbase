@@ -30,6 +30,7 @@
 package acquire
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,6 +62,14 @@ const UserAgent = "osmbase/" + Version + " (+https://github.com/wisborg/osmbase;
 // failure it exists to prevent is a request that never returns at all.
 const DefaultTimeout = 2 * time.Minute
 
+// maxRedirects caps how many redirects one request will follow.
+//
+// Go's default is ten, to anywhere. Five is plenty for the shapes that
+// actually occur -- an http to https upgrade, a path normalisation, a dated
+// file behind a stable name -- and a chain longer than that is a host that has
+// lost track of where the archive is.
+const maxRedirects = 5
+
 // RangeReader reads an archive over HTTP range requests.
 //
 // It satisfies io.ReaderAt, which is all pmtiles.NewReader wants, so the same
@@ -78,8 +87,13 @@ type RangeReader struct {
 	// read. It is called from whichever goroutine made the request.
 	Trace func(offset int64, n int, elapsed time.Duration)
 
-	url    string
-	client *http.Client
+	// url is what requests are sent to and is the only copy of it that may
+	// hold credentials; displayURL is the one that may be printed. Keeping
+	// them as two fields, built once, is what makes leaking the first a
+	// visible mistake rather than a default.
+	url        string
+	displayURL string
+	client     *http.Client
 
 	mu       sync.Mutex
 	requests int
@@ -103,9 +117,99 @@ func NewRangeReader(rawURL string) (*RangeReader, error) {
 		return nil, fmt.Errorf("acquire: %q uses the %q scheme, and this reader speaks http and https", rawURL, u.Scheme)
 	}
 	if u.Host == "" {
-		return nil, fmt.Errorf("acquire: %q names no host to fetch from", rawURL)
+		return nil, fmt.Errorf("acquire: %q names no host to fetch from", redactURL(u))
 	}
-	return &RangeReader{url: rawURL, client: &http.Client{Timeout: DefaultTimeout}}, nil
+	return &RangeReader{
+		url:        rawURL,
+		displayURL: redactURL(u),
+		client: &http.Client{
+			Timeout:       DefaultTimeout,
+			CheckRedirect: checkRedirect,
+		},
+	}, nil
+}
+
+// redactURL renders a URL for printing, with anything secret taken out.
+//
+// Errors go into terminals, logs and issue trackers, and an archive URL is one
+// of the places a credential legitimately lives: userinfo for a private
+// mirror, and a signature in the query string for anything presigned by an
+// object store. Neither is any use to a reader of the message and both are
+// worth having if they are stolen.
+//
+// The userinfo is replaced rather than removed, and the query is replaced
+// rather than dropped, because the fact that a credential was in play is
+// itself useful when working out why a host said no. What is lost is a benign
+// query string, which is a small price for not having to keep a list of which
+// query parameters are secret -- a list that would be wrong the first time
+// somebody used a store this one has not heard of.
+func redactURL(u *url.URL) string {
+	shown := *u
+	if shown.User != nil {
+		shown.User = url.User("redacted")
+	}
+	if shown.RawQuery != "" {
+		shown.RawQuery = "redacted"
+	}
+	shown.Fragment, shown.RawFragment = "", ""
+	return shown.String()
+}
+
+// checkRedirect decides whether one redirect may be followed.
+//
+// Go's default follows up to ten, to any host, over any scheme, carrying the
+// headers with it -- which for this reader means a host the caller named can
+// hand the request to a host the caller has never heard of. Three rules
+// replace it, and each one is here for a reason that is not visible from the
+// code:
+//
+//   - NO SCHEME DOWNGRADE. A server that answers an https request with a
+//     redirect to http has turned a private request into a public one, and
+//     nothing about fetching an archive needs that to be possible.
+//
+//   - NO CHANGE OF HOST. This is the strict choice and it is deliberate. The
+//     whole premise of this library is that the user decides which hosts see
+//     where they are interested in; a redirect is that decision being made for
+//     them by the host they did choose. The response would not parse as an
+//     archive, so this is not a way to steal data, but the request is still
+//     issued, and a hostile archive host would otherwise have a way to make
+//     this machine probe things it can reach and nobody else can -- a cloud
+//     metadata endpoint, a service on localhost.
+//
+//     The cost is real: object storage does sometimes redirect to a CDN, and
+//     such an archive will not be read until the user names the destination
+//     themselves. That is why the error says which host was declined. It turns
+//     a silent change of host into a one-line decision the user makes, which
+//     is the same shape as every other source decision in this design, rather
+//     than into something that quietly worked.
+//
+//   - A LOW CAP. Five, not ten. See maxRedirects.
+//
+// Anyone loosening the middle rule should be sure they want the third-party
+// request it permits, and should say so here.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > maxRedirects {
+		return fmt.Errorf("acquire: %s redirected more than %d times; the host has lost track of where the archive is",
+			redactURL(via[0].URL), maxRedirects)
+	}
+	prev := via[len(via)-1].URL
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("acquire: %s redirected to the %q scheme, and this reader speaks http and https",
+			redactURL(prev), req.URL.Scheme)
+	}
+	// The host is checked before the scheme downgrade so that a redirect which
+	// breaks both rules is reported by the more useful one. "It sent you to
+	// 169.254.169.254" says what happened; "it downgraded to http" describes a
+	// detail of it.
+	if !strings.EqualFold(prev.Host, req.URL.Host) {
+		return fmt.Errorf("acquire: %s redirected to %s, a host you did not name; if that host is the right one, pass its URL as the source",
+			redactURL(prev), req.URL.Host)
+	}
+	if prev.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("acquire: %s redirected to http, which would send the rest of this in the clear; refusing to downgrade",
+			redactURL(prev))
+	}
+	return nil
 }
 
 // ReadAt reads len(p) bytes from offset off, in one request.
@@ -121,27 +225,29 @@ func (r *RangeReader) ReadAt(p []byte, off int64) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	last := off + int64(len(p)) - 1
 
 	req, err := http.NewRequest(http.MethodGet, r.url, nil)
 	if err != nil {
-		return 0, fmt.Errorf("acquire: building a request for %s: %w", r.url, err)
+		return 0, fmt.Errorf("acquire: building a request for %s: %w", r.displayURL, err)
 	}
 	// Inclusive on both ends, which is what the HTTP range unit means and one
 	// of the two ways this is routinely written wrong; the other is asking for
 	// len(p) bytes and getting len(p)+1.
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+int64(len(p))-1))
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, last))
 	req.Header.Set("User-Agent", UserAgent)
 
 	start := time.Now()
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("acquire: requesting bytes %d to %d of %s: %w", off, off+int64(len(p))-1, r.url, err)
+		return 0, fmt.Errorf("acquire: requesting bytes %d to %d of %s: %w", off, last, r.displayURL, unwrapURLError(err))
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
-		// What was asked for.
+		// What was asked for -- or at least, what was asked for is what the
+		// status claims. Which bytes actually came back is checked below.
 	case http.StatusRequestedRangeNotSatisfiable:
 		// The range starts past the end of the archive. That is the same
 		// condition a file reader reports as EOF, and the PMTiles reader
@@ -155,18 +261,43 @@ func (r *RangeReader) ReadAt(p []byte, off int64) (int, error) {
 		// Refused rather than read: the body would arrive, the first len(p)
 		// bytes would even be the right ones for an offset of zero, and the
 		// program would appear to work while downloading the planet.
-		return 0, fmt.Errorf("acquire: %s answered 200 and sent the whole file instead of the %d bytes asked for; this reader needs a host that supports HTTP range requests", r.url, len(p))
+		return 0, fmt.Errorf("acquire: %s answered 200 and sent the whole file instead of the %d bytes asked for; this reader needs a host that supports HTTP range requests", r.displayURL, len(p))
 	default:
-		return 0, fmt.Errorf("acquire: requesting bytes %d to %d of %s: %s", off, off+int64(len(p))-1, r.url, resp.Status)
+		return 0, fmt.Errorf("acquire: requesting bytes %d to %d of %s: %s", off, last, r.displayURL, resp.Status)
 	}
 
-	if total, ok := parseContentRangeTotal(resp.Header.Get("Content-Range")); ok {
-		r.mu.Lock()
-		r.size, r.hasSize = total, true
-		r.mu.Unlock()
+	cr, err := parseContentRange(resp.Header.Get("Content-Range"))
+	if err != nil {
+		return 0, fmt.Errorf("acquire: asking %s for bytes %d to %d: %w", r.displayURL, off, last, err)
+	}
+	// THE BYTES THAT CAME BACK MUST BE THE BYTES ASKED FOR.
+	//
+	// A 206 says "here is part of the file" and the Content-Range says WHICH
+	// part. Reading the body without comparing the two accepts any part the
+	// server felt like sending as though it were the part requested -- ten
+	// bytes from offset 0 handed over as offset 5000, and then decoded as the
+	// directory or tile that was asked for. Nothing downstream can notice:
+	// PMTiles has no checksum anywhere, a directory of arbitrary bytes usually
+	// decodes into plausible entries, and the failure surfaces, if at all, as
+	// a map with the wrong thing in it.
+	//
+	// This is the same class of defect the archive reader spends its length
+	// checks on -- serving plausible wrong bytes under the right name -- and
+	// this is the door it comes through when the archive is remote. The header
+	// that closes it is already being parsed for the total.
+	//
+	// The end may come back SHORT, and only short: a range that runs past the
+	// end of the archive is answered with what exists. It may not come back
+	// long, and it may not start anywhere but where it was asked to.
+	if cr.first != off || cr.last < cr.first || cr.last > last {
+		return 0, fmt.Errorf("acquire: asked %s for bytes %d to %d and it answered with bytes %d to %d; those bytes would have been read as though they came from offset %d",
+			r.displayURL, off, last, cr.first, cr.last, off)
+	}
+	if err := r.recordSize(cr); err != nil {
+		return 0, err
 	}
 
-	n, err := io.ReadFull(resp.Body, p)
+	n, err := io.ReadFull(resp.Body, p[:cr.last-cr.first+1])
 	elapsed := time.Since(start)
 	r.mu.Lock()
 	r.requests++
@@ -175,18 +306,47 @@ func (r *RangeReader) ReadAt(p []byte, off int64) (int, error) {
 	if r.Trace != nil {
 		r.Trace(off, n, elapsed)
 	}
-	switch err {
-	case nil:
-		return n, nil
-	case io.ErrUnexpectedEOF, io.EOF:
-		// The server gave a 206 and then fewer bytes than the range asked
-		// for, which is what the end of the archive looks like over HTTP.
-		// Reported as EOF, with the bytes that did arrive, exactly as a file
-		// would.
-		return n, io.EOF
-	default:
-		return n, fmt.Errorf("acquire: reading bytes %d to %d of %s: %w", off, off+int64(len(p))-1, r.url, err)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return n, fmt.Errorf("acquire: reading bytes %d to %d of %s: %w", off, last, r.displayURL, unwrapURLError(err))
 	}
+	// A body shorter than the server's OWN Content-Range is a transfer that
+	// broke, not the end of the archive, and saying EOF for it would have the
+	// archive reader report a truncated file when the truth is a dropped
+	// connection. The two are told apart here because this is the only place
+	// that knows what the server said it was sending.
+	if want := int(cr.last - cr.first + 1); n != want {
+		return n, fmt.Errorf("acquire: %s said it was sending bytes %d to %d of the archive and sent %d of those %d bytes; the transfer did not finish",
+			r.displayURL, cr.first, cr.last, n, want)
+	}
+	if n < len(p) {
+		// The server had fewer bytes than were asked for and said so. That is
+		// the end of the archive, which is EOF, exactly as a file would report
+		// it.
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// recordSize remembers the archive's total length, and refuses an archive
+// whose length has changed since the last request.
+//
+// A changed total means the bytes behind this URL are not the bytes the
+// directories already read describe -- a daily build republished under the
+// same name, most likely -- and every offset held by the caller is now
+// pointing into a different file. Continuing would read whatever now lives at
+// those offsets and call it a tile.
+func (r *RangeReader) recordSize(cr contentRange) error {
+	if !cr.hasTotal {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.hasSize && r.size != cr.total {
+		return fmt.Errorf("acquire: %s was %d bytes and is now %d; it changed while it was being read, so every offset taken from its directories is stale",
+			r.displayURL, r.size, cr.total)
+	}
+	r.size, r.hasSize = cr.total, true
+	return nil
 }
 
 // Stats reports how many requests have been made and how many bytes have come
@@ -211,22 +371,84 @@ func (r *RangeReader) Size() (int64, bool) {
 	return r.size, r.hasSize
 }
 
-// URL returns the archive's URL.
-func (r *RangeReader) URL() string { return r.url }
-
-// parseContentRangeTotal pulls the total length out of a Content-Range header
-// of the form "bytes 0-126/134812420554".
+// URL returns the archive's URL with any credentials taken out of it, which is
+// the only form of it this type will give anybody.
 //
-// A total of "*" means the server declines to say, which is legal, and is
-// reported as unknown rather than as zero.
-func parseContentRangeTotal(v string) (int64, bool) {
-	slash := strings.LastIndex(v, "/")
-	if slash < 0 {
-		return 0, false
+// There is deliberately no accessor for the URL as supplied. A caller has it
+// already -- it passed it in -- and everything a caller does with one it got
+// back from here ends up on a screen or in a file.
+func (r *RangeReader) URL() string { return r.displayURL }
+
+// contentRange is a parsed Content-Range response header.
+type contentRange struct {
+	// first and last are inclusive byte positions in the whole archive.
+	first, last int64
+	// total is the archive's full length. A server may legally decline to say,
+	// writing "*", which is hasTotal false rather than a total of zero.
+	total    int64
+	hasTotal bool
+}
+
+// parseContentRange parses a Content-Range of the form
+// "bytes 0-126/134812420554", or "bytes 0-126/*".
+//
+// It is strict, and it refuses an absent header outright. A 206 without a
+// Content-Range is malformed -- the response says it is part of something and
+// then declines to say which part -- and the only thing a reader can do with
+// the body is assume it is the part that was asked for, which is the
+// assumption this whole function exists to stop being made. The multipart form
+// a server sends for several ranges at once is refused by the same rule, and
+// correctly: this reader never asks for more than one.
+func parseContentRange(v string) (contentRange, error) {
+	var cr contentRange
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return cr, errors.New("the server answered 206 with no Content-Range header, so there is nothing to say which bytes these are")
 	}
-	total, err := strconv.ParseInt(strings.TrimSpace(v[slash+1:]), 10, 64)
-	if err != nil || total < 0 {
-		return 0, false
+	unit, spec, ok := strings.Cut(v, " ")
+	if !ok || !strings.EqualFold(unit, "bytes") {
+		return cr, fmt.Errorf("the server answered 206 with Content-Range %q, which is not a range of bytes", v)
 	}
-	return total, true
+	positions, total, ok := strings.Cut(spec, "/")
+	if !ok {
+		return cr, fmt.Errorf("the server answered 206 with Content-Range %q, which names no total length", v)
+	}
+	firstText, lastText, ok := strings.Cut(positions, "-")
+	if !ok {
+		return cr, fmt.Errorf("the server answered 206 with Content-Range %q, which is not a first-to-last range", v)
+	}
+	first, err := strconv.ParseInt(strings.TrimSpace(firstText), 10, 64)
+	if err != nil {
+		return cr, fmt.Errorf("the server answered 206 with Content-Range %q, whose first byte position is not a number", v)
+	}
+	lastPos, err := strconv.ParseInt(strings.TrimSpace(lastText), 10, 64)
+	if err != nil {
+		return cr, fmt.Errorf("the server answered 206 with Content-Range %q, whose last byte position is not a number", v)
+	}
+	if first < 0 || lastPos < first {
+		return cr, fmt.Errorf("the server answered 206 with Content-Range %q, which runs backwards", v)
+	}
+	cr.first, cr.last = first, lastPos
+	if total = strings.TrimSpace(total); total != "*" {
+		n, err := strconv.ParseInt(total, 10, 64)
+		if err != nil || n < 0 {
+			return cr, fmt.Errorf("the server answered 206 with Content-Range %q, whose total length is not a number", v)
+		}
+		cr.total, cr.hasTotal = n, true
+	}
+	return cr, nil
+}
+
+// unwrapURLError replaces a *url.Error with the error inside it.
+//
+// url.Error prints the URL it was for, and the http client builds it from the
+// URL as supplied -- which may carry credentials. It strips a password and
+// keeps a username. Since every message here already names the archive in its
+// redacted form, the wrapper adds nothing but that risk.
+func unwrapURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err
+	}
+	return err
 }
