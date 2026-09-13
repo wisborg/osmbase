@@ -44,12 +44,13 @@ package inside either of them.
 | `osmbase` | `View`, `Bounds`, `Result`, `Renderer`, `Style`, `Palette`, `Place`, errors |
 | `osmbase/pmtiles` | PMTiles v3 archive reader. Ours. See "Zero third-party modules" |
 | `osmbase/mvt` | Mapbox Vector Tile decoder. Ours |
+| `osmbase/mercator` | Web Mercator and the tile grid: degrees to a tile, a tile's local integers back to degrees. Not in `mvt`, which deliberately does not project |
 | `osmbase/osmpbf` | Streaming OpenStreetMap PBF reader. Ours |
 | `osmbase/raster` | Path construction, stroking, dashing, filling on `x/image/vector` |
 | `osmbase/slice` | The on-disk store: cells, manifests, coverage, eviction |
 | `osmbase/boundary` | Admin polygon derivation, the compact on-disk format, containment |
 | `osmbase/acquire` | The **only** package that opens a socket |
-| `cmd/osmbase` | Standalone CLI: `fetch`, `boundaries`, `info`, `render`, `place` |
+| `cmd/osmbase` | Standalone CLI: `inspect`, `tile`, `geojson` today; `fetch`, `boundaries`, `render`, `place` to come |
 | `osmbasetest` | Synthetic archives, tiles and slices, mirroring `fitactivity/fittest` |
 
 The network lives in exactly one package, and that package is named after what it does.
@@ -216,6 +217,40 @@ Per-activity bounding boxes were rejected for two reasons. Two runs from the sam
 door produce two different boxes and never share a byte. And a box-keyed cache cannot
 answer "do I have coverage here" without a geometric search over every entry, where a cell
 grid answers it with a `stat`.
+
+### Depth follows the extent, and a global track is the cheap case
+
+Everything above assumes an activity a few kilometres across. A flight does not fit it at
+all, and the correction is not a special case so much as a reminder that the zoom range is
+an input rather than a constant.
+
+Measured against the real planet build: below zoom 3 the schema carries no roads at all,
+only coastlines, administrative boundaries, water, landcover and place names, which is
+exactly what a route across an ocean wants. A mid-Pacific tile at zoom 4 is 2.1 KiB. And
+the totals are small enough to change the shape of the problem.
+
+| zooms | tiles | total, compressed |
+|---|---|---|
+| 0 to 4 | 341 | 8.0 MB |
+| 0 to 5 | 1,365 | 19.5 MB |
+
+**Every tile on earth at flight detail is 19.5 MB**, which is what one city-sized cell
+costs at street detail. So a Melbourne-to-Toulouse track needs no bounding box, no cell
+arithmetic and no corridor: hold the whole world and be done. Applying the cell model to
+it would be absurd in both directions, fetching a sub-pyramid to zoom 15 for ground nobody
+will ever see at that scale.
+
+The rule that falls out is that a slice is a zoom RANGE over an area, and the range comes
+from the track's own extent: a run wants zoom 12 to 15 over eight kilometres, a flight
+wants zoom 0 to 5 over everything. The cell grid is the right structure for the first and
+pointless for the second, so the store has to be able to hold a shallow global set as well
+as deep local ones. Recording the cell zoom in the manifest is what already makes that
+possible; what this adds is that the DEPTH is not fixed either.
+
+A useful consequence for a first run: the shallow global set is small enough to be worth
+fetching unconditionally. It is the whole-world overview every render can fall back to,
+and at 8 MB it removes the case where a track leaves its cells and there is nothing
+underneath at all.
 
 ### On disk
 
@@ -466,7 +501,8 @@ entirely offline.
 **Prototypes first.** P1: read a real archive and record its header fields, directory
 structure, root directory size, and the byte-range layout of one cell's sub-pyramid. It is
 a measurement rather than a gate, and what it decides is how requests are coalesced and how
-long the planning phase takes. P2: actual bytes for one dense cell and one rural one. P3:
+long the planning phase takes. It is now permanent as `cmd/osmbase inspect`, so the
+measurement can be repeated against any archive rather than living in a throwaway. P2: actual bytes for one dense cell and one rural one. P3:
 which place kind a suburb lands under, which now affects only the fallback path. P5:
 stroker quality on a switchback, a multi-way junction and a dashed path, at both
 resolutions. P6: boundary derivation wall time, peak memory, polygon count and output size.

@@ -13,11 +13,32 @@ that program is for.
 ## Status
 
 Early. The archive reader, the vector tile decoder and the synthetic fixtures they are
-tested against are written; nothing draws a map yet.
+tested against are written, and a command-line tool reads real archives with them.
+Nothing draws a map yet.
 
 **[docs/architecture.md](docs/architecture.md) is the design this is being built to.** It
 carries the reasoning behind every decision, including the alternatives that were rejected
 and why, and the list of things it assumes but has not yet verified.
+
+## Trying it out
+
+There is no rasterizer yet, so there is no picture. There is a command that reads real
+tiles and says what is in them, and writes one tile as GeoJSON you can paste straight into
+[geojson.io](https://geojson.io):
+
+```
+go build -o osmbase ./cmd/osmbase
+
+./osmbase                                              # the subcommands
+./osmbase inspect                                      # an archive's header and shape
+./osmbase tile --lat -33.8568 --lon 151.2153 --tags    # what one tile holds
+./osmbase geojson --lat -33.8568 --lon 151.2153 --layer roads > roads.geojson
+```
+
+With no SOURCE those read a Protomaps planet archive over HTTP range requests — a few
+hundred kilobytes out of 125 GiB, and nothing stored — which tells that host which few
+kilometres of map you asked about. Give a local `.pmtiles` file as SOURCE instead and
+nothing leaves the machine. `osmbase help` says the same thing in the terminal.
 
 ## Licence
 
