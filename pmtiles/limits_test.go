@@ -213,6 +213,12 @@ func TestReader_RefusesASectionThatDecompressesPastItsLimit(t *testing.T) {
 // TestReader_RefusesAnUncompressedSectionPastItsLimit. The limit is about how
 // much memory a section may occupy, and enforcing it only on gzip would be a
 // rule about gzip instead.
+//
+// The refusal happens in readAt now, not in decompress: the stored length is
+// checked against the limit before anything is allocated, which is why the
+// message here is about stored bytes. That is the stronger place for it -- a
+// section too large to be allowed is refused without being fetched at all,
+// rather than fetched and then rejected.
 func TestReader_RefusesAnUncompressedSectionPastItsLimit(t *testing.T) {
 	big := bytes.Repeat([]byte("t"), 4<<10)
 	archive := craftArchive(t, crafted{
@@ -226,6 +232,25 @@ func TestReader_RefusesAnUncompressedSectionPastItsLimit(t *testing.T) {
 	r.Limits.Tile = 1 << 10
 	_, _, err = r.Tile(2, 0, 0)
 	assertLimitError(t, err, "tile 2/0/0")
+	if !strings.Contains(err.Error(), "stored bytes") {
+		t.Errorf("error was %q, and it should say the refusal was on the stored length, before the read", err)
+	}
+
+	// And the refusal cost no fetch of the tile at all: the length alone was
+	// enough to decide.
+	src := newCountingSource(archive)
+	r, err = pmtiles.NewReader(src)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	r.Limits.Tile = 1 << 10
+	src.takeReads()
+	if _, _, err := r.Tile(2, 0, 0); err == nil {
+		t.Fatal("the oversized tile was accepted")
+	}
+	if reads := src.takeReads(); len(reads) != 0 {
+		t.Errorf("refusing the tile still read from the archive %d times: %s", len(reads), src.describe(reads))
+	}
 }
 
 func assertLimitError(t *testing.T, err error, what string) {

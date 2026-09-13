@@ -198,7 +198,7 @@ func (r *Reader) Metadata() ([]byte, error) {
 	if r.header.MetadataLength > math.MaxUint32 {
 		return nil, fmt.Errorf("pmtiles: metadata is %d bytes, which is not a JSON document", r.header.MetadataLength)
 	}
-	raw, err := r.readAt(r.header.MetadataOffset, uint32(r.header.MetadataLength), "the metadata")
+	raw, err := r.readAt(r.header.MetadataOffset, uint32(r.header.MetadataLength), r.Limits.Metadata, "the metadata")
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (r *Reader) rawTileByID(id uint64, what string) ([]byte, Entry, bool, error
 			if err != nil {
 				return nil, Entry{}, false, err
 			}
-			data, err := r.readAt(offset, e.Length, what)
+			data, err := r.readAt(offset, e.Length, r.Limits.Tile, what)
 			if err != nil {
 				return nil, Entry{}, false, err
 			}
@@ -357,7 +357,7 @@ func (r *Reader) leafAt(e Entry) ([]Entry, error) {
 // directoryAt reads, decompresses and decodes the directory stored at an
 // absolute archive offset.
 func (r *Reader) directoryAt(offset uint64, length uint32, what string) ([]Entry, error) {
-	raw, err := r.readAt(offset, length, what)
+	raw, err := r.readAt(offset, length, r.Limits.Directory, what)
 	if err != nil {
 		return nil, err
 	}
@@ -372,30 +372,74 @@ func (r *Reader) directoryAt(offset uint64, length uint32, what string) ([]Entry
 	return entries, nil
 }
 
-// readAt reads exactly length bytes from offset, naming what was being read
-// when it could not.
+// readAt reads exactly length bytes from offset in ONE request, naming what was
+// being read when it could not.
 //
-// The buffer is grown to fit what the source actually returns rather than
-// allocated at the requested length up front. Lengths come out of directories,
-// a directory can be corrupt, and the format has no checksum, so "read the
-// next four gigabytes" is a thing a damaged archive can ask for.
+// # Why one request matters here and not in most readers
 //
-// That bounds the cost by what the SOURCE will hand over, which is not the
-// same as bounding it. Against a local file it is the size of the file. Against
-// the HTTP range source this reader is shaped for, it is whatever the remote
-// chooses to send, and the remote is the party that wrote the length in the
-// first place. The real ceiling on a section is Limits, applied where the bytes
-// are decompressed; this is a floor under the damage, not a defence.
-func (r *Reader) readAt(offset uint64, length uint32, what string) ([]byte, error) {
+// This reader exists to be pointed at an HTTP range source: that is what
+// io.ReaderAt buys, and the acquisition step is the reason the whole package is
+// shaped this way. Over such a source every call to ReadAt is a request and a
+// round trip, so how many calls a section takes is not a performance detail, it
+// is the difference between a usable reader and one that hammers a host this
+// project has no agreement with.
+//
+// An earlier version grew the buffer instead, with io.ReadAll over a section
+// reader. Against the real planet archive that cost fourteen requests for one
+// 88 KB leaf directory and fourteen more for the tile behind it: twenty-eight
+// round trips and about thirteen seconds for a single tile, and roughly 2,400
+// requests for a cell that needs 85. The byte count was fine; it was purely the
+// trips.
+//
+// # Why that was ever reasonable, and what changed
+//
+// Growing the buffer was a defence: lengths come out of directories, a
+// directory can be corrupt, the format has no checksum, and "allocate the next
+// four gigabytes" is a thing a damaged entry can ask for. Reading incrementally
+// meant a bogus length cost only what the source actually had.
+//
+// It was never much of a defence -- it bounds the cost by what the SOURCE will
+// hand over, and over a range request that is whatever the remote chooses to
+// send, the remote being the party that wrote the length in the first place --
+// and it is no longer needed. Limits gives a real ceiling and sectionOffset has
+// already checked the length against the section it claims to live in, so the
+// length can be rejected BEFORE anything is allocated. That is strictly
+// stronger than reading four gigabytes in instalments and failing afterwards.
+//
+// One honest cost: a damaged length now allocates up to the limit in one go,
+// where growing the buffer allocated only what a local file actually held. The
+// ceiling is Limits either way and it is freed on the way out, so this is a
+// worse worst case against a file and a far better one against a network -- and
+// it is the trade this reader is for. Anyone tempted to put the growth back
+// should reach for a lower Limits instead.
+//
+// io.ReadFull rather than a bare ReadAt because io.ReaderAt's contract allows a
+// short read, and it loops on the remainder rather than on a growing buffer: a
+// conforming source fills the request in one call, and a source that does not
+// costs one call per short read instead of one per doubling.
+func (r *Reader) readAt(offset uint64, length uint32, limit int64, what string) ([]byte, error) {
 	if offset > math.MaxInt64 {
 		return nil, fmt.Errorf("pmtiles: %s is at offset %d, beyond any file", what, offset)
 	}
-	buf, err := io.ReadAll(io.NewSectionReader(r.src, int64(offset), int64(length)))
-	if err != nil {
+	// Checked before the allocation, which is the whole point of checking it
+	// here. The limit is a ceiling on the memory a section may occupy, and the
+	// stored bytes occupy memory just as the decompressed ones do.
+	if int64(length) > limit {
+		return nil, fmt.Errorf("pmtiles: %s is %d stored bytes, past this reader's limit of %d; raise Reader.Limits if the archive is one you trust", what, length, limit)
+	}
+	buf := make([]byte, length)
+	n, err := io.ReadFull(io.NewSectionReader(r.src, int64(offset), int64(length)), buf)
+	// Compared exactly rather than with errors.Is, deliberately. These two are
+	// io.ReadFull's own way of saying "the section reader ran out", which is
+	// the truncation reported below. A source that wraps an EOF of its own is
+	// saying something else -- a connection closed part way through, most
+	// likely -- and that message is more use to whoever has to fix it than
+	// "the archive is truncated" would be, so it is passed through instead.
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return nil, fmt.Errorf("pmtiles: reading %d bytes at offset %d for %s: %w", length, offset, what, err)
 	}
-	if uint64(len(buf)) != uint64(length) {
-		return nil, fmt.Errorf("pmtiles: %s wants %d bytes at offset %d and the archive has %d there; it is truncated or its directories are damaged", what, length, offset, len(buf))
+	if n != int(length) {
+		return nil, fmt.Errorf("pmtiles: %s wants %d bytes at offset %d and the archive has %d there; it is truncated or its directories are damaged", what, length, offset, n)
 	}
 	return buf, nil
 }
@@ -429,6 +473,13 @@ func decompress(c Compression, b []byte, limit int64, what string) ([]byte, erro
 		// way. A reader that let an uncompressed 500 MB tile through and
 		// refused a compressed one would be enforcing a rule about gzip
 		// rather than about memory.
+		//
+		// Nothing in this package can reach this branch any more: readAt
+		// refuses a stored length past the limit before it allocates, so
+		// anything arriving here is already inside it. It stays because the
+		// limit is this function's contract rather than its callers', and a
+		// future caller that reads bytes some other way should not have to
+		// rediscover the rule.
 		if int64(len(b)) > limit {
 			return nil, tooLarge(what, limit)
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -39,6 +40,16 @@ type countingSource struct {
 	minOffset  int64
 	sawNegOff  bool
 	totalReads int
+	// log records every read as it happens. It is what turns "the tiles came
+	// back" into "and it took this many requests to get them", which on a
+	// range source is the difference between usable and not.
+	log []readRecord
+}
+
+// readRecord is one call to ReadAt: the size asked for and where.
+type readRecord struct {
+	length int
+	offset int64
 }
 
 func newCountingSource(b []byte) *countingSource {
@@ -50,6 +61,7 @@ func newCountingSource(b []byte) *countingSource {
 func (s *countingSource) ReadAt(p []byte, off int64) (int, error) {
 	s.mu.Lock()
 	s.totalReads++
+	s.log = append(s.log, readRecord{length: len(p), offset: off})
 	if off < s.minOffset {
 		s.minOffset = off
 	}
@@ -77,6 +89,31 @@ func (s *countingSource) leafReadCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.leafReads
+}
+
+// takeReads returns the reads recorded since the last call and clears the log,
+// so a test can attribute requests to one operation rather than to everything
+// that came before it.
+func (s *countingSource) takeReads() []readRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.log
+	s.log = nil
+	return out
+}
+
+// describe renders a set of reads for a failure message, because the count on
+// its own does not say whether the extra requests were a second section or one
+// section fetched in pieces.
+func (s *countingSource) describe(reads []readRecord) string {
+	var b strings.Builder
+	total := 0
+	for _, r := range reads {
+		fmt.Fprintf(&b, "\n    %7d bytes at %d", r.length, r.offset)
+		total += r.length
+	}
+	fmt.Fprintf(&b, "\n    (%d reads, %d bytes)", len(reads), total)
+	return b.String()
 }
 
 // readAllTiles reads ids in order and insists every one comes back.

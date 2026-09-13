@@ -258,6 +258,13 @@ func buildDirectories(entries []pmtiles.Entry, leafSize int, internal pmtiles.Co
 	if leafSize < 0 {
 		return nil, nil, shape, fmt.Errorf("osmbasetest: LeafSize %d is negative", leafSize)
 	}
+	// One entry per directory never terminates: every level has as many
+	// entries as the one below it, so the loop that reduces a level to a
+	// shorter one reduces nothing. Refused rather than left to hang, because a
+	// test that asks for it deserves an error and not a wedged run.
+	if leafSize == 1 {
+		return nil, nil, shape, fmt.Errorf("osmbasetest: LeafSize 1 gives every entry its own directory and never reduces to a root; use 2 or more, or 0 for a leafless archive")
+	}
 	level := entries
 	var leaves bytes.Buffer
 	if leafSize > 0 {

@@ -279,6 +279,14 @@ func TestBuildArchive_RefusesArchivesNoReaderCouldTrust(t *testing.T) {
 			wantMsg: "brotli",
 		},
 		{
+			name: "one entry per leaf directory, which never reduces to a root",
+			archive: osmbasetest.Archive{
+				Tiles:    manyTiles(8),
+				LeafSize: 1,
+			},
+			wantMsg: "never reduces to a root",
+		},
+		{
 			name: "a root directory past the format's 16 KiB cap",
 			archive: osmbasetest.Archive{
 				Tiles: manyTiles(4000),
