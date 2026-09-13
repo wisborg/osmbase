@@ -432,23 +432,30 @@ func TestDecodeGeometry_RejectsMalformedCommandStreams(t *testing.T) {
 
 // TestDecodeGeometry_RefusesACoordinateNoTileCanReach.
 //
-// The cursor is an int32 and the deltas are unbounded, so two deltas near the
-// top of the range wrap it: 2147483647 twice over lands on -2, a vertex
-// indistinguishable from one a producer meant. Nothing downstream could ever
-// notice -- it is a plausible coordinate in a plausible tile -- so the decode
-// has to refuse it.
+// The cursor is an int32 and the deltas are not bounded by anything in the
+// format, so without a check a walk of two large deltas wraps it and lands on a
+// vertex indistinguishable from one a producer meant -- a plausible coordinate
+// in a plausible tile, which nothing downstream could notice.
 //
-// The bound is deliberately enormous compared with a real buffer, which is a
-// few hundred units past the edge of a 4096-unit tile. Anything reaching it is
-// not a producer's geometry.
+// The bound refuses each step, which is why no case here actually reaches a
+// wrap: the first vertex is already out of range. That is the design. A cursor
+// inside the bound plus any int32 delta either stays in range or lands at least
+// 2^31 - 2^20 from zero, so the bound catches the step before the wrap and
+// there is no second step to take.
+//
+// It is deliberately enormous compared with a real buffer, which is a few
+// hundred units past the edge of a 4096-unit tile. Anything reaching it is not
+// a producer's geometry.
 func TestDecodeGeometry_RefusesACoordinateNoTileCanReach(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  []uint32
 	}{
 		{
-			// Two deltas of 2147483647, which in int32 arithmetic wrap to -2.
-			name: "a cursor walked past the top of int32",
+			// The largest positive delta the parameter encoding can express.
+			// Walked twice it would wrap the cursor to -2; it never gets the
+			// chance, because the first step is already refused.
+			name: "a delta at the very top of int32",
 			raw:  []uint32{9, 0xfffffffe, 0xfffffffe, 9, 0xfffffffe, 0xfffffffe},
 		},
 		{
