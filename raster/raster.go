@@ -60,6 +60,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 
 	"golang.org/x/image/vector"
 )
@@ -71,6 +72,18 @@ import (
 // representation of a coordinate rather than two.
 type Point struct {
 	X, Y float32
+}
+
+// segment returns the vector from a to b and its length.
+//
+// It is one function used by both the stroker and the dash walk, which is the
+// point of it rather than a saving of three lines: those two agree on where a
+// segment ends and how long it is only if they compute it the same way, and
+// this project has already been bitten once by two spellings of the same
+// arithmetic that agreed until they did not.
+func segment(a, b Point) (dx, dy, length float32) {
+	dx, dy = b.X-a.X, b.Y-a.Y
+	return dx, dy, float32(math.Hypot(float64(dx), float64(dy)))
 }
 
 // Surface is a destination image together with the single rasterizer that

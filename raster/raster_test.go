@@ -142,9 +142,11 @@ func TestFill_DegenerateInputDrawsNothingAndDoesNotPanic(t *testing.T) {
 		{"line before any move", func(p *raster.Path) {
 			p.LineTo(raster.Point{X: 5, Y: 5})
 		}},
-		{"curve before any move", func(p *raster.Path) {
-			p.CubeTo(raster.Point{X: 1}, raster.Point{X: 2}, raster.Point{X: 3})
-		}},
+		// There was a "curve before any move" case here. cubeTo is
+		// unexported now, and its only caller is Circle, which always moves
+		// first -- so the state this exercised is no longer reachable
+		// through the package's API. If a curve is ever exported again, the
+		// case comes back with it.
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

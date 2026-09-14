@@ -1,7 +1,5 @@
 package raster
 
-import "math"
-
 // Stroke is how a polyline becomes a filled outline.
 //
 // It is a struct rather than a width argument because a style holds one of
@@ -29,12 +27,19 @@ type Stroke struct {
 
 	// DashPhase is how far into the pattern the line starts, in surface
 	// pixels. It is taken modulo the pattern's total length, negative values
-	// included, so a phase can be advanced without bound.
+	// included, so a phase can be advanced without bound -- by an animation,
+	// or by feeding back the phase Stroke returns for the piece before this
+	// one. See "A feature split into pieces" on Stroke.
 	DashPhase float32
 }
 
 // Stroke appends the outline of the polyline pts to the path, with round caps
-// at both ends and round joins at every vertex.
+// at both ends and round joins at every vertex, and returns the dash phase at
+// the far end of pts.
+//
+// The returned phase is s.DashPhase for an undashed stroke, and otherwise how
+// far into the pattern the walk has got by the end of the line, reduced into
+// one cycle. It is meaningful only against the same pattern.
 //
 // # Why round, and why there is no alternative
 //
@@ -51,6 +56,34 @@ type Stroke struct {
 // width fills it exactly. Miter would additionally spike many times the stroke
 // width where a trail switches back at a few degrees, so it is not offered.
 //
+// # A feature split into pieces
+//
+// One way reaches a renderer as several polylines: clipped at a tile edge, or
+// cut where OSM started a new way. A SOLID stroke does not care, which is the
+// premise of the whole package -- overlapping quads and discs wound the same
+// way add and clamp, so the pieces rejoin invisibly however they were cut.
+//
+// A dash does care, because a dash has a position. Restarting the pattern at
+// each piece puts a phase jump wherever the cuts fall, which for a tile clip
+// means at every tile boundary in the map: the same "invisible within one tile,
+// obvious across one" failure as the coverage seam Surface.Fill describes, and
+// on the same lines.
+//
+// So a caller stroking the pieces of one feature must stroke them in order
+// along the way and feed each piece the phase the previous one returned. Doing
+// that arithmetic in the caller instead -- start phase plus summed arc length,
+// modulo the pattern -- is a second implementation of the walk below, in
+// whatever precision the caller happens to use, and it drifts from this one
+// over a long way.
+//
+// Two things the caller still owns, because this package cannot see them.
+// The pieces must be consecutive: a phase carried to a piece that is not the
+// next stretch of the same way is a confident wrong answer. And they must not
+// OVERLAP, which is exactly what a tile buffer produces, since the same metre
+// of path drawn twice at two phases is two colliding dashes rather than one
+// free duplicate. Stitch the pieces, or clip them at the shared edge, before
+// dashing them.
+//
 // # Degenerate input
 //
 // A single point strokes to a dot of the stroke's width. That is not a special
@@ -62,17 +95,24 @@ type Stroke struct {
 // A polyline that closes -- last point equal to first, which is how a caller
 // strokes a polygon's outline -- gets ONE disc where its ends meet rather than
 // two. See strokeSolid.
-func (p *Path) Stroke(pts []Point, s Stroke) {
-	if !(s.Width > 0) || len(pts) == 0 { // the ! also rejects NaN
-		return
+func (p *Path) Stroke(pts []Point, s Stroke) (endPhase float32) {
+	pat, total, dashed := dashPattern(s.Dash)
+	if !(s.Width > 0) { // the ! also rejects NaN
+		// Nothing is drawn, but the phase still has to come out right: a style
+		// whose width scaled to zero at this zoom must not silently reset the
+		// dashing of the pieces that follow.
+		if !dashed {
+			return s.DashPhase
+		}
+		return dashWalk(pts, pat, total, s.DashPhase, func([]Point) {})
 	}
-	if pat, ok := dashPattern(s.Dash); ok {
-		dashWalk(pts, pat, s.DashPhase, func(run []Point) {
-			p.strokeSolid(run, s.Width)
-		})
-		return
+	if !dashed {
+		p.strokeSolid(pts, s.Width)
+		return s.DashPhase
 	}
-	p.strokeSolid(pts, s.Width)
+	return dashWalk(pts, pat, total, s.DashPhase, func(run []Point) {
+		p.strokeSolid(run, s.Width)
+	})
 }
 
 // strokeSolid outlines one undashed polyline.
@@ -89,12 +129,25 @@ func (p *Path) strokeSolid(pts []Point, width float32) {
 	// edge goes hard. One corner of a stroked building outline would then be
 	// visibly more jagged than the other three.
 	//
+	// Which vertex closes the ring is decided HERE, by value, and the loop
+	// below suppresses that index. Deciding it by value in one place and by
+	// position in the other is what a trailing repeated point breaks: a caller
+	// that closes its rings defensively hands over [A B C D A A], the loop
+	// skips the second A as a zero-length segment, and the suppression aimed
+	// at the last index never fires. The corner gets two discs and the rim
+	// hardens, which is the bug this suppression exists to prevent, arriving
+	// through the door marked "degenerate input is harmless".
+	last := len(pts) - 1
+	for last > 0 && pts[last] == pts[last-1] {
+		last--
+	}
+	closed := last > 1 && pts[last] == pts[0]
+
 	// A vertex that coincides with some OTHER vertex, in a figure eight or a
 	// road that touches itself, gets two discs and that rim. Detecting it would
 	// cost a search per vertex to remove one pixel of aliasing at a junction
 	// that is already several shapes deep, which is not a trade worth making;
 	// the closed ring is worth it because it is every polygon outline.
-	closed := len(pts) > 2 && pts[len(pts)-1] == pts[0]
 
 	// A disc at every vertex, including both ends. Collinear vertices do not
 	// need one and a stroker could test for that, but the test costs a
@@ -111,7 +164,7 @@ func (p *Path) strokeSolid(pts []Point, width float32) {
 			continue
 		}
 		p.quad(prev, q, h)
-		if !(closed && i == len(pts)-2) {
+		if !(closed && i+1 == last) {
 			p.Circle(q, h)
 		}
 		prev = q
@@ -127,8 +180,7 @@ func (p *Path) strokeSolid(pts []Point, width float32) {
 // winding alone. Everything else this package emits is wound the same way, and
 // the package comment says what a stray reversal would cost.
 func (p *Path) quad(a, b Point, h float32) {
-	dx, dy := b.X-a.X, b.Y-a.Y
-	length := float32(math.Hypot(float64(dx), float64(dy)))
+	dx, dy, length := segment(a, b)
 	if length == 0 {
 		return
 	}

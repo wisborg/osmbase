@@ -27,6 +27,11 @@ const (
 type Path struct {
 	verbs []verb
 	pts   []Point
+	// min and max bound every point appended so far. They mean nothing when
+	// pts is empty, which is why Bounds reports that separately rather than
+	// returning a box at the origin -- a path with no points has no extent,
+	// and the origin is a place.
+	min, max Point
 }
 
 // Reset empties the path but keeps its capacity for the next layer.
@@ -38,6 +43,52 @@ func (p *Path) Reset() {
 // Empty reports whether the path would draw nothing.
 func (p *Path) Empty() bool { return len(p.verbs) == 0 }
 
+// Bounds returns the smallest box containing every point of the path, and
+// whether there was any point at all.
+//
+// It is maintained as points are appended -- two comparisons each, against a
+// construction cost that is already a thirtieth of the fill it feeds -- rather
+// than computed on demand, because both of its uses want it without walking
+// the geometry again. Surface.Fill uses it to skip a path that cannot touch
+// the surface, and a renderer uses it to cull a feature against the view
+// WITHOUT re-walking coordinates it has just handed over.
+//
+// The box is conservative for curves: a cubic lies inside the hull of its
+// control points, so the box may be larger than the ink but never smaller.
+// That is the direction an extent used for culling has to be wrong in.
+func (p *Path) Bounds() (min, max Point, ok bool) {
+	if len(p.pts) == 0 {
+		return Point{}, Point{}, false
+	}
+	return p.min, p.max, true
+}
+
+// add appends a point and grows the bounding box.
+//
+// A NaN coordinate compares false against everything, so it leaves the box
+// alone rather than poisoning it. That is deliberate: the box is used to SKIP
+// drawing, and a box that had swallowed a NaN would compare false in every
+// direction and skip nothing, which is the safe way round.
+func (p *Path) add(pt Point) {
+	if len(p.pts) == 0 {
+		p.min, p.max = pt, pt
+	} else {
+		if pt.X < p.min.X {
+			p.min.X = pt.X
+		}
+		if pt.Y < p.min.Y {
+			p.min.Y = pt.Y
+		}
+		if pt.X > p.max.X {
+			p.max.X = pt.X
+		}
+		if pt.Y > p.max.Y {
+			p.max.Y = pt.Y
+		}
+	}
+	p.pts = append(p.pts, pt)
+}
+
 // MoveTo starts a new subpath at pt.
 //
 // There is deliberately no ClosePath: every subpath is closed when it is
@@ -48,7 +99,7 @@ func (p *Path) Empty() bool { return len(p.verbs) == 0 }
 // and the picture is a wash rather than a wrong edge.
 func (p *Path) MoveTo(pt Point) {
 	p.verbs = append(p.verbs, verbMove)
-	p.pts = append(p.pts, pt)
+	p.add(pt)
 }
 
 // LineTo adds a straight segment from the pen to pt.
@@ -65,22 +116,29 @@ func (p *Path) LineTo(pt Point) {
 		return
 	}
 	p.verbs = append(p.verbs, verbLine)
-	p.pts = append(p.pts, pt)
+	p.add(pt)
 }
 
-// CubeTo adds a cubic Bezier from the pen via the control points b and c to d.
+// cubeTo adds a cubic Bezier from the pen via the control points b and c to d.
 //
 // The curve is flattened by the rasterizer, at a tolerance it chooses from the
 // curve's own deviation, so this stays resolution independent: the same call
 // subdivides further on a 4K frame than on a 1080p one. Flattening it here to
 // a fixed number of segments would put 1080p's segment count on the 4K frame.
-func (p *Path) CubeTo(b, c, d Point) {
+//
+// It is unexported because nothing outside this package has wanted a curve:
+// the renderer, a style and a route line are rings, polylines and strokes, and
+// the only curves drawn here are the four arcs inside Circle. Exporting it
+// later is additive; withdrawing it once something depends on it is not.
+func (p *Path) cubeTo(b, c, d Point) {
 	if len(p.verbs) == 0 {
 		p.MoveTo(d)
 		return
 	}
 	p.verbs = append(p.verbs, verbCube)
-	p.pts = append(p.pts, b, c, d)
+	p.add(b)
+	p.add(c)
+	p.add(d)
 }
 
 // Ring adds a closed subpath through pts. The closing segment is implicit, so
@@ -143,10 +201,10 @@ func (p *Path) Circle(c Point, r float32) {
 	// Angle increasing, with y down the screen, is positive by the surveyor's
 	// formula. Right, down, left, up.
 	p.MoveTo(Point{c.X + r, c.Y})
-	p.CubeTo(Point{c.X + r, c.Y + k}, Point{c.X + k, c.Y + r}, Point{c.X, c.Y + r})
-	p.CubeTo(Point{c.X - k, c.Y + r}, Point{c.X - r, c.Y + k}, Point{c.X - r, c.Y})
-	p.CubeTo(Point{c.X - r, c.Y - k}, Point{c.X - k, c.Y - r}, Point{c.X, c.Y - r})
-	p.CubeTo(Point{c.X + k, c.Y - r}, Point{c.X + r, c.Y - k}, Point{c.X + r, c.Y})
+	p.cubeTo(Point{c.X + r, c.Y + k}, Point{c.X + k, c.Y + r}, Point{c.X, c.Y + r})
+	p.cubeTo(Point{c.X - k, c.Y + r}, Point{c.X - r, c.Y + k}, Point{c.X - r, c.Y})
+	p.cubeTo(Point{c.X - r, c.Y - k}, Point{c.X - k, c.Y - r}, Point{c.X, c.Y - r})
+	p.cubeTo(Point{c.X + k, c.Y - r}, Point{c.X + r, c.Y - k}, Point{c.X + r, c.Y})
 }
 
 // replay walks the path into a rasterizer, closing every subpath.

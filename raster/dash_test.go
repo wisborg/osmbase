@@ -51,7 +51,7 @@ func TestDash_RunCrossesASegmentBoundaryWithoutBreaking(t *testing.T) {
 		{{X: 0, Y: 0}, {X: 8, Y: 0}, {X: 8, Y: 2}},
 		{{X: 8, Y: 4}, {X: 8, Y: 8}},
 	}
-	if got := raster.Dash(line, []float32{10, 2}, 0); !samePoints(got, want) {
+	if got, _ := raster.Dash(line, []float32{10, 2}, 0); !samePoints(got, want) {
 		t.Errorf("dashing 10 on 2 off gave\n got  %v\n want %v", got, want)
 	}
 }
@@ -70,7 +70,7 @@ func TestDash_PhaseStartsThePatternPartWayThrough(t *testing.T) {
 		{{X: 6, Y: 0}, {X: 10, Y: 0}},
 		{{X: 14, Y: 0}, {X: 16, Y: 0}},
 	}
-	if got := raster.Dash(line, []float32{4, 4}, 2); !samePoints(got, want) {
+	if got, _ := raster.Dash(line, []float32{4, 4}, 2); !samePoints(got, want) {
 		t.Errorf("dashing 4 on 4 off at phase 2 gave\n got  %v\n want %v", got, want)
 	}
 }
@@ -83,9 +83,9 @@ func TestDash_PhaseStartsThePatternPartWayThrough(t *testing.T) {
 // period further on, -6 is one period back.
 func TestDash_PhaseIsModuloThePatternAndAcceptsAnyValue(t *testing.T) {
 	line := []raster.Point{{X: 0, Y: 0}, {X: 16, Y: 0}}
-	want := raster.Dash(line, []float32{4, 4}, 2)
+	want, _ := raster.Dash(line, []float32{4, 4}, 2)
 	for _, phase := range []float32{10, 802, -6, -14} {
-		if got := raster.Dash(line, []float32{4, 4}, phase); !samePoints(got, want) {
+		if got, _ := raster.Dash(line, []float32{4, 4}, phase); !samePoints(got, want) {
 			t.Errorf("phase %v gave\n got  %v\n want %v (the same as phase 2)", phase, got, want)
 		}
 	}
@@ -105,7 +105,7 @@ func TestDash_OddLengthPatternSwapsInkAndGapOnTheSecondCycle(t *testing.T) {
 		{{X: 8, Y: 0}, {X: 12, Y: 0}},
 		{{X: 18, Y: 0}, {X: 20, Y: 0}},
 	}
-	if got := raster.Dash(line, []float32{6, 2, 4}, 0); !samePoints(got, want) {
+	if got, _ := raster.Dash(line, []float32{6, 2, 4}, 0); !samePoints(got, want) {
 		t.Errorf("dashing [6 2 4] gave\n got  %v\n want %v", got, want)
 	}
 }
@@ -133,7 +133,7 @@ func TestDash_APatternThatCannotDashDrawsSolid(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := raster.Dash(line, tc.pattern, 0); !samePoints(got, solid) {
+			if got, _ := raster.Dash(line, tc.pattern, 0); !samePoints(got, solid) {
 				t.Errorf("pattern %v gave\n got  %v\n want %v", tc.pattern, got, solid)
 			}
 		})
@@ -166,7 +166,7 @@ func TestDash_DegenerateInputDoesNotPanicOrSpin(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := raster.Dash(tc.line, tc.pattern, 0); !samePoints(got, tc.want) {
+			if got, _ := raster.Dash(tc.line, tc.pattern, 0); !samePoints(got, tc.want) {
 				t.Errorf("got  %v\nwant %v", got, tc.want)
 			}
 		})
