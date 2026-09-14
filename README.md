@@ -12,10 +12,13 @@ that program is for.
 
 ## Status
 
-Early. The archive reader, the vector tile decoder, the rasterizer that fills, strokes
-and dashes paths, and the synthetic fixtures they are tested against are written, and a
-command-line tool reads real archives with them. Nothing joins the two halves into a map
-yet.
+Early, and it draws a map. The archive reader, the vector tile decoder, the projection,
+the rasterizer that fills, strokes and dashes paths, and the renderer that joins them
+are written, along with the synthetic fixtures they are tested against. A command-line
+tool reads real archives and writes a PNG.
+
+Still to come: the on-disk store, so that a map can be drawn with no archive to hand; the
+acquisition command that fills it; the styling work; and place names.
 
 **[docs/architecture.md](docs/architecture.md) is the design this is being built to.** It
 carries the reasoning behind every decision, including the alternatives that were rejected
@@ -23,19 +26,20 @@ and why, and the list of things it assumes but has not yet verified.
 
 ## Trying it out
 
-The rasterizer draws what it is given, but nothing yet turns tiles into paths for it, so
-there is no map to look at. There is a command that reads real tiles and says what is in
-them, and writes one tile as GeoJSON you can paste straight into
-[geojson.io](https://geojson.io):
-
 ```
 go build -o osmbase ./cmd/osmbase
 
 ./osmbase                                              # the subcommands
+./osmbase render --lat -33.8568 --lon 151.2153 --out map.png
 ./osmbase inspect                                      # an archive's header and shape
 ./osmbase tile --lat -33.8568 --lon 151.2153 --tags    # what one tile holds
 ./osmbase geojson --lat -33.8568 --lon 151.2153 --layer roads > roads.geojson
 ```
+
+`render` writes the PNG and then says what is in it: how much of the image tiles were
+found for, how much was drawn from a shallower tile than asked for, and how much is
+hatched because there was nothing at all. Overzoomed vector data is sharp, so it looks
+complete; the report is the only way to tell.
 
 With no SOURCE those read a Protomaps planet archive over HTTP range requests — a few
 hundred kilobytes out of 125 GiB, and nothing stored — which tells that host which few

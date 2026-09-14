@@ -1,11 +1,11 @@
-// Command osmbase reads a PMTiles vector-tile archive and reports what is in
-// it: the archive's shape, one tile's contents, or one tile as GeoJSON.
+// Command osmbase reads a PMTiles vector-tile archive and draws or describes
+// what is in it: the archive's shape, one tile's contents, one tile as GeoJSON,
+// or a map of the ground around a coordinate as a PNG.
 //
-// It is the program the library is tried out through. Nothing in it draws a
-// map -- there is no rasterizer yet -- so the useful thing it can do is hand
-// back real geometry in a form a person can look at, which is what the geojson
-// subcommand is for: paste its output into geojson.io and the tile is on the
-// screen.
+// It is the program the library is tried out through, and render is the point
+// of it: everything else hands back geometry for a person to look at
+// elsewhere, and that one puts the picture on the screen with no consumer
+// involved.
 //
 // This is an application rather than the library, which is why it is allowed
 // to name a default archive to fetch from. The library ships no default source
@@ -50,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = tileCommand(args[1:], stdout, stderr)
 	case "geojson":
 		err = geojsonCommand(args[1:], stdout, stderr)
+	case "render":
+		err = renderCommand(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "osmbase: there is no %q command\n\n", args[0])
 		usage(stderr)
@@ -78,12 +80,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 // first thing a person does with an unfamiliar command is run it bare, and an
 // error message with no list of what to type instead is a dead end.
 func usage(w io.Writer) {
-	fmt.Fprint(w, `osmbase reads a PMTiles vector-tile archive and says what is inside it.
+	fmt.Fprint(w, `osmbase reads a PMTiles vector-tile archive and draws or describes what is
+inside it.
 
 usage:
   osmbase <command> [flags] [SOURCE]
 
 commands:
+  render    the map around a coordinate, as a PNG
   inspect   the archive's header, sections and root directory
   tile      what one tile holds: layers, feature counts, geometry types, tags
   geojson   one tile as GeoJSON on stdout, to paste into geojson.io

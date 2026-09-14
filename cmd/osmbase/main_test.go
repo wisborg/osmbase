@@ -177,7 +177,7 @@ func TestRun_EveryCommandHelpCarriesAWorkedExampleAndTheSourceNotice(t *testing.
 			t.Errorf("%s -h does not say that the default contacts a third party", cmd)
 		}
 	}
-	for _, cmd := range []string{"tile", "geojson"} {
+	for _, cmd := range []string{"tile", "geojson", "render"} {
 		r := runCLI(t, cmd, "-h")
 		// A worked example with coordinates in it, so that the first run is a
 		// copy and paste rather than a guess about argument order.
@@ -190,11 +190,14 @@ func TestRun_EveryCommandHelpCarriesAWorkedExampleAndTheSourceNotice(t *testing.
 // TestRun_UnknownCommandSaysSo distinguishes a typo from a failure: exit 2 and
 // the list of what does exist.
 func TestRun_UnknownCommandSaysSo(t *testing.T) {
-	r := runCLI(t, "render")
+	// "draw" is deliberately a near miss for a command that does exist. The
+	// name used here was "render" until render became one, which is the way
+	// this test goes stale: it has to name something the program does not do.
+	r := runCLI(t, "draw")
 	if r.code != 2 {
 		t.Errorf("exit code %d, want 2", r.code)
 	}
-	if !strings.Contains(r.stderr, `"render"`) || !strings.Contains(r.stderr, "geojson") {
+	if !strings.Contains(r.stderr, `"draw"`) || !strings.Contains(r.stderr, "geojson") {
 		t.Errorf("stderr should name the unknown command and list the real ones:\n%s", r.stderr)
 	}
 }
