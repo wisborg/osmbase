@@ -582,7 +582,7 @@ resolutions. P6: boundary derivation wall time, peak memory, polygon count and o
 |---|---|---|
 | 1 | `pmtiles` | Golden tile bytes out of a synthetic archive |
 | 2 | `mvt`, including ring normalisation | Every geometry command type against a hand-built fixture |
-| 3 | `slice` | Fill, evict, reopen, resume a partial cell |
+| 3 | `slice` | Fill, evict, reopen, resume a partial cell. **Built**, and a store filled from the real archive renders with no network in scope |
 | 4a | `raster` | Golden PNGs. No map data involved |
 | 4 | `acquire` | A local HTTP test server with range support |
 | 5 | `render` | A known coordinate is water; a road from one tile draws over landuse from another |

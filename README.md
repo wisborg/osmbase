@@ -12,13 +12,17 @@ that program is for.
 
 ## Status
 
-Early, and it draws a map. The archive reader, the vector tile decoder, the projection,
-the rasterizer that fills, strokes and dashes paths, and the renderer that joins them
-are written, along with the synthetic fixtures they are tested against. A command-line
-tool reads real archives and writes a PNG.
+Early, and it draws a map offline. The archive reader, the vector tile decoder, the
+projection, the rasterizer that fills, strokes and dashes paths, the renderer that joins
+them, the palettes and the contrast check that keeps a route readable over them, and the
+on-disk store are all written, along with the synthetic fixtures they are tested against.
+A command-line tool reads real archives and writes a PNG.
 
-Still to come: the on-disk store, so that a map can be drawn with no archive to hand; the
-acquisition command that fills it; the styling work; and place names.
+End to end today: fill a store from a remote archive once -- Sydney Harbour is two cells
+and 2.5 MB -- and every render after that reads the disk and nothing else.
+
+Still to come: the fetch planner that coalesces byte ranges and the command that drives
+it; place names; and the fitdash adapter.
 
 **[docs/architecture.md](docs/architecture.md) is the design this is being built to.** It
 carries the reasoning behind every decision, including the alternatives that were rejected
