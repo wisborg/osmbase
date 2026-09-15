@@ -139,13 +139,13 @@ func BasemapStyle() Style {
 // that is meant to be noticed.
 func LightPalette() Palette {
 	return Palette{
-		Background: color.RGBA{R: 0xd7, G: 0xe4, B: 0xec, A: 0xff},
-		Land:       color.RGBA{R: 0xf6, G: 0xf3, B: 0xec, A: 0xff},
-		Water:      color.RGBA{R: 0xcd, G: 0xdf, B: 0xea, A: 0xff},
-		Green:      color.RGBA{R: 0xdf, G: 0xe8, B: 0xd4, A: 0xff},
-		Built:      color.RGBA{R: 0xe9, G: 0xe4, B: 0xda, A: 0xff},
-		Road:       color.RGBA{R: 0xc2, G: 0xb9, B: 0xa9, A: 0xff},
-		Ink:        color.RGBA{R: 0x8d, G: 0x86, B: 0x79, A: 0xff},
+		Background: color.RGBA{R: 0xe2, G: 0xeb, B: 0xf3, A: 0xff},
+		Land:       color.RGBA{R: 0xfa, G: 0xf7, B: 0xee, A: 0xff},
+		Water:      color.RGBA{R: 0xcf, G: 0xe4, B: 0xf7, A: 0xff},
+		Green:      color.RGBA{R: 0xdf, G: 0xf1, B: 0xd2, A: 0xff},
+		Built:      color.RGBA{R: 0xf1, G: 0xe6, B: 0xd6, A: 0xff},
+		Road:       color.RGBA{R: 0xe3, G: 0xd4, B: 0xbf, A: 0xff},
+		Ink:        color.RGBA{R: 0xd0, G: 0xc0, B: 0xa8, A: 0xff},
 		NoData:     color.RGBA{R: 0xb8, G: 0x6a, B: 0x5c, A: 0xff},
 	}
 }
@@ -158,13 +158,44 @@ func LightPalette() Palette {
 // inversion gets right and everything else it gets backwards.
 func DarkPalette() Palette {
 	return Palette{
-		Background: color.RGBA{R: 0x0e, G: 0x16, B: 0x1d, A: 0xff},
-		Land:       color.RGBA{R: 0x1a, G: 0x20, B: 0x27, A: 0xff},
-		Water:      color.RGBA{R: 0x11, G: 0x1d, B: 0x28, A: 0xff},
-		Green:      color.RGBA{R: 0x1c, G: 0x27, B: 0x20, A: 0xff},
-		Built:      color.RGBA{R: 0x23, G: 0x2a, B: 0x32, A: 0xff},
-		Road:       color.RGBA{R: 0x41, G: 0x4b, B: 0x55, A: 0xff},
-		Ink:        color.RGBA{R: 0x5c, G: 0x67, B: 0x72, A: 0xff},
+		Background: color.RGBA{R: 0x0b, G: 0x12, B: 0x18, A: 0xff},
+		Land:       color.RGBA{R: 0x1b, G: 0x1e, B: 0x22, A: 0xff},
+		Water:      color.RGBA{R: 0x0d, G: 0x1e, B: 0x30, A: 0xff},
+		Green:      color.RGBA{R: 0x12, G: 0x25, B: 0x16, A: 0xff},
+		Built:      color.RGBA{R: 0x24, G: 0x22, B: 0x1f, A: 0xff},
+		Road:       color.RGBA{R: 0x2b, G: 0x2b, B: 0x2e, A: 0xff},
+		Ink:        color.RGBA{R: 0x33, G: 0x30, B: 0x28, A: 0xff},
 		NoData:     color.RGBA{R: 0x7a, G: 0x3f, B: 0x36, A: 0xff},
+	}
+}
+
+// LightOverlay and DarkOverlay are the overlay inks each built-in palette was
+// tuned against.
+//
+// They exist so the built-ins are CHECKABLE: a palette on its own cannot pass
+// or fail CheckContrast, because the question is always "against what". Without
+// a stated reference, the library would ship two palettes nobody had verified
+// and a test that could only be run by a consumer.
+//
+// They are not a recommendation and a consumer should pass its own. What they
+// say is which END of the range each palette is for, and that is the thing a
+// caller most often gets wrong: a light map with light overlay inks is a route
+// nobody can see, which is exactly what the first light palette here did --
+// a white line measured 1.11 against its land, which is invisible.
+func LightOverlay() Overlay {
+	return Overlay{
+		Foreground: color.RGBA{R: 0x1a, G: 0x1a, B: 0x1a, A: 0xff},
+		Accent:     color.RGBA{R: 0xb3, G: 0x24, B: 0x0f, A: 0xff},
+		Highlight:  color.RGBA{R: 0x43, G: 0x25, B: 0x99, A: 0xff},
+		Dim:        color.RGBA{R: 0x5e, G: 0x5e, B: 0x5e, A: 0xff},
+	}
+}
+
+func DarkOverlay() Overlay {
+	return Overlay{
+		Foreground: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+		Accent:     color.RGBA{R: 0xff, G: 0x5b, B: 0x3c, A: 0xff},
+		Highlight:  color.RGBA{R: 0x9a, G: 0x7c, B: 0xf0, A: 0xff},
+		Dim:        color.RGBA{R: 0x8a, G: 0x8a, B: 0x8a, A: 0xff},
 	}
 }

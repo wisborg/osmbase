@@ -105,6 +105,29 @@ type projection struct {
 	// with tileZoom the nearest integer to zoom it is always between 0.71 and
 	// 1.41.
 	//
+	// # Why a stroke is not the same pixel width at every image size
+	//
+	// This holds stroke thickness fixed WITHIN a zoom step and not across one.
+	// Hold the ground fixed and grow the image by a third and every stroke
+	// grows by a third, which is the property the design asks for. Double the
+	// image at the same ground and the target zoom increments instead, so the
+	// picture becomes a more detailed map drawn at a similar thickness.
+	//
+	// That second behaviour is deliberate and it is the right one. The
+	// alternative -- a reference resolution on the View, so that widths scale
+	// with image size alone -- was considered and rejected, because it fixes
+	// the smaller half of the problem and leaves the larger half broken. What
+	// actually changes with image size is the DETAIL: a 4K frame of the same
+	// ground crosses a zoom boundary and gains buildings, minor roads and
+	// footpaths the 1080p frame did not have. Pinning stroke width while the
+	// feature count doubles does not give two sizes of one picture; it gives a
+	// denser map with strokes too heavy for its density.
+	//
+	// So a caller wanting two sizes of the SAME picture renders once and
+	// scales the image, which is a resampling question rather than a styling
+	// one. A caller rendering at two sizes for two purposes wants two maps,
+	// and gets them.
+	//
 	// It is computed from the view's target zoom and NOT from the zoom a tile
 	// was actually read at. When a tile is missing and an ancestor is drawn in
 	// its place, the ancestor's geometry is placed by its own transform but its

@@ -464,6 +464,31 @@ because the route, the covered prefix and the position marker have to read again
 
 **That test is the real deliverable of the styling work.** The colours are tuning.
 
+It is built, and building it changed the design in one way worth recording: there are
+THREE constraints, not two, and they need TWO metrics.
+
+The two above are luminance questions and WCAG 2's contrast ratio answers them: no map ink
+above 4.5 against the background, borrowing the body-text threshold as a ceiling because
+an ink as prominent as text is content rather than context; and every overlay ink at or
+above 3.0 against every map ink, which is WCAG's own minimum for graphical objects, and a
+route line is exactly that.
+
+The third is that the map must still be legible AS a map -- water told from parkland, road
+from built ground -- and contrast ratio cannot express it. The reason is forced rather
+than incidental. Clearing the overlay threshold against a dark theme's inks pins every map
+ink below a luminance of about 0.05, and the widest contrast ratio available inside that
+band is about 1.74. So a basemap that satisfies the first two constraints CANNOT separate
+its roles by luminance and must separate them by hue -- and contrast ratio is a function of
+luminance alone, so two colours of equal lightness score exactly 1.00 however different
+they look. Role separation is therefore measured in CIE76 delta-E, with a floor of 6.
+
+Both built-in palettes satisfy all three, verified against a stated reference overlay,
+because a palette alone cannot pass or fail: the question is always "against what".
+
+The negative case is not hypothetical. The first light palette this library shipped put a
+white route line at 1.11 against its own land -- an invisible stroke on a rendered map that
+looked entirely correct. That palette is kept as the fixture the check must reject.
+
 ## Attribution
 
 A rendered image is a Produced Work under the ODbL. Attribution is required; share-alike
