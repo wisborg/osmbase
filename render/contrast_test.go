@@ -113,9 +113,9 @@ func TestContrastRatioMatchesTheStandard(t *testing.T) {
 //
 // Contrast ratio is a function of luminance alone. Two colours of equal
 // luminance have a ratio of exactly 1 however different they look, so it
-// cannot answer "can these two areas be told apart" -- and it must not be
-// asked to, because clearing the overlay threshold pins every map ink into a
-// band whose widest available ratio is about 1.74.
+// cannot answer "can these two areas be told apart" -- and for a dark palette
+// it must not be asked to, because clearing the overlay threshold pins every
+// map ink into a band whose widest available ratio is 2.03.
 func TestColourDistanceSeesHueWhereContrastRatioCannot(t *testing.T) {
 	// Chosen to sit at near-identical luminance and opposite hue.
 	blue := color.RGBA{R: 0x00, G: 0x5c, B: 0xc8, A: 0xff}
@@ -127,5 +127,72 @@ func TestColourDistanceSeesHueWhereContrastRatioCannot(t *testing.T) {
 	if d := render.ColourDistance(blue, olive); d < render.MinRoleSeparation {
 		t.Errorf("two obviously different colours measure %.1f apart, below the threshold of %.1f",
 			d, render.MinRoleSeparation)
+	}
+}
+
+// TestContrastRatioUnpremultipliesItsInput pins the bug that made this
+// package's agreement with fitdash aspirational rather than real.
+//
+// Go's color.RGBA is alpha-premultiplied by definition, so a consumer
+// expressing a half-transparent ink the obvious way -- converting its own
+// theme colour with color.RGBAModel -- hands over channels already scaled by
+// the alpha. Read directly, a mid grey at 50% alpha measured 1.97 against the
+// dark background where the colour itself is 5.46: CheckContrast would pass
+// and the ink the viewer actually sees would fail.
+func TestContrastRatioUnpremultipliesItsInput(t *testing.T) {
+	grey := color.NRGBA{R: 0x8a, G: 0x8a, B: 0x8a, A: 0xff}
+	half := color.NRGBA{R: 0x8a, G: 0x8a, B: 0x8a, A: 0x80}
+	bg := render.DarkPalette().Background
+
+	full := render.ContrastRatio(grey, bg)
+	premultiplied := render.ContrastRatio(color.RGBAModel.Convert(half), bg)
+
+	// The colour is the same; only the alpha differs. A ratio is a property of
+	// the colour, so the two must agree -- but not exactly, and the tolerance
+	// is the honest part of this test. Premultiplying 0x8a by an alpha of 0x80
+	// gives 0x45, and 0x45 does not divide back to 0x8a: the round trip
+	// through eight-bit channels loses about a level, which moves the ratio by
+	// a few hundredths. Exact agreement is unavailable at any implementation
+	// quality, so the assertion is that the two are the same NUMBER rather
+	// than the same bits. Before the fix they were 5.46 and 1.97.
+	if diff := full - premultiplied; diff > 0.15 || diff < -0.15 {
+		t.Errorf("the same grey measured %.2f opaque and %.2f at half alpha; "+
+			"the premultiplied channels are being read as the colour", full, premultiplied)
+	}
+}
+
+// TestTheHatchIsHeldToItsOwnConstraints records which of the four rules apply
+// to NoData and which deliberately does not, because it was in NONE of them
+// and the obvious repair -- adding it everywhere -- is unsatisfiable.
+//
+// It must stand clear of the background, since a gap painted in something
+// background-ish is indistinguishable from ocean and from a crash. It must not
+// be mistakable for a map role. It is NOT held to the overlay threshold: a gap
+// is filled with the background and then struck with diagonal lines a sixth of
+// their spacing wide, so a route crossing one lies on background for seven
+// eighths of its length. Requiring 3:1 against the hatch ink would price in a
+// solid fill that never happens, and cannot be satisfied anyway, because the
+// hatch must also stand 3:1 clear of the background while the overlay inks
+// span the range between the two.
+func TestTheHatchIsHeldToItsOwnConstraints(t *testing.T) {
+	p := render.DarkPalette()
+
+	if r := render.ContrastRatio(p.NoData, p.Background); r < render.MinNoDataRatio {
+		t.Errorf("the hatch is %.2f from the background, below %.2f", r, render.MinNoDataRatio)
+	}
+
+	// Sunk into the background, it must fail.
+	invisible := p
+	invisible.NoData = color.RGBA{R: 0x10, G: 0x16, B: 0x1c, A: 0xff}
+	if err := invisible.CheckContrast(render.DarkOverlay()); err == nil {
+		t.Error("a hatch the colour of the background passed; a gap would read as ocean")
+	} else if !strings.Contains(err.Error(), "NoData") {
+		t.Errorf("the failure does not name the hatch:\n%v", err)
+	}
+
+	// But the shipped hatch is close to the overlay inks, and that is allowed.
+	if r := render.ContrastRatio(p.NoData, render.DarkOverlay().Dim); r >= render.MinOverlayRatio {
+		t.Log("note: the shipped hatch happens to clear the overlay threshold; " +
+			"the point of this test is that it is not REQUIRED to")
 	}
 }

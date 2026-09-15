@@ -475,12 +475,25 @@ route line is exactly that.
 
 The third is that the map must still be legible AS a map -- water told from parkland, road
 from built ground -- and contrast ratio cannot express it. The reason is forced rather
-than incidental. Clearing the overlay threshold against a dark theme's inks pins every map
-ink below a luminance of about 0.05, and the widest contrast ratio available inside that
-band is about 1.74. So a basemap that satisfies the first two constraints CANNOT separate
-its roles by luminance and must separate them by hue -- and contrast ratio is a function of
-luminance alone, so two colours of equal lightness score exactly 1.00 however different
-they look. Role separation is therefore measured in CIE76 delta-E, with a floor of 6.
+than incidental, for a dark palette. Clearing the overlay threshold against a dark theme's
+inks pins every map ink below a luminance of 0.0514, and the widest contrast ratio
+available inside that band is 2.03. So a dark basemap satisfying the first two constraints
+CANNOT separate its roles by luminance and must separate them by hue -- and contrast ratio
+is a function of luminance alone, so two colours of equal lightness score exactly 1.00
+however different they look.
+
+A light palette is the counterexample and the general form of the claim is false: its
+dimmest overlay ink is a near-black foreground, so the algebra runs the other way and map
+inks are pinned ABOVE a luminance of about 0.131, with ratios up to 5.4 available. One
+threshold serves both because the dark case binds.
+
+Role separation is therefore measured as a perceptual colour difference, with a floor of 6.
+CIEDE2000 rather than the simpler CIE76, because CIE76 reads 10% to 36% high against these
+palettes and every deviation is in the unsafe direction: its blind spot is the lightness
+weighting at the extremes of L*, and the first two constraints force both palettes to
+exactly those extremes. The formula is checked against the Sharma-Wu-Dalal reference pairs,
+since forty lines of constants with no external check would be a worse bet than the metric
+it replaced.
 
 Both built-in palettes satisfy all three, verified against a stated reference overlay,
 because a palette alone cannot pass or fail: the question is always "against what".
