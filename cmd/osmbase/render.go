@@ -188,6 +188,32 @@ func viewAround(z uint8, lon, lat float64, width, height int) (render.View, erro
 		return render.View{}, usageErrorf("--width %d at --zoom %d is wider than the whole world, which is %.0f pixels across at that zoom; use a deeper --zoom or a narrower image",
 			width, z, world)
 	}
+
+	// The same question on the other axis, and it has to be asked HERE rather
+	// than left to the projection, because the two directions fail differently.
+	//
+	// Off the end of the world in longitude produces a number outside [-180,
+	// 180] that nothing downstream will accept. Off the end in latitude does
+	// not: Unproject runs past the Mercator cut happily, Bounds.validate
+	// accepts anything up to 90, and then the projection CLAMPS -- so the
+	// rectangle silently loses height and the scale comes out larger than the
+	// zoom that was asked for. Measured at 1024x768: --lat 80 --zoom 3 asks
+	// for 768 pixels of world above the centre and gets 614, so the picture is
+	// drawn at zoom 3.32 with the requested coordinate nowhere near the middle
+	// of it, and every number in the report is the post-clamp one and reads as
+	// correct.
+	//
+	// The check is on the projected axis rather than on latitude, because the
+	// clamp is what it is guarding against and the clamp lives there.
+	if top := cy - float64(height)/(2*world); top < 0 {
+		return render.View{}, usageErrorf("--height %d at --zoom %d reaches past the north edge of the map at --lat %g; the world is %.0f pixels tall at that zoom and only %.0f of them lie north of there, so use a deeper --zoom, a shorter image, or a latitude further from the pole",
+			height, z, lat, world, cy*world)
+	}
+	if bottom := cy + float64(height)/(2*world); bottom > 1 {
+		return render.View{}, usageErrorf("--height %d at --zoom %d reaches past the south edge of the map at --lat %g; the world is %.0f pixels tall at that zoom and only %.0f of them lie south of there, so use a deeper --zoom, a shorter image, or a latitude further from the pole",
+			height, z, lat, world, (1-cy)*world)
+	}
+
 	return render.View{
 		Bounds: render.Bounds{West: west, South: south, East: east, North: north},
 		Width:  width, Height: height,

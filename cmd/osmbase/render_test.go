@@ -118,6 +118,17 @@ func TestRender_RefusesWhatItCannotDraw(t *testing.T) {
 		{"unknown palette", []string{"render", archive, "--lat", "0", "--lon", "0", "--palette", "sepia", "--out", out}, "light and dark"},
 		{"wider than the world", []string{"render", archive, "--lat", "0", "--lon", "0", "--zoom", "0", "--width", "4000", "--out", out}, "wider than the whole world"},
 		{"no image", []string{"render", archive, "--lat", "0", "--lon", "0", "--width", "0", "--out", out}, "is not an image"},
+
+		// The y axis, which was missed when the x axis was written, and fails
+		// in a way the x axis does not: nothing downstream rejects a latitude
+		// past the Mercator cut, the projection simply clamps, so the view
+		// silently loses height and is drawn at a larger scale than the zoom
+		// asked for. Measured before the guard existed, --lat 80 --zoom 3 at
+		// 1024x768 drew at continuous zoom 3.32 with the requested coordinate
+		// 96 pixels above the middle of the image, and reported the
+		// post-clamp bounds as though they were what had been asked for.
+		{"taller than the world to the north", []string{"render", archive, "--lat", "80", "--lon", "0", "--zoom", "3", "--height", "768", "--out", out}, "past the north edge"},
+		{"taller than the world to the south", []string{"render", archive, "--lat", "-80", "--lon", "0", "--zoom", "3", "--height", "768", "--out", out}, "past the south edge"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := runCLI(t, tc.args...)

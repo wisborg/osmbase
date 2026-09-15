@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"image/color"
 	"math"
 
 	"github.com/wisborg/osmbase/mvt"
@@ -43,6 +44,34 @@ type drawer struct {
 // Nothing is filled here. The whole point is that the path outlives this call
 // and accumulates the same rule's features from every tile of the view, so that
 // one fill covers the lot; see the package comment and trap T1.
+// drawRule appends every tile's contribution to one rule and fills once.
+//
+// It owns the tile loop, and that is the whole point of its existence. The
+// invariant is that a rule is ONE fill fed by every tile, because compositing
+// tiles separately leaves a permanent 24% hairline along every tile edge --
+// trap T1, which the design calls the most likely "works on the tile I tested"
+// bug in the project. While the caller held the tile loop, both nestings
+// type-checked and the invariant rested on a comment. Here the wrong version
+// cannot be written without taking the loop back out of this function, which
+// is a visible thing to do rather than an easy mistake.
+//
+// It returns whether anything was appended, so the caller can skip the fill
+// for a rule that matched nothing.
+func (d *drawer) drawRule(s *raster.Surface, rule *Rule, tiles []drawTile, ink color.Color) {
+	d.path.Reset()
+	for _, dt := range tiles {
+		d.appendTile(rule, dt)
+	}
+	// Nothing here tracks the extent of what was appended. raster.Path
+	// maintains its own bounding box as points arrive and Surface.Fill returns
+	// immediately when that box misses the surface, so a rule whose features
+	// all landed outside costs one comparison rather than a second walk over
+	// geometry this package has just handed over.
+	if !d.path.Empty() {
+		s.Fill(&d.path, ink)
+	}
+}
+
 func (d *drawer) appendTile(rule *Rule, dt drawTile) {
 	layer, ok := dt.tile.Layer(rule.Layer)
 	if !ok {

@@ -563,3 +563,60 @@ func TestRender_OffSurfaceGeometryIsClippedRatherThanWalked(t *testing.T) {
 	// so what is underneath is land.
 	at(t, res.Image, 128, 128, testPalette.Land, "the overzoomed ancestor still draws the right thing")
 }
+
+// TestRender_APolygonSpanningTwoTilesHasNoSeam is the narrower half of trap
+// T1, and the reason the road-over-landuse test above is not enough.
+//
+// That test catches a full loop swap -- tiles outside, rules inside -- because
+// it destroys z-order across tiles. It does NOT catch the subtler wrong
+// refactor: keeping rules outside and moving the FILL inside the tile loop.
+// Z-order survives that, every other test in this package passes, and the
+// picture grows a permanent hairline along every tile edge in a shade that is
+// a legitimate darker version of the thing being drawn.
+//
+// The arithmetic is in raster's own seam tests: two abutting half-covered
+// edges summed in one pass give 1.0, composited in two passes give
+// 0.5 + 0.5*(1-0.5) = 0.75. What is pinned here is that the renderer actually
+// arranges the one-pass case, at the level where the mistake would be made.
+//
+// Both tiles are filled edge to edge with the same layer and kind, so the two
+// halves of one apparent polygon meet exactly on the seam. Any pixel there
+// that is not the full ink is the hairline.
+func TestRender_APolygonSpanningTwoTilesHasNoSeam(t *testing.T) {
+	const z, ty = 4, 6
+
+	src := newSource()
+	src.put(t, z, 9, ty, wholeTile("water", "water"))
+	src.put(t, z, 10, ty, wholeTile("water", "water"))
+
+	// The width is chosen so the tile boundary lands MID-PIXEL, and that
+	// detail is the whole test. Two tiles 256 pixels wide each put the seam at
+	// x=256 exactly, every pixel belongs wholly to one tile or the other, and
+	// separate fills produce no artefact at all -- which is how the first
+	// version of this test passed against the very mutation it was written to
+	// catch. At 501 pixels across, each tile is 250.5 wide, the seam falls
+	// inside the pixel at x=250, and that pixel is half covered by each side.
+	// Summed in one pass it is full water; composited in two it is
+	// 0.5 + 0.5*(1-0.5) = 0.75 of the way from the background, which is the
+	// hairline.
+	west, _, _, north, err := mercator.TileBounds(z, 9, ty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, south, east, _, err := mercator.TileBounds(z, 10, ty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := render.View{
+		Bounds: render.Bounds{West: west, South: south, East: east, North: north},
+		Width:  501, Height: 250,
+	}
+	res := draw(t, src, v)
+
+	for _, x := range []int{249, 250, 251} {
+		for _, y := range []int{40, 125, 210} {
+			at(t, res.Image, x, y, testPalette.Water,
+				"two tiles' halves of one water polygon must meet without a seam")
+		}
+	}
+}

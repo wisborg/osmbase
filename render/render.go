@@ -195,20 +195,10 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("render: drawing rule %d of %d, layer %q: %w", i, len(r.style.Rules), rule.Layer, err)
 		}
-		d.path.Reset()
-		// Every tile, into one path, then one fill. The loop is this way round
-		// -- rules outside, tiles inside -- and swapping it is trap T1.
-		for _, dt := range tiles {
-			d.appendTile(rule, dt)
-		}
-		// Nothing here tracks the extent of what was appended. raster.Path
-		// maintains its own bounding box as points arrive and Surface.Fill
-		// returns immediately when that box misses the surface, so a rule
-		// whose features all landed outside costs one comparison rather than a
-		// second walk over geometry this package has just handed over.
-		if !d.path.Empty() {
-			surface.Fill(&d.path, r.palette.colour(rule.Paint.Role))
-		}
+		// One call per rule, and the tile loop lives inside it. See drawRule:
+		// the nesting is trap T1 and it is enforced by where the loop is
+		// rather than by a comment asking for it.
+		d.drawRule(surface, rule, tiles, r.palette.colour(rule.Paint.Role))
 	}
 
 	// The hatch goes on last so that it is over everything, including any ink a

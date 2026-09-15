@@ -80,12 +80,6 @@ type drawTile struct {
 	ref  tileRef
 	tile *mvt.Tile
 	clip box
-	// overzoom records that this tile was read from a shallower zoom than the
-	// view asked for. It is reported rather than hidden: overzoomed vector data
-	// is sharp, so it looks complete, and the only way a caller can tell that
-	// the detail it is not seeing exists somewhere is to be told. See
-	// docs/architecture.md, trap T4.
-	overzoom bool
 }
 
 // coverage is the honest account of what the tiles covered, measured in
@@ -194,7 +188,7 @@ func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, covera
 			if clip.empty() {
 				continue
 			}
-			tiles = append(tiles, drawTile{ref: ref, tile: tile, clip: clip, overzoom: ref != want})
+			tiles = append(tiles, drawTile{ref: ref, tile: tile, clip: clip})
 		}
 	}
 	return tiles, cov, nil
