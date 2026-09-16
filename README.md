@@ -31,7 +31,7 @@ and why, and the list of things it assumes but has not yet verified.
 ## Trying it out
 
 ```
-go build -o osmbase ./cmd/osmbase
+make build      # or: go build -o osmbase ./cmd/osmbase
 
 ./osmbase                                              # the subcommands
 ./osmbase render --lat -33.8568 --lon 151.2153 --out map.png
