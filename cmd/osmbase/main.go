@@ -52,6 +52,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = geojsonCommand(args[1:], stdout, stderr)
 	case "render":
 		err = renderCommand(args[1:], stdout, stderr)
+	case "fetch":
+		err = fetchCommand(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "osmbase: there is no %q command\n\n", args[0])
 		usage(stderr)
@@ -91,6 +93,7 @@ commands:
   inspect   the archive's header, sections and root directory
   tile      what one tile holds: layers, feature counts, geometry types, tags
   geojson   one tile as GeoJSON on stdout, to paste into geojson.io
+  fetch     copy an area onto this machine, so rendering needs no network
 
 Run "osmbase <command> -h" for that command's flags and a worked example.
 

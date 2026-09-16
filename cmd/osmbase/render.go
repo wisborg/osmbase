@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/pmtiles"
 	"github.com/wisborg/osmbase/render"
+	"github.com/wisborg/osmbase/slice"
 )
 
 // A PMTiles reader IS a tile source, with no adapter in between.
@@ -66,6 +69,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		coords        coordFlags
 		width, height int
 		palette       string
+		store         string
 		out           string
 	)
 	fs := newFlagSet("render", renderUsage)
@@ -73,6 +77,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	fs.IntVar(&width, "width", 1024, "width of the output image in pixels")
 	fs.IntVar(&height, "height", 768, "height of the output image in pixels")
 	fs.StringVar(&palette, "palette", "light", "colours to draw with: light or dark")
+	fs.StringVar(&store, "store", "", "draw from a store filled by \"osmbase fetch\" instead of from an archive; nothing reaches the network")
 	fs.StringVar(&out, "out", "map.png", "file to write the PNG to")
 
 	source, err := parseArgs(fs, args, stdout)
@@ -92,6 +97,18 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	colours, err := paletteNamed(palette)
 	if err != nil {
 		return err
+	}
+
+	// A store and an archive are two different things to draw from, and the
+	// difference is the point of the store existing: reading one contacts
+	// nobody. They are separate flags rather than one SOURCE that guesses,
+	// because guessing wrong here means quietly reaching the network on a
+	// machine the user believed was offline.
+	if store != "" {
+		if source != "" {
+			return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
+		}
+		return renderFromStore(store, coords, width, height, colours, palette, out, stdout, stderr)
 	}
 
 	a, err := openArchive(source, stderr)
@@ -307,4 +324,71 @@ func writeRenderReport(w io.Writer, out string, v render.View, res *render.Resul
 
 func percent(f float64) string {
 	return strconv.FormatFloat(f*100, 'f', 1, 64) + "%"
+}
+
+// renderFromStore draws from a filled store instead of an archive.
+//
+// The whole of its value is in what it does NOT do: there is no range reader
+// here, no URL, and nothing that could contact anyone. slice imports neither
+// acquire nor net/http, so "this render is offline" is a property of the
+// import graph rather than a promise in a comment.
+func renderFromStore(root string, coords coordFlags, width, height int, colours render.Palette, palette, out string, stdout, stderr io.Writer) error {
+	st, err := slice.Open(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("there is no store at %s; fill one first with \"osmbase fetch --store %s\"", root, root)
+		}
+		return fmt.Errorf("opening the store at %s: %w", root, err)
+	}
+	sources, err := st.Sources()
+	if err != nil {
+		return err
+	}
+	if len(sources) == 0 {
+		return fmt.Errorf("the store at %s is empty; fill it with \"osmbase fetch --store %s\"", root, root)
+	}
+	// One source is the ordinary case. More than one means the store was
+	// filled from two archives, and picking silently would draw a map whose
+	// provenance the report then states wrongly.
+	if len(sources) > 1 {
+		names := make([]string, 0, len(sources))
+		for _, m := range sources {
+			names = append(names, m.Source)
+		}
+		return fmt.Errorf("the store at %s holds %d archives (%s) and this command can draw from one; use a store per archive",
+			root, len(sources), strings.Join(names, ", "))
+	}
+	src, err := st.Source(sources[0].ID)
+	if err != nil {
+		return err
+	}
+
+	z := uint8(coords.zoom)
+	view, err := viewAround(z, coords.lon, coords.lat, width, height)
+	if err != nil {
+		return err
+	}
+
+	r, err := render.New(src, render.Options{
+		Style:       render.BasemapStyle(),
+		Palette:     colours,
+		Attribution: sources[0].Attribution,
+	})
+	if err != nil {
+		return err
+	}
+	res, err := r.Render(context.Background(), view)
+	if err != nil {
+		if errors.Is(err, render.ErrNoCoverage) {
+			return fmt.Errorf("%w. The store at %s holds nothing near latitude %s, longitude %s; fetch that area first",
+				err, root, formatCoord(coords.lat), formatCoord(coords.lon))
+		}
+		return err
+	}
+	if err := writePNG(out, res); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "%-12s %s\n", "store", root)
+	writeRenderReport(stdout, out, view, res, palette)
+	return nil
 }

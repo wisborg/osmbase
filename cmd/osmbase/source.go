@@ -77,6 +77,22 @@ type archive struct {
 	// invite the reader to think the number meant something.
 	stats  func() (int, int64)
 	closer io.Closer
+
+	// quiet turns off the per-request trace, and is nil for a local archive.
+	//
+	// The trace is the right thing for a render, where a handful of requests
+	// are the only sign anything is happening. It is the wrong thing under a
+	// progress line: the two write to the same stream and the carriage return
+	// that redraws the progress lands in the middle of a trace line, so both
+	// become unreadable. A caller that draws its own progress turns it off.
+	quiet func()
+
+	// bytes is the archive's raw storage, which a fetch needs and a render
+	// does not. The reader above answers "where is this tile and what does it
+	// decode to"; a fetch asks instead for a span of the file covering several
+	// tiles at once, so that eighty-five tiles cost a handful of requests
+	// rather than eighty-five. See acquire.Archive.
+	bytes io.ReaderAt
 }
 
 func (a *archive) Close() error {
@@ -125,7 +141,14 @@ func openLocal(path string) (*archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &archive{Reader: r, name: path, size: info.Size(), hasSize: true, closer: r}, nil
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s for coalesced reads: %w", path, err)
+	}
+	return &archive{
+		Reader: r, name: path, size: info.Size(), hasSize: true,
+		bytes: f, closer: multiCloser{r, f},
+	}, nil
 }
 
 func openRemote(url string, usingDefault bool, stderr io.Writer) (*archive, error) {
@@ -156,7 +179,8 @@ func openRemote(url string, usingDefault bool, stderr io.Writer) (*archive, erro
 	if err != nil {
 		return nil, err
 	}
-	a := &archive{Reader: r, name: shown, remote: true, stats: src.Stats}
+	a := &archive{Reader: r, name: shown, remote: true, stats: src.Stats, bytes: src}
+	a.quiet = func() { src.Trace = nil }
 	a.size, a.hasSize = src.Size()
 	return a, nil
 }
@@ -192,4 +216,22 @@ func (a *archive) requireVectorTiles() error {
 		return fmt.Errorf("%s holds %s tiles, and this command decodes vector tiles (mvt)", a.name, t)
 	}
 	return nil
+}
+
+// multiCloser closes several things and reports the first failure.
+//
+// A local archive is opened twice: once as a tile reader and once as raw bytes
+// for coalesced fetching. Two handles on one file is cheap and the alternative
+// -- reaching inside the reader for its source -- would make the reader's own
+// field part of this package's API.
+type multiCloser []io.Closer
+
+func (m multiCloser) Close() error {
+	var first error
+	for _, c := range m {
+		if err := c.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }

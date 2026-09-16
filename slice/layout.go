@@ -117,7 +117,16 @@ type ZoomRange struct {
 
 func (z ZoomRange) String() string { return fmt.Sprintf("%d-%d", z.Min, z.Max) }
 
-func (z ZoomRange) empty() bool { return z.Max < z.Min }
+// Empty reports whether the range covers no zoom at all.
+//
+// It is exported alongside EmptyZoomRange because the zero value is a TRAP: it
+// reads as "zoom 0 to 0", so a caller that built a range and then asked
+// whether it held anything would be told it holds the whole world at its
+// shallowest. Anything outside this package that carries a ZoomRange needs
+// both halves of that.
+func (z ZoomRange) Empty() bool { return z.Max < z.Min }
+
+func (z ZoomRange) empty() bool { return z.Empty() }
 
 // contains reports whether a zoom is inside the range.
 func (z ZoomRange) contains(zoom uint8) bool { return zoom >= z.Min && zoom <= z.Max }
@@ -145,7 +154,19 @@ func (z ZoomRange) union(o ZoomRange) ZoomRange {
 // reads as "zoom 0 to 0", so a brand-new source with nothing in it would claim
 // to hold the whole world at its shallowest, and a coverage report would say
 // so.
-var emptyZoom = ZoomRange{Min: 1, Max: 0}
+var emptyZoom = EmptyZoomRange()
+
+// EmptyZoomRange is the range of a slice that holds nothing. See emptyZoom for
+// why the zero value will not do.
+func EmptyZoomRange() ZoomRange { return ZoomRange{Min: 1, Max: 0} }
+
+// Validate refuses a range that covers no zoom or reaches past the tile grid.
+//
+// It is exported because the acquisition step is handed a zoom range from an
+// archive's header, which is a number somebody else wrote, and the check it
+// needs is the one this package already makes rather than a second spelling of
+// it.
+func (z ZoomRange) Validate() error { return z.validate() }
 
 func (z ZoomRange) validate() error {
 	if z.empty() {
@@ -192,6 +213,15 @@ func cellOf(t TileRef, cellZoom uint8) (Cell, bool) {
 // The order is row-major and deterministic because it is the order a fetch
 // plan will be built in and the order an eviction report will list, and
 // neither should depend on how a map felt like iterating.
+// CellsForZoom is cellsFor for a caller that has no Store.
+//
+// Store.CellsFor is the ordinary way in, and it is the right one wherever a
+// store exists, because the store's own cell zoom is the authority for how it
+// is keyed. This exists for the one case that has no store yet: a dry run on a
+// machine that has never fetched has to cost an area without bringing a store
+// into being, since writing one is exactly what a dry run promises not to do.
+func CellsForZoom(b Bounds, cellZoom uint8) ([]Cell, error) { return cellsFor(b, cellZoom) }
+
 func cellsFor(b Bounds, cellZoom uint8) ([]Cell, error) {
 	if err := b.validate(); err != nil {
 		return nil, err

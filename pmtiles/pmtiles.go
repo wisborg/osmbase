@@ -235,8 +235,53 @@ func (r *Reader) RawTile(z uint8, x, y uint32) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	data, _, ok, err := r.rawTileByID(id, fmt.Sprintf("tile %d/%d/%d", z, x, y))
-	return data, ok, err
+	return r.rawTileByID(id, fmt.Sprintf("tile %d/%d/%d", z, x, y))
+}
+
+// Location is where one tile's stored bytes lie: an ABSOLUTE offset from the
+// start of the archive, and the stored -- that is, still compressed -- length.
+//
+// The offset being absolute is the point of the type. A directory entry
+// carries a section-relative offset, and turning that into a file offset means
+// adding the section base and checking the result lies wholly inside the
+// section the header declared -- the check that stops a damaged directory
+// addressing the rest of the file. That check ought to happen in exactly one
+// place, and handing a caller a raw Entry would be handing it the job.
+type Location struct {
+	Offset int64
+	Length int64
+}
+
+// End is the offset one byte past this tile.
+func (l Location) End() int64 { return l.Offset + l.Length }
+
+// Locate says where the tile at z/x/y is, WITHOUT reading it.
+//
+// This is what the acquisition step plans a download from, and it is the
+// reason a fetch can state its exact cost before it transfers a byte: walking
+// the directories is two or three range reads however large the archive, so
+// asking this about the eighty-five tiles of a cell costs a few kilobytes and
+// yields the precise number of bytes the download will move. A confirmation
+// prompt that can state the true cost is a different thing from one that
+// guesses, and the difference is a property of the format rather than of any
+// estimate this code could make. See docs/architecture.md, "Acquisition: the
+// only network access".
+//
+// The boolean is the same question Tile's is, and is not the same question as
+// the error: an archive legitimately holds no tile at most coordinates.
+//
+// TWO TILES MAY SHARE ONE LOCATION. The format stores an identical tile once
+// and serves it to a run of consecutive tile IDs through a single entry, which
+// is why a cell over open water is a few kilobytes rather than eighty-five
+// separate ones. A caller adding up what a download costs has to deduplicate
+// on the Location, or it will count the same bytes many times and quote a
+// figure far above what will actually be transferred.
+func (r *Reader) Locate(z uint8, x, y uint32) (Location, bool, error) {
+	id, err := ZxyToID(z, x, y)
+	if err != nil {
+		return Location{}, false, err
+	}
+	return r.locateByID(id, fmt.Sprintf("tile %d/%d/%d", z, x, y))
 }
 
 // TileByID is Tile addressed by tile ID rather than by coordinates.
@@ -257,7 +302,7 @@ func (r *Reader) TileByID(id uint64) ([]byte, bool, error) {
 // tileByID is the shared body of Tile and TileByID: find the stored bytes and
 // decompress them. what names the tile in any error.
 func (r *Reader) tileByID(id uint64, what string) ([]byte, bool, error) {
-	raw, _, ok, err := r.rawTileByID(id, what)
+	raw, ok, err := r.rawTileByID(id, what)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
@@ -268,39 +313,62 @@ func (r *Reader) tileByID(id uint64, what string) ([]byte, bool, error) {
 	return data, true, nil
 }
 
-// rawTileByID walks the directories for id and reads the stored bytes.
+// rawTileByID locates a tile and reads its stored bytes.
 //
-// It returns the directory entry alongside them. Nothing here needs it today;
-// the acquisition step will, because planning byte ranges means knowing where
-// a tile lives without reading it, and returning it now means that becomes a
-// new method rather than a rewrite of this one.
-func (r *Reader) rawTileByID(id uint64, what string) ([]byte, Entry, bool, error) {
+// Finding where a tile is and reading it are two jobs, and they are split
+// because the acquisition step wants the first without the second: planning a
+// download means knowing where every tile lives, and a planner that had to
+// read each one to find out would have downloaded the thing it was costing.
+func (r *Reader) rawTileByID(id uint64, what string) ([]byte, bool, error) {
+	loc, ok, err := r.locateByID(id, what)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	data, err := r.readAt(uint64(loc.Offset), uint32(loc.Length), r.Limits.Tile, what)
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+// locateByID walks the directories for id and returns where its bytes are.
+//
+// It reads directories -- which for a remote archive is a range request each,
+// mostly served from the leaf cache -- and never the tile data section. That
+// separation is what a dry run rests on: a plan may read an archive's index
+// and must not read a byte of its contents.
+func (r *Reader) locateByID(id uint64, what string) (Location, bool, error) {
 	entries := r.root
 	where := "the root directory"
 	for depth := 0; depth <= maxLeafDepth; depth++ {
 		e, ok := find(entries, id)
 		if !ok {
-			return nil, Entry{}, false, nil
+			return Location{}, false, nil
 		}
 		if !e.IsLeaf() {
 			offset, err := sectionOffset(r.header.TileDataOffset, r.header.TileDataLength, e, "the tile data section", what)
 			if err != nil {
-				return nil, Entry{}, false, err
+				return Location{}, false, err
 			}
-			data, err := r.readAt(offset, e.Length, r.Limits.Tile, what)
-			if err != nil {
-				return nil, Entry{}, false, err
+			// The offset is bounded by the tile data section, which the header
+			// states as a uint64, so an archive larger than 2^63 bytes would
+			// be needed to make this conversion lose anything. io.ReaderAt
+			// speaks int64 offsets, so such an archive is unreadable anyway,
+			// and saying so here is better than an offset that comes out
+			// negative further down.
+			if offset > math.MaxInt64 || uint64(e.Length) > math.MaxInt64-offset {
+				return Location{}, false, fmt.Errorf("pmtiles: %s is at offset %d of the archive, past where an io.ReaderAt can address", what, offset)
 			}
-			return data, e, true, nil
+			return Location{Offset: int64(offset), Length: int64(e.Length)}, true, nil
 		}
 		leaf, err := r.leafAt(e)
 		if err != nil {
-			return nil, Entry{}, false, fmt.Errorf("pmtiles: following %s to the leaf for %s: %w", where, what, err)
+			return Location{}, false, fmt.Errorf("pmtiles: following %s to the leaf for %s: %w", where, what, err)
 		}
 		entries = leaf
 		where = fmt.Sprintf("the leaf directory at %d", e.Offset)
 	}
-	return nil, Entry{}, false, fmt.Errorf("pmtiles: %s is still behind a leaf directory after %d of them; the archive's directories point at each other", what, maxLeafDepth)
+	return Location{}, false, fmt.Errorf("pmtiles: %s is still behind a leaf directory after %d of them; the archive's directories point at each other", what, maxLeafDepth)
 }
 
 // sectionOffset turns an entry's section-relative offset into an absolute one,
