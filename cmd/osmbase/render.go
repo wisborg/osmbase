@@ -278,6 +278,9 @@ func writePNG(path string, res *render.Result) error {
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", tmp, err)
 	}
+	// The credit goes into the image before it is encoded, never after: the
+	// file on disk is what carries the obligation. See drawCredit.
+	drawCredit(res.Image, res.Attribution)
 	if err := png.Encode(f, res.Image); err != nil {
 		f.Close()
 		os.Remove(tmp)

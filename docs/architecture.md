@@ -522,6 +522,24 @@ acquisition, from the source, and surfaced through the render result. Shaping it
 constant is how the wrong credit survives a change of source; shaping it as data means a
 slice built from something else carries something else.
 
+**It must reach the pixels, not only the report.** The command printed the credit to the
+terminal and wrote a PNG that carried none, which is a file distributed owing a credit it
+does not have. It draws the string into the image now, before encoding. The library still
+draws no text -- that is right, and is why a consumer labels in its own font -- so the
+drawing lives in the command, using the bitmap face already inside `golang.org/x/image`
+rather than reaching for a font.
+
+Two things that went wrong doing it, both worth keeping. `image.RGBA` is
+alpha-premultiplied, so a near-opaque white plate written as a straight colour composites
+as near black and the first attempt drew an invisible credit. And the bitmap face has no
+copyright sign, so it drew a missing-glyph box; unrenderable runes are transliterated now,
+because the string exists to name who is owed credit and "(c)" carries that where a dropped
+character would not.
+
+The HTML stripping is EXPORTED from the library rather than written per consumer. Every
+consumer faces the same problem, the answer is the same for all of them, and two answers to
+one question about a legal obligation is the worst category of duplication to carry.
+
 It is discharged in three places: in **every frame** that shows imagery, by the consumer,
 from the string the library returns; in **`NOTICE`**, in a data section kept separate from
 the software section, because a data licence obliges the output and a software licence
