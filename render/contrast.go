@@ -169,6 +169,45 @@ const (
 	// pairs that bind here. See ColourDistance.
 	MinRoleSeparation = 6.0
 
+	// MaxContextChroma is how saturated a map ink may be, in CIE L*a*b*
+	// chroma.
+	//
+	// It exists because the three constraints above can ALL be satisfied by a
+	// map nobody would call context. A consumer deriving a palette from its own
+	// theme produced greens and browns at chroma 48 where these built-ins sit
+	// at 6 to 15: every luminance rule held, every pair was distinguishable,
+	// the check passed, and the map shouted over the route it was drawn under.
+	//
+	// Saturation is simply a different axis from the two already measured.
+	// Contrast ratio sees only luminance, and delta-E measures the distance
+	// BETWEEN two colours rather than how far either sits from neutral, so a
+	// palette can be uniformly vivid and score perfectly on both.
+	//
+	// It is a COARSE guard, and saying so is the honest description. Every
+	// palette that has actually been looked at in a rendered frame and judged
+	// to read correctly falls between 15.5 and 28.4 -- the low end a
+	// consumer's derived palette, the high end this package's own light Ink,
+	// which is a warm tan at L* 73. The one that read as a diagram rather than
+	// a map was 48. Thirty-two sits clear of everything that worked and well
+	// below the thing that did not.
+	//
+	// Two earlier attempts are worth recording because each was wrong in an
+	// instructive way. Eighteen, chosen by taste, failed this package's own
+	// dark Green at 20.2. Twenty-four, calibrated against the dark palette
+	// alone, then failed the light one at 28.4 -- because chroma at L* 73
+	// reads as far quieter than the same chroma at L* 15, and a flat ceiling
+	// cannot see that. A threshold that scaled with lightness would be the
+	// better instrument, and would need its own calibration data to be
+	// anything but a guess dressed up as arithmetic.
+	//
+	// So this is a guard against one observed failure mode, not an aesthetic
+	// judgement. It is worth keeping at that strength: the bug it catches
+	// passed every other constraint in this file.
+	//
+	// The hatch is exempt. It is the one colour here whose job is to be
+	// noticed.
+	MaxContextChroma = 32.0
+
 	// MinNoDataRatio is how far the hatch must stand FROM the background.
 	//
 	// The only floor in this file, and the reason is that the hatch is the one
@@ -225,7 +264,18 @@ func (p Palette) CheckContrast(o Overlay) error {
 		}
 	}
 
-	// 4. The hatch has the opposite job to everything else here, so it gets
+	// 4. The map is context in SATURATION as well as in luminance. See
+	// MaxContextChroma: without this a palette can pass every rule above and
+	// still be a diagram rather than a map.
+	for _, ink := range p.context() {
+		if c := chromaOf(ink.c); c > MaxContextChroma {
+			bad = append(bad, fmt.Sprintf(
+				"%s has chroma %.1f, above %.1f: it is too saturated to sit behind anything",
+				ink.name, c, MaxContextChroma))
+		}
+	}
+
+	// 5. The hatch has the opposite job to everything else here, so it gets
 	// the opposite constraint: a FLOOR against the background rather than a
 	// ceiling. Its whole purpose is to be unmistakable for map ink -- a gap
 	// painted in something background-ish is indistinguishable from ocean and
@@ -244,6 +294,27 @@ func (p Palette) CheckContrast(o Overlay) error {
 	return fmt.Errorf("palette and overlay cannot be separated:\n  %s", strings.Join(bad, "\n  "))
 }
 
+// requireColour rejects a nil color.Color with a message that says what
+// happened.
+//
+// These two functions took color.RGBA until the premultiplication bug forced
+// them onto the interface, and an interface can be nil where a struct cannot.
+// Without this the failure is a bare "invalid memory address" from three
+// frames inside image/color, which tells a caller nothing about which of their
+// own colours they forgot to set -- and that is exactly how it first appeared,
+// out of a consumer that passed a zero-valued struct of interface fields.
+//
+// It panics rather than returning a sentinel because there is no honest number
+// to return. Treating nil as black would be worse than the crash: a palette
+// check against a dark theme would then PASS, and the consumer would ship a
+// missing ink instead of learning about it. A ratio has no zero value that
+// means "there was no colour here".
+func requireColour(c color.Color, fn string) {
+	if c == nil {
+		panic("osmbase/render: " + fn + " was given a nil colour; a color.Color field was left unset")
+	}
+}
+
 // ContrastRatio is WCAG 2's contrast ratio between two colours.
 //
 // Exported because a consumer choosing its own palette needs the same number
@@ -257,6 +328,8 @@ func (p Palette) CheckContrast(o Overlay) error {
 // lands, fitdash should drop its copy and call this one, or one binary will
 // hold two implementations of one formula and they will drift.
 func ContrastRatio(a, b color.Color) float64 {
+	requireColour(a, "ContrastRatio")
+	requireColour(b, "ContrastRatio")
 	la, lb := relativeLuminance(a), relativeLuminance(b)
 	if la < lb {
 		la, lb = lb, la
@@ -323,6 +396,8 @@ func linearizeSRGB(c float64) float64 {
 // exactly this, containing the cases where a naive implementation gets the hue
 // rotation or the angle wraparound wrong.
 func ColourDistance(a, b color.Color) float64 {
+	requireColour(a, "ColourDistance")
+	requireColour(b, "ColourDistance")
 	l1, a1, b1 := labOf(a)
 	l2, a2, b2 := labOf(b)
 	return ciede2000(l1, a1, b1, l2, a2, b2)
@@ -422,6 +497,17 @@ func hueAngle(b, ap float64) float64 {
 		h += 360
 	}
 	return h
+}
+
+// chromaOf is how far a colour sits from neutral grey in L*a*b*.
+//
+// Separate from ColourDistance because the question is different: that one asks
+// how far two colours are from EACH OTHER, and this asks how far one is from
+// having no hue at all. A palette can score well on the first while every
+// member of it fails the second.
+func chromaOf(c color.Color) float64 {
+	_, a, b := labOf(c)
+	return math.Hypot(a, b)
 }
 
 func labOf(c color.Color) (l, a, b float64) {

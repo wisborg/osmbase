@@ -495,7 +495,17 @@ exactly those extremes. The formula is checked against the Sharma-Wu-Dalal refer
 since forty lines of constants with no external check would be a worse bet than the metric
 it replaced.
 
-Both built-in palettes satisfy all three, verified against a stated reference overlay,
+A FOURTH constraint was added after a consumer shipped a palette that passed all three and
+still shouted: a ceiling on chroma. Saturation is a separate axis from both metrics above.
+Contrast ratio sees only luminance, and delta-E measures how far two colours sit from each
+other rather than how far either sits from neutral, so a uniformly vivid palette scores
+perfectly on both. The ceiling is a coarse guard rather than an aesthetic judgement -- every
+palette looked at and judged correct falls between 15.5 and 28.4, the one that read as a
+diagram was 48 -- and two earlier settings of it were wrong in instructive ways, the second
+because chroma at a light palette's lightness reads far quieter than the same chroma at a
+dark one's, which a flat ceiling cannot see.
+
+Both built-in palettes satisfy all four, verified against a stated reference overlay,
 because a palette alone cannot pass or fail: the question is always "against what".
 
 The negative case is not hypothetical. The first light palette this library shipped put a

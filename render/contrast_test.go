@@ -196,3 +196,82 @@ func TestTheHatchIsHeldToItsOwnConstraints(t *testing.T) {
 			"the point of this test is that it is not REQUIRED to")
 	}
 }
+
+// TestContrastFunctionsRejectANilColourClearly pins the message rather than
+// the crash.
+//
+// These two took color.RGBA until the premultiplication fix moved them onto
+// color.Color, and an interface can be nil where a struct cannot. That
+// regression reached a consumer: a zero-valued struct of interface fields
+// produced "invalid memory address" from three frames inside image/color,
+// which says nothing about which colour was left unset.
+//
+// The panic stays -- there is no honest float64 to return, and treating nil as
+// black would be worse than crashing, because a palette check against a dark
+// theme would then PASS and the consumer would ship the missing ink. What is
+// asserted is that the panic names the package, the function and the cause.
+func TestContrastFunctionsRejectANilColourClearly(t *testing.T) {
+	black := color.RGBA{A: 0xff}
+	for _, c := range []struct {
+		name string
+		call func()
+	}{
+		{"ContrastRatio, first argument", func() { render.ContrastRatio(nil, black) }},
+		{"ContrastRatio, second argument", func() { render.ContrastRatio(black, nil) }},
+		{"ColourDistance, first argument", func() { render.ColourDistance(nil, black) }},
+		{"ColourDistance, second argument", func() { render.ColourDistance(black, nil) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("a nil colour was accepted; the result would be a number nobody can trust")
+				}
+				msg, ok := r.(string)
+				if !ok {
+					t.Fatalf("panicked with %T (%v), want a string naming the cause", r, r)
+				}
+				for _, want := range []string{"osmbase/render", "nil colour"} {
+					if !strings.Contains(msg, want) {
+						t.Errorf("the panic does not mention %q: %s", want, msg)
+					}
+				}
+			}()
+			c.call()
+		})
+	}
+}
+
+// TestAGarishPaletteFailsEvenWhenEveryOtherRuleHolds is the chroma ceiling's
+// reason for existing, and the fixture is not invented.
+//
+// A consumer deriving a palette from its own theme produced greens and browns
+// at chroma 48 against this package's own 15 to 28. Every luminance rule held,
+// every pair was distinguishable, CheckContrast returned nil, and the rendered
+// map shouted over the route drawn on top of it. Saturation is a third axis:
+// contrast ratio sees only luminance, and delta-E measures how far two colours
+// sit from EACH OTHER rather than how far either sits from neutral, so a
+// uniformly vivid palette scores perfectly on both.
+func TestAGarishPaletteFailsEvenWhenEveryOtherRuleHolds(t *testing.T) {
+	p := render.DarkPalette()
+	garish := color.RGBA{R: 0x14, G: 0x5a, B: 0x14, A: 0xff} // chroma ~48
+	p.Green = garish
+
+	// The precondition that makes this test mean something: the substitution
+	// must break ONLY the chroma rule. If it also broke a luminance rule the
+	// failure would prove nothing about the ceiling.
+	if c := render.ColourDistance(garish, p.Background); c < render.MinRoleSeparation {
+		t.Fatalf("fixture: the garish green is only %.1f from the background, so it fails for another reason", c)
+	}
+	if r := render.ContrastRatio(garish, p.Background); r > render.MaxContextRatio {
+		t.Fatalf("fixture: the garish green is %.2f against the background, so it fails the loudness rule too", r)
+	}
+
+	err := p.CheckContrast(render.DarkOverlay())
+	if err == nil {
+		t.Fatal("a palette three times more saturated than any that has been looked at passed")
+	}
+	if !strings.Contains(err.Error(), "chroma") {
+		t.Errorf("the failure does not name saturation:\n%v", err)
+	}
+}
