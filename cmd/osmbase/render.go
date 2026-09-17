@@ -77,7 +77,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	coords.bind(fs)
 	fs.IntVar(&width, "width", 1024, "width of the output image in pixels")
 	fs.IntVar(&height, "height", 768, "height of the output image in pixels")
-	fs.StringVar(&palette, "palette", "light", "colours to draw with: light or dark")
+	fs.StringVar(&palette, "palette", "light", "colours to draw with: light, dark, or dark-linework -- the dark map with its landuse fills dropped, leaving roads, rail and boundaries over near-black with water as the only fill")
 	fs.StringVar(&store, "store", "", "draw from a store filled by \"osmbase fetch\" instead of from an archive; nothing reaches the network")
 	fs.StringVar(&archive, "archive", "", "which archive in the store to draw from, by ID or by part of its name; only needed when the store holds more than one")
 	fs.StringVar(&out, "out", "map.png", "file to write the PNG to")
@@ -175,8 +175,10 @@ func paletteNamed(name string) (render.Palette, error) {
 		return render.LightPalette(), nil
 	case "dark":
 		return render.DarkPalette(), nil
+	case "dark-linework":
+		return render.DarkLineworkPalette(), nil
 	}
-	return render.Palette{}, usageErrorf("--palette %q is not one this command knows; it has light and dark", name)
+	return render.Palette{}, usageErrorf("--palette %q is not one this command knows; it has light, dark and dark-linework", name)
 }
 
 // viewAround builds the view of width by height pixels centred on a coordinate

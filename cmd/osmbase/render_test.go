@@ -116,7 +116,12 @@ func TestRender_RefusesWhatItCannotDraw(t *testing.T) {
 		want string
 	}{
 		{"no coordinate", []string{"render", archive}, "needs --lat and --lon"},
-		{"unknown palette", []string{"render", archive, "--lat", "0", "--lon", "0", "--palette", "sepia", "--out", out}, "light and dark"},
+		// Matched on the palette NAMES rather than on the sentence joining
+		// them. The list grows, and an assertion on "light and dark" broke
+		// the moment a third palette was added -- reporting a wording change
+		// as a failure while saying nothing about whether the message still
+		// tells the user what to type.
+		{"unknown palette", []string{"render", archive, "--lat", "0", "--lon", "0", "--palette", "sepia", "--out", out}, "dark-linework"},
 		{"wider than the world", []string{"render", archive, "--lat", "0", "--lon", "0", "--zoom", "0", "--width", "4000", "--out", out}, "wider than the whole world"},
 		{"no image", []string{"render", archive, "--lat", "0", "--lon", "0", "--width", "0", "--out", out}, "is not an image"},
 

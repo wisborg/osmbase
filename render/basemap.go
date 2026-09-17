@@ -169,6 +169,61 @@ func DarkPalette() Palette {
 	}
 }
 
+// DarkLineworkPalette is the dark basemap with its fills taken out: the road
+// network, the railways and the boundaries over near-black, with water as the
+// only filled feature left.
+//
+// # What it is for
+//
+// The landuse fills are what make a basemap read as a MAP -- green for parks,
+// a warmer tone for the built-up area -- and they are also the loudest thing
+// on it. For a route drawn over the top they are pure background noise, and
+// on a dark palette they arrive as large flat regions of olive and brown that
+// dominate the frame while carrying almost no information about where the
+// activity went. Dropping them leaves the linework, which is what a viewer
+// actually reads a route against: the streets it followed and the railway it
+// crossed.
+//
+// Water stays because it is the strongest orientation cue after the roads. A
+// coast, a lake or a river is what makes a place recognisable, it is rarely
+// dense enough to be noisy, and a linework map that drops it turns a seaside
+// run into an unplaceable squiggle.
+//
+// # Why the roads are not brighter
+//
+// "Black with bright linework" is the obvious way to describe this style and
+// it is not achievable, for a reason the contrast check states precisely.
+// Every map ink must stand 3:1 clear of every overlay ink, and a dark
+// overlay's accent -- the position dot -- sits at about 6:1 from the
+// background. A road brought up to where it reads as "light" lands in the
+// accent's own luminance neighbourhood, and the dot then disappears wherever
+// it crosses a road, which is most of the route.
+//
+// Measured against DarkOverlay, the window for the road ink is roughly 1.2 to
+// 1.6 against the background: below that it cannot be told from the
+// background at all, above it the accent collides. These colours sit in the
+// middle of that window. The style still looks nothing like the filled one --
+// the fills were the whole difference -- but its linework is quiet, which is
+// what a basemap is for.
+func DarkLineworkPalette() Palette {
+	bg := color.RGBA{R: 0x08, G: 0x0e, B: 0x14, A: 0xff}
+	return Palette{
+		Background: bg,
+		// The three omitted roles are set to the background rather than left
+		// at some other value: if anything ever clears Omitted, the palette
+		// collapses and the contrast check says so loudly, which is a better
+		// failure than three fills quietly reappearing.
+		Land:    bg,
+		Green:   bg,
+		Built:   bg,
+		Water:   color.RGBA{R: 0x10, G: 0x28, B: 0x42, A: 0xff},
+		Road:    color.RGBA{R: 0x2e, G: 0x32, B: 0x3a, A: 0xff},
+		Ink:     color.RGBA{R: 0x3e, G: 0x34, B: 0x26, A: 0xff},
+		NoData:  color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
+		Omitted: []Role{RoleLand, RoleGreen, RoleBuilt},
+	}
+}
+
 // LightOverlay and DarkOverlay are the overlay inks each built-in palette was
 // tuned against.
 //

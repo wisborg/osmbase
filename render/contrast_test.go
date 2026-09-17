@@ -347,3 +347,31 @@ func TestOmitsReportsWhatThePaletteLeavesOut(t *testing.T) {
 		t.Error("Omits reports a role that was not named")
 	}
 }
+
+// TestDarkLineworkPaletteCarriesItsOverlay holds the built-in linework style
+// to the same standard as the other two.
+//
+// It matters more here than for the filled palettes, because this one sits
+// close to a boundary it cannot see. Its road ink has a window of roughly 1.2
+// to 1.6 against the background: below that the roads cannot be told from the
+// background, and above it the overlay's accent -- the position dot -- drops
+// under 3:1 against them and vanishes wherever the route crosses a road,
+// which on a linework map is most of the route. An edit to make the roads
+// "a bit brighter" is exactly the plausible change that breaks it.
+func TestDarkLineworkPaletteCarriesItsOverlay(t *testing.T) {
+	p := render.DarkLineworkPalette()
+	if err := p.CheckContrast(render.DarkOverlay()); err != nil {
+		t.Fatalf("the built-in linework palette does not carry the dark overlay: %v", err)
+	}
+	for _, r := range []render.Role{render.RoleLand, render.RoleGreen, render.RoleBuilt} {
+		if !p.Omits(r) {
+			t.Errorf("role %v is drawn; the point of this palette is that the landuse fills are not", r)
+		}
+	}
+	// Water is the one fill kept, and it has to remain a fill: it is the
+	// strongest orientation cue after the roads, and a linework map that drops
+	// it turns a coastal route into an unplaceable squiggle.
+	if p.Omits(render.RoleWater) {
+		t.Error("water is omitted; it is deliberately the one filled feature this style keeps")
+	}
+}
