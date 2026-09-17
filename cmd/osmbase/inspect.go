@@ -55,15 +55,15 @@ func inspectCommand(args []string, stdout, stderr io.Writer) error {
 // a reader cannot otherwise tell an empty archive from an archive whose writer
 // declined to count.
 func writeArchiveReport(w io.Writer, a *archive) {
-	h := a.Header()
+	h := a.Reader().Header()
 	var t table
 	row := func(name, format string, args ...any) {
 		t.row(name, fmt.Sprintf(format, args...))
 	}
 
-	row("source", "%s", a.name)
-	if a.hasSize {
-		row("archive size", "%s", bytesExact(a.size))
+	row("source", "%s", a.Name())
+	if n, ok := a.Size(); ok {
+		row("archive size", "%s", bytesExact(n))
 	} else {
 		row("archive size", "not reported by the host")
 	}
@@ -87,7 +87,7 @@ func writeArchiveReport(w io.Writer, a *archive) {
 	row("tile data", "%s at offset %d", bytesExact(int64(h.TileDataLength)), h.TileDataOffset)
 
 	t.blank()
-	entries := a.RootEntries()
+	entries := a.Reader().RootEntries()
 	leaves, runs, tiles := summariseEntries(entries)
 	row("root entries", "%d  (%d leaf pointers, %d tile runs covering %d tiles)", len(entries), leaves, runs, tiles)
 	if len(entries) > 0 {

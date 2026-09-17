@@ -321,3 +321,34 @@ func TestPlan_TakesTheSourceZoomFromTheArchiveNotTheCaller(t *testing.T) {
 		}
 	}
 }
+
+// TestOpen_MarksABadSchemeAsTheUsersTypingRatherThanAFailure keeps a
+// distinction a caller cannot otherwise make.
+//
+// A command exits 2 when it was used wrongly and 1 when something went wrong,
+// and those are different situations for whoever is reading the exit code --
+// a script, or a person deciding whether to check their connection or their
+// command line. Open cannot make that choice, since it does not know it is
+// inside a command, but it does know which of its refusals is certainly about
+// what was typed. A caller matching on the message prose instead would break
+// the first time the wording improved.
+func TestOpen_MarksABadSchemeAsTheUsersTypingRatherThanAFailure(t *testing.T) {
+	_, err := fetch.Open("s3://bucket/planet.pmtiles", fetch.Options{})
+	if !errors.Is(err, fetch.ErrUnsupportedScheme) {
+		t.Fatalf("Open returned %v, want an error matching ErrUnsupportedScheme", err)
+	}
+	// The sentinel must not swallow the detail: the message still has to name
+	// what was wrong and what to pass instead.
+	for _, want := range []string{"s3", ".pmtiles"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message does not mention %q: %v", want, err)
+		}
+	}
+
+	// A path that simply is not there is the other case, and must NOT be
+	// reported as a usage error: the command line was fine, the file was not.
+	_, err = fetch.Open(filepath.Join(t.TempDir(), "absent.pmtiles"), fetch.Options{})
+	if errors.Is(err, fetch.ErrUnsupportedScheme) {
+		t.Errorf("a missing file was reported as a bad scheme: %v", err)
+	}
+}

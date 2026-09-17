@@ -46,6 +46,15 @@ import (
 // not do is hand back "" and let a caller mistake it for a credit.
 var ErrNoAttribution = errors.New("fetch: the archive declares no attribution")
 
+// ErrUnsupportedScheme is returned by Open for a source naming a scheme this
+// cannot read.
+//
+// It is distinguishable because it is the one Open error that is certainly
+// the USER's typing rather than the world's state: a command exits 2 for a
+// usage error and 1 for a failure, and a caller cannot tell those apart from
+// an error string without matching on prose.
+var ErrUnsupportedScheme = errors.New("fetch: unsupported scheme")
+
 // Options configure Open.
 type Options struct {
 	// Default is the archive to open when source is empty. There is no
@@ -116,7 +125,7 @@ func Open(source string, opts Options) (*Archive, error) {
 		a, err = openRemote(source, opts.Trace)
 	case strings.Contains(source, "://"):
 		scheme, _, _ := strings.Cut(source, "://")
-		return nil, fmt.Errorf("fetch: the archive %q uses the %q scheme; give an https URL or the path to a local .pmtiles file", source, scheme)
+		return nil, fmt.Errorf("the archive %q uses the %q scheme; give an https URL or the path to a local .pmtiles file: %w", source, scheme, ErrUnsupportedScheme)
 	default:
 		a, err = openLocal(source)
 	}

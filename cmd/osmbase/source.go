@@ -1,13 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strings"
-	"time"
 
-	"github.com/wisborg/osmbase/acquire"
+	"github.com/wisborg/osmbase/fetch"
 	"github.com/wisborg/osmbase/pmtiles"
 )
 
@@ -59,47 +57,18 @@ a dated daily build can be named explicitly instead:
   https://build.protomaps.com/20260912.pmtiles
 `
 
-// archive is an opened PMTiles archive together with what the command needs to
-// say about where it came from.
+// archive is fetch.Archive with the announcements this command makes about
+// it.
+//
+// The opening, the path-or-URL question, the vector tile check and the
+// accounting all live in the library now; what is left here is the part that
+// is genuinely this program's -- the wording, the "osmbase:" prefix, and the
+// decision to say anything at all. That split is the reason the library takes
+// a Trace callback rather than an io.Writer: a second consumer prints
+// different words in a different place, and used to reimplement the whole
+// opener to get them.
 type archive struct {
-	*pmtiles.Reader
-
-	// name is the URL or path as the user gave it.
-	name string
-	// remote says whether reading this archive talks to anyone.
-	remote bool
-
-	size    int64
-	hasSize bool
-
-	// stats reports requests and bytes for a remote archive, and is nil for a
-	// local one -- a file has neither, and reporting "0 requests" for it would
-	// invite the reader to think the number meant something.
-	stats  func() (int, int64)
-	closer io.Closer
-
-	// quiet turns off the per-request trace, and is nil for a local archive.
-	//
-	// The trace is the right thing for a render, where a handful of requests
-	// are the only sign anything is happening. It is the wrong thing under a
-	// progress line: the two write to the same stream and the carriage return
-	// that redraws the progress lands in the middle of a trace line, so both
-	// become unreadable. A caller that draws its own progress turns it off.
-	quiet func()
-
-	// bytes is the archive's raw storage, which a fetch needs and a render
-	// does not. The reader above answers "where is this tile and what does it
-	// decode to"; a fetch asks instead for a span of the file covering several
-	// tiles at once, so that eighty-five tiles cost a handful of requests
-	// rather than eighty-five. See acquire.Archive.
-	bytes io.ReaderAt
-}
-
-func (a *archive) Close() error {
-	if a.closer == nil {
-		return nil
-	}
-	return a.closer.Close()
+	*fetch.Archive
 }
 
 // openArchive opens the archive named by source, or the default when source is
@@ -112,77 +81,35 @@ func (a *archive) Close() error {
 func openArchive(source string, stderr io.Writer) (*archive, error) {
 	usingDefault := source == ""
 	if usingDefault {
-		source = defaultSource
-	}
-
-	switch {
-	case strings.HasPrefix(source, "https://"), strings.HasPrefix(source, "http://"):
-		return openRemote(source, usingDefault, stderr)
-	case strings.Contains(source, "://"):
-		scheme, _, _ := strings.Cut(source, "://")
-		return nil, usageErrorf("SOURCE %q uses the %q scheme; give an https URL or the path to a local .pmtiles file", source, scheme)
-	default:
-		return openLocal(source)
-	}
-}
-
-func openLocal(path string) (*archive, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("there is no file at %s; SOURCE is an https URL or a path to a .pmtiles archive", path)
-		}
-		return nil, fmt.Errorf("looking at %s: %w", path, err)
-	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory; SOURCE is one .pmtiles archive", path)
-	}
-	r, err := pmtiles.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening %s for coalesced reads: %w", path, err)
-	}
-	return &archive{
-		Reader: r, name: path, size: info.Size(), hasSize: true,
-		bytes: f, closer: multiCloser{r, f},
-	}, nil
-}
-
-func openRemote(url string, usingDefault bool, stderr io.Writer) (*archive, error) {
-	src, err := acquire.NewRangeReader(url)
-	if err != nil {
-		return nil, err
-	}
-	// Everything printed from here on uses the reader's own form of the URL
-	// rather than the string the user typed. A private mirror behind userinfo
-	// and a presigned URL with a signature in its query are both ordinary, and
-	// this command's output is meant to be pasted into a bug report.
-	shown := src.URL()
-	if usingDefault {
+		// Announced BEFORE the open, because the open is what contacts the
+		// host: a notice printed afterwards tells the user about a request
+		// that has already gone.
 		fmt.Fprintf(stderr, "osmbase: no SOURCE given, so reading the default archive over the network:\n")
-		fmt.Fprintf(stderr, "osmbase:   %s\n", shown)
+		fmt.Fprintf(stderr, "osmbase:   %s\n", defaultSource)
 		fmt.Fprintf(stderr, "osmbase: this tells that host which part of the map you asked about. Pass a local\n")
 		fmt.Fprintf(stderr, "osmbase:   .pmtiles file to avoid it, or run \"osmbase help\" to read why.\n")
-	} else {
-		fmt.Fprintf(stderr, "osmbase: reading %s over HTTP range requests\n", shown)
-	}
-	src.Trace = func(off int64, n int, elapsed time.Duration) {
-		reqs, _ := src.Stats()
-		fmt.Fprintf(stderr, "osmbase: request %d: %s at offset %d in %s\n",
-			reqs, humanBytes(int64(n)), off, elapsed.Round(time.Millisecond))
 	}
 
-	r, err := pmtiles.NewReader(src)
+	a, err := fetch.Open(source, fetch.Options{
+		Default: defaultSource,
+		Trace: func(line string) {
+			fmt.Fprintf(stderr, "osmbase: %s\n", line)
+		},
+	})
 	if err != nil {
+		// A scheme this cannot read is the user's typing, not the world's
+		// state, and the two exit with different codes. Matched on the
+		// sentinel rather than on the message, which is the library's to
+		// reword.
+		if errors.Is(err, fetch.ErrUnsupportedScheme) {
+			return nil, usageErrorf("%s", err)
+		}
 		return nil, err
 	}
-	a := &archive{Reader: r, name: shown, remote: true, stats: src.Stats, bytes: src}
-	a.quiet = func() { src.Trace = nil }
-	a.size, a.hasSize = src.Size()
-	return a, nil
+	if a.Remote() && !usingDefault {
+		fmt.Fprintf(stderr, "osmbase: reading %s over HTTP range requests\n", a.Name())
+	}
+	return &archive{Archive: a}, nil
 }
 
 // reportTraffic prints what a remote read cost, and nothing at all for a local
@@ -193,13 +120,13 @@ func openRemote(url string, usingDefault bool, stderr io.Writer) (*archive, erro
 // the end of the command rather than per request so that it is the last thing
 // on the screen.
 func (a *archive) reportTraffic(stderr io.Writer) {
-	if a.stats == nil {
+	reqs, read, ok := a.Traffic()
+	if !ok {
 		return
 	}
-	reqs, read := a.stats()
 	fmt.Fprintf(stderr, "osmbase: %d range requests, %s fetched", reqs, humanBytes(read))
-	if a.hasSize {
-		fmt.Fprintf(stderr, " from a %s archive", humanBytes(a.size))
+	if n, known := a.Size(); known {
+		fmt.Fprintf(stderr, " from a %s archive", humanBytes(n))
 	}
 	fmt.Fprintln(stderr)
 }
@@ -207,31 +134,13 @@ func (a *archive) reportTraffic(stderr io.Writer) {
 // requireVectorTiles refuses an archive whose tiles are not MVT, before a
 // command hands raster bytes to a vector tile decoder.
 //
-// The decoder would not fail loudly: a PNG is not a valid protobuf message in
-// any interesting way, but a protobuf decoder handed arbitrary bytes reports
-// something about a field number, and "field 6 is not defined" is a far worse
-// explanation than "this archive holds png tiles".
+// Checked here rather than through fetch.Options because not every command
+// decodes tiles: "osmbase inspect" reports on an archive of any tile type,
+// and refusing at open would leave the one command that can explain a png
+// archive unable to look at one.
 func (a *archive) requireVectorTiles() error {
-	if t := a.Header().TileType; t != pmtiles.TileTypeMVT {
-		return fmt.Errorf("%s holds %s tiles, and this command decodes vector tiles (mvt)", a.name, t)
+	if t := a.Reader().Header().TileType; t != pmtiles.TileTypeMVT {
+		return fmt.Errorf("%s holds %s tiles, and this command decodes vector tiles (mvt)", a.Name(), t)
 	}
 	return nil
-}
-
-// multiCloser closes several things and reports the first failure.
-//
-// A local archive is opened twice: once as a tile reader and once as raw bytes
-// for coalesced fetching. Two handles on one file is cheap and the alternative
-// -- reaching inside the reader for its source -- would make the reader's own
-// field part of this package's API.
-type multiCloser []io.Closer
-
-func (m multiCloser) Close() error {
-	var first error
-	for _, c := range m {
-		if err := c.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
 }

@@ -98,25 +98,17 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("opening the store at %s: %w", root, err)
 	}
-	h := a.Header()
-	src, err := st.AddSource(slice.SourceDesc{
-		Source:          a.name,
-		Attribution:     attributionOf(a, stderr),
-		TileType:        h.TileType.String(),
-		TileCompression: slice.Compression(h.TileCompression.String()),
-		SourceZoom:      slice.ZoomRange{Min: h.MinZoom, Max: h.MaxZoom},
-	})
+	src, err := a.AddTo(st, attributionOf(a, stderr))
 	if err != nil {
 		return err
 	}
 
-	plan, err := acquire.PlanFor(context.Background(),
-		acquire.Archive{Index: a.Reader, Bytes: a.bytes, Name: a.name}, src,
-		acquire.Request{
-			Bounds: bounds, World: f.world, MaxZoom: f.maxZoom,
-			CellZoom:   st.CellZoom(),
-			SourceZoom: slice.ZoomRange{Min: h.MinZoom, Max: h.MaxZoom},
-		})
+	// SourceZoom is not passed: the archive fills it in from its own header,
+	// which is where that fact lives. See fetch.Archive.Plan.
+	plan, err := a.Plan(context.Background(), src, acquire.Request{
+		Bounds: bounds, World: f.world, MaxZoom: f.maxZoom,
+		CellZoom: st.CellZoom(),
+	})
 	if err != nil {
 		return err
 	}
@@ -130,7 +122,7 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, "\ndry run: nothing was downloaded and nothing was written.")
 		return nil
 	}
-	if !f.yes && a.remote {
+	if !f.yes && a.Remote() {
 		ok, err := confirm(stdout, plan)
 		if err != nil {
 			return err
@@ -142,14 +134,11 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 	}
 
 	// The per-request trace and the progress line cannot share a stream; see
-	// archive.quiet. Planning keeps its trace, because planning happens before
-	// there is a progress line to fight with and is the slowest silent part.
-	if a.quiet != nil {
-		a.quiet()
-	}
-	res, err := acquire.Fetch(context.Background(), plan,
-		acquire.Archive{Index: a.Reader, Bytes: a.bytes, Name: a.name}, src,
-		acquire.FetchOptions{Progress: progressTo(stderr)})
+	// fetch.Options.Trace. Planning keeps its trace, because planning happens
+	// before there is a progress line to fight with and is the slowest silent
+	// part.
+	a.Silence()
+	res, err := a.Fetch(context.Background(), plan, src, progressTo(stderr))
 	if err != nil {
 		return err
 	}

@@ -134,11 +134,11 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	// deepest ancestor there is, sharp and less detailed -- and the result says
 	// how much of the picture came out that way. Saying so in advance is what
 	// stops the report reading like a fault.
-	if h := a.Header(); z > h.MaxZoom {
+	if h := a.Reader().Header(); z > h.MaxZoom {
 		fmt.Fprintf(stderr, "osmbase: --zoom %d is deeper than the %d this archive holds, so the map is drawn from zoom %d and overzoomed\n", z, h.MaxZoom, h.MaxZoom)
 	}
 
-	r, err := render.New(a.Reader, render.Options{
+	r, err := render.New(a.Reader(), render.Options{
 		Style:       render.BasemapStyle(),
 		Palette:     colours,
 		Attribution: attributionOf(a, stderr),
@@ -151,7 +151,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		if errors.Is(err, render.ErrNoCoverage) {
 			return fmt.Errorf("%w. %s holds no tile anywhere near latitude %s, longitude %s; try a coordinate inside the area it covers, which \"osmbase inspect\" prints",
-				err, a.name, formatCoord(coords.lat), formatCoord(coords.lon))
+				err, a.Name(), formatCoord(coords.lat), formatCoord(coords.lon))
 		}
 		return err
 	}
@@ -247,7 +247,7 @@ func viewAround(z uint8, lon, lat float64, width, height int) (render.View, erro
 // pointed --source at a different archive. An archive that declares none says
 // so out loud rather than being given one.
 func attributionOf(a *archive, stderr io.Writer) string {
-	raw, err := a.Metadata()
+	raw, err := a.Reader().Metadata()
 	if err != nil {
 		fmt.Fprintf(stderr, "osmbase: could not read the archive's metadata, so the render carries no attribution: %v\n", err)
 		return ""

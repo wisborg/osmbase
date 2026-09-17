@@ -76,7 +76,7 @@ func geojsonCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	data, ok, err := a.Tile(loc.z, loc.x, loc.y)
+	data, ok, err := a.Reader().Tile(loc.z, loc.x, loc.y)
 	if err != nil {
 		return fmt.Errorf("reading tile %d/%d/%d: %w", loc.z, loc.x, loc.y, err)
 	}
@@ -85,7 +85,7 @@ func geojsonCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	tile, err := mvt.Decode(data)
 	if err != nil {
-		return fmt.Errorf("decoding tile %d/%d/%d of %s: %w", loc.z, loc.x, loc.y, a.name, err)
+		return fmt.Errorf("decoding tile %d/%d/%d of %s: %w", loc.z, loc.x, loc.y, a.Name(), err)
 	}
 
 	layers, err := chooseLayers(tile, layer)

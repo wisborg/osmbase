@@ -75,19 +75,19 @@ func tileCommand(args []string, stdout, stderr io.Writer) error {
 	// the thing a person wants to know about a tile, and the reader exposes
 	// them through two methods. A command that decodes a whole tile to count
 	// its features is not the place to economise on one round trip.
-	if a.remote {
+	if a.Remote() {
 		// Said out loud because the trace is about to show the same byte
 		// range fetched twice, which looks like a bug and is not.
 		fmt.Fprintf(stderr, "osmbase: fetching the tile twice, stored and decoded, to report both sizes\n")
 	}
-	stored, ok, err := a.RawTile(loc.z, loc.x, loc.y)
+	stored, ok, err := a.Reader().RawTile(loc.z, loc.x, loc.y)
 	if err != nil {
 		return fmt.Errorf("reading tile %d/%d/%d: %w", loc.z, loc.x, loc.y, err)
 	}
 	if !ok {
 		return loc.absent(a)
 	}
-	data, ok, err := a.Tile(loc.z, loc.x, loc.y)
+	data, ok, err := a.Reader().Tile(loc.z, loc.x, loc.y)
 	if err != nil {
 		return fmt.Errorf("reading tile %d/%d/%d: %w", loc.z, loc.x, loc.y, err)
 	}
@@ -96,7 +96,7 @@ func tileCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	tile, err := mvt.Decode(data)
 	if err != nil {
-		return fmt.Errorf("decoding tile %d/%d/%d of %s: %w", loc.z, loc.x, loc.y, a.name, err)
+		return fmt.Errorf("decoding tile %d/%d/%d of %s: %w", loc.z, loc.x, loc.y, a.Name(), err)
 	}
 
 	writeTileReport(stdout, loc, a, tile, len(stored), len(data))
@@ -122,11 +122,11 @@ type location struct {
 // against a build that stops at 15 is not a place with no data, it is a
 // question this archive cannot be asked. See docs/architecture.md, trap T4.
 func locate(a *archive, c coordFlags) (location, error) {
-	h := a.Header()
+	h := a.Reader().Header()
 	z := uint8(c.zoom)
 	if z > h.MaxZoom || z < h.MinZoom {
 		return location{}, usageErrorf("--zoom %d is outside the zoom levels %s holds, which are %d to %d",
-			c.zoom, a.name, h.MinZoom, h.MaxZoom)
+			c.zoom, a.Name(), h.MinZoom, h.MaxZoom)
 	}
 	x, y, err := mercator.TileAt(z, c.lon, c.lat)
 	if err != nil {
@@ -141,9 +141,9 @@ func locate(a *archive, c coordFlags) (location, error) {
 // omits ocean, and a regional extract holds one region -- so the message says
 // where the archive does have data instead of merely reporting a false.
 func (l location) absent(a *archive) error {
-	h := a.Header()
+	h := a.Reader().Header()
 	msg := fmt.Sprintf("%s holds no tile at %d/%d/%d, which is where latitude %s, longitude %s falls at zoom %d",
-		a.name, l.z, l.x, l.y, formatCoord(l.lat), formatCoord(l.lon), l.z)
+		a.Name(), l.z, l.x, l.y, formatCoord(l.lat), formatCoord(l.lon), l.z)
 	// An archive that declares no bounds leaves all four at zero, which is a
 	// point in the Gulf of Guinea rather than a rectangle. Saying "its bounds
 	// are 0, 0, 0, 0" would send someone looking in the wrong place.
@@ -156,9 +156,9 @@ func (l location) absent(a *archive) error {
 }
 
 func writeTileReport(w io.Writer, loc location, a *archive, tile mvt.Tile, stored, decoded int) {
-	h := a.Header()
+	h := a.Reader().Header()
 	var head table
-	head.row("source", a.name)
+	head.row("source", a.Name())
 	head.row("coordinate", fmt.Sprintf("latitude %s, longitude %s", formatCoord(loc.lat), formatCoord(loc.lon)))
 	head.row("tile", fmt.Sprintf("%d/%d/%d", loc.z, loc.x, loc.y))
 	if west, south, east, north, err := mercator.TileBounds(loc.z, loc.x, loc.y); err == nil {
