@@ -70,6 +70,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		width, height int
 		palette       string
 		store         string
+		archive       string
 		out           string
 	)
 	fs := newFlagSet("render", renderUsage)
@@ -78,6 +79,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	fs.IntVar(&height, "height", 768, "height of the output image in pixels")
 	fs.StringVar(&palette, "palette", "light", "colours to draw with: light or dark")
 	fs.StringVar(&store, "store", "", "draw from a store filled by \"osmbase fetch\" instead of from an archive; nothing reaches the network")
+	fs.StringVar(&archive, "archive", "", "which archive in the store to draw from, by ID or by part of its name; only needed when the store holds more than one")
 	fs.StringVar(&out, "out", "map.png", "file to write the PNG to")
 
 	source, err := parseArgs(fs, args, stdout)
@@ -108,7 +110,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		if source != "" {
 			return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
 		}
-		return renderFromStore(store, coords, width, height, colours, palette, out, stdout, stderr)
+		return renderFromStore(store, archive, coords, width, height, colours, palette, out, stdout, stderr)
 	}
 
 	a, err := openArchive(source, stderr)
@@ -318,9 +320,14 @@ func writeRenderReport(w io.Writer, out string, v render.View, res *render.Resul
 	t.row("covered", percent(res.Covered))
 	t.row("overzoomed", fmt.Sprintf("%s of the image, drawn from a shallower tile", percent(res.Overzoomed)))
 	t.row("no data", fmt.Sprintf("%s of the image, hatched in %d rectangles", percent(1-res.Covered), len(res.Gaps)))
-	if res.Attribution != "" {
+	// Converted, like the credit drawn into the image and for the same
+	// reason: the archive writes its attribution as HTML because in a browser
+	// the credit is a link, and an anchor tag printed into a terminal credits
+	// nobody a person can read. This row was the one place the raw string
+	// still reached a human.
+	if credit := render.PlainCredit(res.Attribution); credit != "" {
 		t.blank()
-		t.row("credit", res.Attribution)
+		t.row("credit", credit)
 	}
 	t.write(w)
 }
@@ -335,7 +342,7 @@ func percent(f float64) string {
 // here, no URL, and nothing that could contact anyone. slice imports neither
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
-func renderFromStore(root string, coords coordFlags, width, height int, colours render.Palette, palette, out string, stdout, stderr io.Writer) error {
+func renderFromStore(root, archive string, coords coordFlags, width, height int, colours render.Palette, palette, out string, stdout, stderr io.Writer) error {
 	st, err := slice.Open(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -347,21 +354,11 @@ func renderFromStore(root string, coords coordFlags, width, height int, colours 
 	if err != nil {
 		return err
 	}
-	if len(sources) == 0 {
-		return fmt.Errorf("the store at %s is empty; fill it with \"osmbase fetch --store %s\"", root, root)
+	chosen, err := chooseSource(root, sources, archive)
+	if err != nil {
+		return err
 	}
-	// One source is the ordinary case. More than one means the store was
-	// filled from two archives, and picking silently would draw a map whose
-	// provenance the report then states wrongly.
-	if len(sources) > 1 {
-		names := make([]string, 0, len(sources))
-		for _, m := range sources {
-			names = append(names, m.Source)
-		}
-		return fmt.Errorf("the store at %s holds %d archives (%s) and this command can draw from one; use a store per archive",
-			root, len(sources), strings.Join(names, ", "))
-	}
-	src, err := st.Source(sources[0].ID)
+	src, err := st.Source(chosen.ID)
 	if err != nil {
 		return err
 	}
@@ -394,4 +391,68 @@ func renderFromStore(root string, coords coordFlags, width, height int, colours 
 	fmt.Fprintf(stdout, "%-12s %s\n", "store", root)
 	writeRenderReport(stdout, out, view, res, palette)
 	return nil
+}
+
+// chooseSource picks which archive in a store to draw from.
+//
+// A store holding one archive is the ordinary case and needs no flag. More
+// than one is what a SHARED store looks like: the default root is the same
+// path for every program that uses this library, so a machine that has
+// fetched Protomaps for one project and a different build for another has two
+// sources in one directory, and that is the arrangement working rather than
+// failing. This used to refuse outright and advise a store per archive, which
+// is the wrong advice -- it gives up the sharing the default root exists for,
+// and it is not even possible for a user whose second archive was fetched by
+// another program.
+//
+// What must NOT happen is picking one silently. Every render reports its own
+// provenance, and a report naming the archive the render did not draw from is
+// worse than a refusal: it is a wrong answer in the field somebody consults
+// precisely when they are unsure. So the refusal stays for the ambiguous
+// case; it just carries the way out now.
+//
+// want matches an ID, an ID prefix, or any part of the archive's name, so
+// "protomaps" is usually enough and the full ID is always available. A match
+// that could mean two archives is refused for the same reason silence is.
+func chooseSource(root string, sources []slice.Manifest, want string) (slice.Manifest, error) {
+	if len(sources) == 0 {
+		return slice.Manifest{}, fmt.Errorf("the store at %s is empty; fill it with \"osmbase fetch --store %s\"", root, root)
+	}
+	if want == "" {
+		if len(sources) == 1 {
+			return sources[0], nil
+		}
+		return slice.Manifest{}, fmt.Errorf("the store at %s holds %d archives and this command draws from one; add --archive with an ID or part of a name:\n%s",
+			root, len(sources), describeSources(sources))
+	}
+
+	var hits []slice.Manifest
+	for _, m := range sources {
+		if m.ID == want {
+			return m, nil
+		}
+		if strings.HasPrefix(m.ID, want) || strings.Contains(strings.ToLower(m.Source), strings.ToLower(want)) {
+			hits = append(hits, m)
+		}
+	}
+	switch len(hits) {
+	case 1:
+		return hits[0], nil
+	case 0:
+		return slice.Manifest{}, fmt.Errorf("the store at %s holds no archive matching --archive %q:\n%s",
+			root, want, describeSources(sources))
+	default:
+		return slice.Manifest{}, fmt.Errorf("--archive %q matches %d of the archives in %s; use an ID or a longer name:\n%s",
+			want, len(hits), root, describeSources(hits))
+	}
+}
+
+// describeSources lists archives the way the user has to name them: the ID
+// first, because it is the one form that is always unambiguous.
+func describeSources(sources []slice.Manifest) string {
+	var b strings.Builder
+	for _, m := range sources {
+		fmt.Fprintf(&b, "  %s  %s\n", m.ID, m.Source)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

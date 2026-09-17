@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/wisborg/osmbase/render"
+	"github.com/wisborg/osmbase/slice"
 )
 
 // decodePNG reads back what the command wrote.
@@ -164,6 +165,144 @@ func TestRender_DoesNotLeaveAPartialFileBehind(t *testing.T) {
 	for _, e := range entries {
 		if strings.Contains(e.Name(), "partial") {
 			t.Errorf("a partial file was left behind: %s", e.Name())
+		}
+	}
+}
+
+// manifests builds the source list chooseSource reads, with only the two
+// fields it looks at.
+func manifests(pairs ...string) []slice.Manifest {
+	var out []slice.Manifest
+	for i := 0; i < len(pairs); i += 2 {
+		out = append(out, slice.Manifest{ID: pairs[i], Source: pairs[i+1]})
+	}
+	return out
+}
+
+// TestChooseSource_NamesTheWayOutInsteadOfGivingUp covers the case that
+// blocked a real render: a shared store holding two archives.
+//
+// The default store root is the same path for every program built on this
+// library, which is the point of it -- a second consumer fetching the same
+// area should reuse what is already on disk rather than download it again. A
+// machine that has fetched two different archives therefore has two sources
+// in one directory, and that is the arrangement working. Refusing it and
+// advising "a store per archive" gave up the sharing, and was advice the user
+// could not always follow: the second archive may have been fetched by a
+// different program entirely.
+//
+// What the refusal was right about is that picking silently is worse. Each
+// render reports its own provenance, so a silent pick produces a map whose
+// report names an archive it did not draw from -- a wrong answer in the field
+// somebody consults precisely because they are unsure. So ambiguity is still
+// refused; it just carries the way out now, and every refusal here is
+// asserted to name both the flag and the IDs, since a refusal that does not
+// say what to type next is the thing being fixed.
+func TestChooseSource_NamesTheWayOutInsteadOfGivingUp(t *testing.T) {
+	two := manifests(
+		"a1b2c3d4e5f60718", "https://example.test/protomaps.pmtiles",
+		"00ff11ee22dd33cc", "/data/custom-build.pmtiles",
+	)
+
+	t.Run("one archive needs no flag", func(t *testing.T) {
+		got, err := chooseSource("/store", manifests("a1b2c3d4e5f60718", "only.pmtiles"), "")
+		if err != nil {
+			t.Fatalf("chooseSource: %v", err)
+		}
+		if got.Source != "only.pmtiles" {
+			t.Errorf("chose %q, want the only archive", got.Source)
+		}
+	})
+
+	t.Run("two archives and no flag says how to choose", func(t *testing.T) {
+		_, err := chooseSource("/store", two, "")
+		if err == nil {
+			t.Fatal("two archives were resolved without the user choosing")
+		}
+		for _, want := range []string{"--archive", "a1b2c3d4e5f60718", "00ff11ee22dd33cc"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal never mentions %q, so it cannot be acted on:\n%v", want, err)
+			}
+		}
+	})
+
+	t.Run("chosen by part of a name", func(t *testing.T) {
+		got, err := chooseSource("/store", two, "protomaps")
+		if err != nil {
+			t.Fatalf("chooseSource: %v", err)
+		}
+		if got.ID != "a1b2c3d4e5f60718" {
+			t.Errorf("chose %s, want the archive whose name contains it", got.ID)
+		}
+	})
+
+	t.Run("chosen by an ID prefix", func(t *testing.T) {
+		got, err := chooseSource("/store", two, "00ff")
+		if err != nil {
+			t.Fatalf("chooseSource: %v", err)
+		}
+		if got.ID != "00ff11ee22dd33cc" {
+			t.Errorf("chose %s, want the archive whose ID starts with it", got.ID)
+		}
+	})
+
+	t.Run("a name matching both is refused rather than guessed", func(t *testing.T) {
+		_, err := chooseSource("/store", manifests(
+			"1111111111111111", "/data/planet-a.pmtiles",
+			"2222222222222222", "/data/planet-b.pmtiles",
+		), "planet")
+		if err == nil {
+			t.Fatal("an ambiguous --archive was resolved by guessing")
+		}
+		for _, want := range []string{"1111111111111111", "2222222222222222"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not list %q as a candidate:\n%v", want, err)
+			}
+		}
+	})
+
+	t.Run("no match lists what is actually there", func(t *testing.T) {
+		_, err := chooseSource("/store", two, "openmaptiles")
+		if err == nil {
+			t.Fatal("a name matching nothing was accepted")
+		}
+		if !strings.Contains(err.Error(), "a1b2c3d4e5f60718") {
+			t.Errorf("the refusal does not say what the store does hold:\n%v", err)
+		}
+	})
+
+	t.Run("an empty store says how to fill it", func(t *testing.T) {
+		_, err := chooseSource("/store", nil, "")
+		if err == nil {
+			t.Fatal("an empty store was resolved")
+		}
+		if !strings.Contains(err.Error(), "osmbase fetch") {
+			t.Errorf("the refusal does not say how to fill the store:\n%v", err)
+		}
+	})
+}
+
+// TestWriteRenderReport_CreditsInTextRatherThanMarkup pins the last place the
+// raw attribution reached a person.
+//
+// The credit drawn into the PNG has been converted since it was added; this
+// row had not, so a terminal running "osmbase render" printed an anchor tag.
+// That discharges nothing -- the obligation is to name whose data drew the
+// map, and a line of HTML names it to nobody reading a terminal.
+func TestWriteRenderReport_CreditsInTextRatherThanMarkup(t *testing.T) {
+	var buf strings.Builder
+	writeRenderReport(&buf, "map.png", render.View{}, &render.Result{
+		Image:       image.NewRGBA(image.Rect(0, 0, 2, 2)),
+		Attribution: `<a href="https://example.test/copyright">&copy; OpenStreetMap</a>`,
+	}, "light")
+
+	out := buf.String()
+	if !strings.Contains(out, "© OpenStreetMap") {
+		t.Errorf("the report does not credit anybody readably:\n%s", out)
+	}
+	for _, markup := range []string{"<a ", "href=", "&copy;"} {
+		if strings.Contains(out, markup) {
+			t.Errorf("the report prints %q, which credits nobody a person can read:\n%s", markup, out)
 		}
 	}
 }
