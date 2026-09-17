@@ -659,7 +659,7 @@ func TestRender_AnOmittedRoleIsNotDrawnAtAll(t *testing.T) {
 	at(t, shown, 128, 40, testPalette.Green, "the park is drawn when nothing is omitted")
 
 	omitting := testPalette
-	omitting.Omitted = []render.Role{render.RoleGreen}
+	omitting.Omitted = render.Roles(render.RoleGreen)
 	hidden := drawWith(omitting)
 	at(t, hidden, 128, 40, testPalette.Background, "an omitted role leaves the background showing")
 	at(t, hidden, 128, 128, testPalette.Road, "the road is still drawn: omitting one role must not stop the others")

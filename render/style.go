@@ -94,13 +94,38 @@ type Palette struct {
 	//
 	// The zero value omits nothing, which is every palette written before
 	// this field existed.
-	Omitted []Role
+	//
+	// A SET rather than a slice, so that a Palette stays comparable. It was a
+	// slice for one version and that was a mistake: Go makes a struct
+	// containing a slice uncomparable, which silently withdraws "==" from a
+	// value type that had it. The first thing that broke was a consumer's
+	// test asserting that the same inks derive the same palette every run --
+	// exactly the kind of property a palette should be able to state about
+	// itself -- and a render cache keyed on a palette would have been next.
+	Omitted RoleSet
 }
 
-// Omits reports whether this palette leaves a role undrawn.
-func (p Palette) Omits(r Role) bool {
-	return slices.Contains(p.Omitted, r)
+// RoleSet is a set of roles, held as a bitmask.
+//
+// The zero value is the empty set. It is a set and not a list because the
+// order of "which roles are left out" means nothing, and because a value type
+// that holds it should stay comparable -- see Palette.Omitted.
+type RoleSet uint16
+
+// Roles builds a RoleSet.
+func Roles(rs ...Role) RoleSet {
+	var s RoleSet
+	for _, r := range rs {
+		s |= 1 << r
+	}
+	return s
 }
+
+// Has reports whether r is in the set.
+func (s RoleSet) Has(r Role) bool { return s&(1<<r) != 0 }
+
+// Omits reports whether this palette leaves a role undrawn.
+func (p Palette) Omits(r Role) bool { return p.Omitted.Has(r) }
 
 // colour returns the colour for a role.
 //

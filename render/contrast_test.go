@@ -315,7 +315,7 @@ func TestOmittedRolesAreNotCheckedButCollapsedOnesStillAre(t *testing.T) {
 	}
 
 	declared := collapsed
-	declared.Omitted = []render.Role{render.RoleLand, render.RoleGreen, render.RoleBuilt}
+	declared.Omitted = render.Roles(render.RoleLand, render.RoleGreen, render.RoleBuilt)
 	if err := declared.CheckContrast(overlay); err != nil {
 		t.Errorf("a palette that declares those roles omitted was refused: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestOmitsReportsWhatThePaletteLeavesOut(t *testing.T) {
 		t.Error("a palette with no Omitted set omits something; every style predating the field draws every role")
 	}
 	p := render.DarkPalette()
-	p.Omitted = []render.Role{render.RoleGreen}
+	p.Omitted = render.Roles(render.RoleGreen)
 	if !p.Omits(render.RoleGreen) {
 		t.Error("Omits does not report a role that was named")
 	}
@@ -373,5 +373,35 @@ func TestDarkLineworkPaletteCarriesItsOverlay(t *testing.T) {
 	// it turns a coastal route into an unplaceable squiggle.
 	if p.Omits(render.RoleWater) {
 		t.Error("water is omitted; it is deliberately the one filled feature this style keeps")
+	}
+}
+
+// TestPaletteStaysComparable pins a property a value type should not lose
+// quietly.
+//
+// Omitted was a slice for one version, which makes the struct containing it
+// uncomparable and withdraws "==" from every consumer at once. The first
+// casualty was a downstream test asserting that the same inks derive the same
+// palette every run -- which is exactly the kind of claim a palette should be
+// able to make about itself -- and a render cache keyed on a palette would
+// have been next.
+//
+// Written as a comparison rather than as a comment, so that reintroducing a
+// slice, a map or a pointer here fails to compile in this package instead of
+// in somebody else's.
+func TestPaletteStaysComparable(t *testing.T) {
+	a, b := render.DarkLineworkPalette(), render.DarkLineworkPalette()
+	if a != b {
+		t.Error("two calls to the same built-in palette differ")
+	}
+	if a == render.DarkPalette() {
+		t.Error("the linework palette compares equal to the filled one")
+	}
+	// And the set itself distinguishes membership rather than order.
+	if render.Roles(render.RoleLand, render.RoleGreen) != render.Roles(render.RoleGreen, render.RoleLand) {
+		t.Error("a role set depends on the order it was written in")
+	}
+	if render.Roles().Has(render.RoleLand) {
+		t.Error("the empty set claims to hold a role; the zero value must omit nothing")
 	}
 }

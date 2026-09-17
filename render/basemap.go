@@ -220,7 +220,7 @@ func DarkLineworkPalette() Palette {
 		Road:    color.RGBA{R: 0x2e, G: 0x32, B: 0x3a, A: 0xff},
 		Ink:     color.RGBA{R: 0x3e, G: 0x34, B: 0x26, A: 0xff},
 		NoData:  color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
-		Omitted: []Role{RoleLand, RoleGreen, RoleBuilt},
+		Omitted: Roles(RoleLand, RoleGreen, RoleBuilt),
 	}
 }
 
