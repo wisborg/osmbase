@@ -275,3 +275,75 @@ func TestAGarishPaletteFailsEvenWhenEveryOtherRuleHolds(t *testing.T) {
 		t.Errorf("the failure does not name saturation:\n%v", err)
 	}
 }
+
+// TestOmittedRolesAreNotCheckedButCollapsedOnesStillAre is the whole point of
+// saying which roles a style leaves out instead of just painting them the
+// background colour.
+//
+// The two palettes below produce the SAME picture: in both, land, green and
+// built are invisible. One says so and one does not, and they must be judged
+// differently, because the check they run into was written to catch a real
+// defect. A plausible one-ink edit to a consumer's theme once drove every
+// derived map role to the same value, and the map came out as a solid
+// rectangle while the summary reported that it had been drawn. Rule 3 exists
+// to make that impossible.
+//
+// A style that deliberately drops the landuse fills -- black with the
+// linework on it -- is indistinguishable from that collapse if the only
+// evidence is the colours. So the intent goes in the data: an omitted role is
+// not drawn and is not checked, and a role that merely happens to match the
+// background remains a fault, with the same message it had before.
+func TestOmittedRolesAreNotCheckedButCollapsedOnesStillAre(t *testing.T) {
+	base := render.DarkPalette()
+	overlay := render.DarkOverlay()
+
+	collapsed := base
+	collapsed.Land = base.Background
+	collapsed.Green = base.Background
+	collapsed.Built = base.Background
+
+	if err := collapsed.CheckContrast(overlay); err == nil {
+		t.Error("a palette whose land, green and built have collapsed into the background was accepted; that is the failure this check exists for")
+	} else {
+		// And it must still say WHICH roles, or the message cannot be acted
+		// on by somebody who did not intend the collapse.
+		for _, want := range []string{"Land", "Green", "Built"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not name %s: %v", want, err)
+			}
+		}
+	}
+
+	declared := collapsed
+	declared.Omitted = []render.Role{render.RoleLand, render.RoleGreen, render.RoleBuilt}
+	if err := declared.CheckContrast(overlay); err != nil {
+		t.Errorf("a palette that declares those roles omitted was refused: %v", err)
+	}
+
+	// Omitting a role must not excuse the ones still drawn. Road is kept
+	// here, so a road that has collapsed into the background is still caught
+	// -- otherwise declaring one role omitted would quietly weaken the check
+	// for every other.
+	stillChecked := declared
+	stillChecked.Road = base.Background
+	if err := stillChecked.CheckContrast(overlay); err == nil {
+		t.Error("a collapsed Road was accepted in a palette that omits other roles; omission must not widen into a blanket exemption")
+	}
+}
+
+// TestOmitsReportsWhatThePaletteLeavesOut covers the accessor the renderer
+// branches on, including the zero value -- which is every palette written
+// before the field existed and must go on drawing everything.
+func TestOmitsReportsWhatThePaletteLeavesOut(t *testing.T) {
+	if p := render.DarkPalette(); p.Omits(render.RoleLand) || p.Omits(render.RoleRoad) {
+		t.Error("a palette with no Omitted set omits something; every style predating the field draws every role")
+	}
+	p := render.DarkPalette()
+	p.Omitted = []render.Role{render.RoleGreen}
+	if !p.Omits(render.RoleGreen) {
+		t.Error("Omits does not report a role that was named")
+	}
+	if p.Omits(render.RoleWater) {
+		t.Error("Omits reports a role that was not named")
+	}
+}

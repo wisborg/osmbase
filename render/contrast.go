@@ -43,16 +43,20 @@ type Overlay struct {
 
 func (o Overlay) inks() []namedColour {
 	return []namedColour{
-		{"Foreground", o.Foreground},
-		{"Accent", o.Accent},
-		{"Highlight", o.Highlight},
-		{"Dim", o.Dim},
+		{name: "Foreground", c: o.Foreground},
+		{name: "Accent", c: o.Accent},
+		{name: "Highlight", c: o.Highlight},
+		{name: "Dim", c: o.Dim},
 	}
 }
 
 type namedColour struct {
 	name string
 	c    color.RGBA
+	// role is empty for colours that are not map roles -- the background, the
+	// hatch and a consumer's overlay inks -- and is only consulted where a
+	// role can be omitted.
+	role Role
 }
 
 // Three lists, not one, because the three constraints ask three different
@@ -70,15 +74,28 @@ type namedColour struct {
 // context is the inks whose job is to stay quiet: everything the map draws
 // except the background they are judged against, and except the hatch, whose
 // job is the opposite.
+// A role the palette OMITS is not here, because it is not drawn: there is no
+// pixel of it for anything to be read against, so every constraint on it is
+// vacuous. Excluding it is also what makes an omitting style expressible at
+// all -- rule 3 requires every pair to be told apart, and a hidden role
+// carried through as "the background colour" would fail against the
+// background by exactly the amount that makes it hidden.
 func (p Palette) context() []namedColour {
-	return []namedColour{
-		{"Land", p.Land},
-		{"Water", p.Water},
-		{"Green", p.Green},
-		{"Built", p.Built},
-		{"Road", p.Road},
-		{"Ink", p.Ink},
+	all := []namedColour{
+		{name: "Land", c: p.Land, role: RoleLand},
+		{name: "Water", c: p.Water, role: RoleWater},
+		{name: "Green", c: p.Green, role: RoleGreen},
+		{name: "Built", c: p.Built, role: RoleBuilt},
+		{name: "Road", c: p.Road, role: RoleRoad},
+		{name: "Ink", c: p.Ink, role: RoleInk},
 	}
+	drawn := make([]namedColour, 0, len(all))
+	for _, c := range all {
+		if !p.Omits(c.role) {
+			drawn = append(drawn, c)
+		}
+	}
+	return drawn
 }
 
 // underfoot is every colour a consumer's ink can end up lying across a field
@@ -100,7 +117,7 @@ func (p Palette) context() []namedColour {
 // it must be recognisable against the background, and it must not be mistaken
 // for any map role.
 func (p Palette) underfoot() []namedColour {
-	return append([]namedColour{{"Background", p.Background}}, p.context()...)
+	return append([]namedColour{{name: "Background", c: p.Background}}, p.context()...)
 }
 
 // distinguishable is every colour that has to be told apart from every other,

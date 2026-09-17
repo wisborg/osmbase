@@ -76,6 +76,30 @@ type Palette struct {
 	Road       color.RGBA
 	Ink        color.RGBA
 	NoData     color.RGBA
+
+	// Omitted names roles this palette does not draw at all.
+	//
+	// It exists because "invisible" and "absent" are different things and
+	// only one of them is expressible in a colour. A style can hide a role by
+	// painting it the background colour, and the result looks right -- but
+	// nothing downstream can tell that apart from a palette that collapsed by
+	// accident, which is a real failure this package's own contrast check was
+	// written to catch. Saying it here puts the intent in the data: an
+	// omitted role is not drawn and is not checked, and a role that merely
+	// happens to match the background is still a fault.
+	//
+	// It also costs less. An omitted role's rules are skipped rather than
+	// filled in a colour that changes no pixel, so a style that drops the
+	// landuse polygons does not pay for them.
+	//
+	// The zero value omits nothing, which is every palette written before
+	// this field existed.
+	Omitted []Role
+}
+
+// Omits reports whether this palette leaves a role undrawn.
+func (p Palette) Omits(r Role) bool {
+	return slices.Contains(p.Omitted, r)
 }
 
 // colour returns the colour for a role.

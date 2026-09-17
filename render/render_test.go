@@ -620,3 +620,47 @@ func TestRender_APolygonSpanningTwoTilesHasNoSeam(t *testing.T) {
 		}
 	}
 }
+
+// TestRender_AnOmittedRoleIsNotDrawnAtAll is the drawing half of
+// Palette.Omitted: the role does not reach the picture, rather than reaching
+// it in a colour nobody can see.
+//
+// The same tile is rendered twice against palettes that differ only in
+// whether the park role is declared omitted. The first shows park; the second
+// shows the background through it, and the ROAD crossing the same square is
+// untouched -- which is what separates "this role is left out" from "this
+// style has stopped drawing".
+func TestRender_AnOmittedRoleIsNotDrawnAtAll(t *testing.T) {
+	const z, tx, ty = 4, 9, 6
+	src := newSource()
+	src.put(t, z, tx, ty,
+		wholeTile("landuse", "park"),
+		lineLayer("roads", "minor_road",
+			mvt.Point{X: 0, Y: testExtent / 2},
+			mvt.Point{X: testExtent, Y: testExtent / 2},
+		),
+	)
+	v := tileView(t, z, tx, ty, tx, ty, 256)
+
+	drawWith := func(p render.Palette) *image.RGBA {
+		t.Helper()
+		r, err := render.New(src, render.Options{Style: testStyle(), Palette: p})
+		if err != nil {
+			t.Fatalf("render.New: %v", err)
+		}
+		res, err := r.Render(context.Background(), v)
+		if err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		return res.Image
+	}
+
+	shown := drawWith(testPalette)
+	at(t, shown, 128, 40, testPalette.Green, "the park is drawn when nothing is omitted")
+
+	omitting := testPalette
+	omitting.Omitted = []render.Role{render.RoleGreen}
+	hidden := drawWith(omitting)
+	at(t, hidden, 128, 40, testPalette.Background, "an omitted role leaves the background showing")
+	at(t, hidden, 128, 128, testPalette.Road, "the road is still drawn: omitting one role must not stop the others")
+}

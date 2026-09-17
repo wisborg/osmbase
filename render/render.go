@@ -192,6 +192,12 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		if !rule.appliesAt(p.tileZoom) {
 			continue
 		}
+		// A role the palette omits is not drawn at all, rather than drawn in
+		// a colour that happens to match the background. The picture is the
+		// same and the reasoning is not: see Palette.Omitted.
+		if r.palette.Omits(rule.Paint.Role) {
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("render: drawing rule %d of %d, layer %q: %w", i, len(r.style.Rules), rule.Layer, err)
 		}
