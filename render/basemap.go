@@ -124,6 +124,65 @@ func BasemapStyle() Style {
 				Paint: Paint{Role: RoleInk, Width: 0.8, Dash: []float32{5, 3}},
 			},
 		},
+		Labels: placeLabelRules(),
+	}
+}
+
+// placeLabelRules names settlements, and nothing else yet.
+//
+// # Why the density is mostly not decided here
+//
+// Every feature in this schema carries its own min_zoom, which is the
+// producer's statement of when it is worth showing: a country from zoom 1, a
+// city from 8, a neighbourhood from 13. Honouring that is what makes label
+// density fall out of the data rather than out of a number somebody tuned,
+// and it is why these rules span the whole zoom range instead of each being
+// pinned to a band. What remains for the placement pass is the part the data
+// cannot know: how much room is actually on screen.
+//
+// # Why the kinds are split across three rules
+//
+// They differ in priority, not in zoom. When two names cannot both fit, the
+// bigger place should win, and "bigger" is not something min_zoom alone
+// settles once a city and a suburb are both eligible. Splitting them lets the
+// order be stated rather than inferred.
+//
+// # What is deliberately absent
+//
+// Roads and water carry names too -- 432 of the 466 roads in one central
+// London tile -- and neither is here. Road names want line placement, which
+// draws nothing yet, and want it only at the deepest zooms: a name per street
+// across a five-kilometre frame is not a map, it is a wall of text over a
+// route. Water wants the same placement machinery for rivers. Both are
+// expected, which is why LabelRule already carries a Placement and why this
+// list is a list.
+func placeLabelRules() []LabelRule {
+	return []LabelRule{
+		{
+			Layer:   "places",
+			Kinds:   []string{"country", "region", "province", "state"},
+			Field:   "name",
+			MinZoom: 0, MaxZoom: MaxRuleZoom,
+			Priority: 40,
+		},
+		{
+			Layer:   "places",
+			Kinds:   []string{"locality", "city", "town", "village", "hamlet"},
+			Field:   "name",
+			MinZoom: 0, MaxZoom: MaxRuleZoom,
+			Priority: 30,
+		},
+		{
+			// The granularity that tells somebody where a route actually
+			// went. A suburb is a "neighbourhood" in this schema and carries
+			// min_zoom 13, so it appears only once the map is close enough
+			// for the name to mean something.
+			Layer:   "places",
+			Kinds:   []string{"macrohood", "neighbourhood", "borough", "suburb", "quarter"},
+			Field:   "name",
+			MinZoom: 0, MaxZoom: MaxRuleZoom,
+			Priority: 20,
+		},
 	}
 }
 
@@ -146,7 +205,11 @@ func LightPalette() Palette {
 		Built:      color.RGBA{R: 0xf2, G: 0xe4, B: 0xcd, A: 0xff},
 		Road:       color.RGBA{R: 0xdc, G: 0xc3, B: 0x9f, A: 0xff},
 		Ink:        color.RGBA{R: 0xc9, G: 0xae, B: 0x7e, A: 0xff},
-		NoData:     color.RGBA{R: 0x8f, G: 0x2f, B: 0x20, A: 0xff},
+		// Darker than anything else on this map, which is the point: a label
+		// is held to a floor against the background rather than the ceiling
+		// the surfaces and linework are held to. See MinLabelRatio.
+		Label:  color.RGBA{R: 0x3a, G: 0x40, B: 0x4a, A: 0xff},
+		NoData: color.RGBA{R: 0x8f, G: 0x2f, B: 0x20, A: 0xff},
 	}
 }
 
@@ -165,7 +228,10 @@ func DarkPalette() Palette {
 		Built:      color.RGBA{R: 0x2d, G: 0x26, B: 0x20, A: 0xff},
 		Road:       color.RGBA{R: 0x3a, G: 0x3a, B: 0x40, A: 0xff},
 		Ink:        color.RGBA{R: 0x45, G: 0x3d, B: 0x2e, A: 0xff},
-		NoData:     color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
+		// Brighter than anything else on this map. See MinLabelRatio: text is
+		// held to a floor, not to the ceiling the rest of the palette obeys.
+		Label:  color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff},
+		NoData: color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
 	}
 }
 
@@ -213,12 +279,15 @@ func DarkLineworkPalette() Palette {
 		// at some other value: if anything ever clears Omitted, the palette
 		// collapses and the contrast check says so loudly, which is a better
 		// failure than three fills quietly reappearing.
-		Land:    bg,
-		Green:   bg,
-		Built:   bg,
-		Water:   color.RGBA{R: 0x10, G: 0x28, B: 0x42, A: 0xff},
-		Road:    color.RGBA{R: 0x2e, G: 0x32, B: 0x3a, A: 0xff},
-		Ink:     color.RGBA{R: 0x3e, G: 0x34, B: 0x26, A: 0xff},
+		Land:  bg,
+		Green: bg,
+		Built: bg,
+		Water: color.RGBA{R: 0x10, G: 0x28, B: 0x42, A: 0xff},
+		Road:  color.RGBA{R: 0x2e, G: 0x32, B: 0x3a, A: 0xff},
+		Ink:   color.RGBA{R: 0x3e, G: 0x34, B: 0x26, A: 0xff},
+		// The linework is quiet by design and the names are not: on a map
+		// stripped to its lines, the names are most of what is left to read.
+		Label:   color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff},
 		NoData:  color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
 		Omitted: Roles(RoleLand, RoleGreen, RoleBuilt),
 	}

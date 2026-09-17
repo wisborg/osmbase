@@ -142,6 +142,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		Style:       render.BasemapStyle(),
 		Palette:     colours,
 		Attribution: attributionOf(a, stderr),
+		LabelFace:   labelFace(),
 	})
 	if err != nil {
 		return err
@@ -375,6 +376,7 @@ func renderFromStore(root, archive string, coords coordFlags, width, height int,
 		Style:       render.BasemapStyle(),
 		Palette:     colours,
 		Attribution: sources[0].Attribution,
+		LabelFace:   labelFace(),
 	})
 	if err != nil {
 		return err

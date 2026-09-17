@@ -49,6 +49,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/image/font"
 	"image"
 
 	"github.com/wisborg/osmbase/raster"
@@ -87,6 +88,35 @@ type Options struct {
 	// the caller has not been told one; it does not mean there is nothing to
 	// credit.
 	Attribution string
+
+	// LabelFace is the font map labels are drawn in.
+	//
+	// It comes from the caller for the same reason the palette does: a
+	// consumer with its own typography should be able to make the map's names
+	// match the rest of what it draws, rather than having a second typeface
+	// appear inside its frame. A nil face draws no labels at all, however
+	// many label rules the style carries -- which is what every style did
+	// before labels existed, and is the right answer for a caller that has no
+	// font and did not ask for text.
+	//
+	// There is deliberately no default. Building one would mean parsing a
+	// TTF, which means x/image/font/opentype, which imports x/image/font/sfnt,
+	// which imports golang.org/x/text -- a second module, in a library whose
+	// having exactly one is a property worth more than the convenience. It is
+	// also the wrong default to have: a consumer with its own typography
+	// should set the map's names in the face the rest of its frame uses, and
+	// one that has no font was not asking for text.
+	LabelFace font.Face
+
+	// LabelPadding is the space kept clear around each label, in pixels, and
+	// defaults to DefaultLabelPadding when zero.
+	//
+	// It is not decoration. Labels that merely fail to overlap are still
+	// unreadable when their boxes touch, and this is also the lever that
+	// controls how many labels a crowded view ends up with: wider padding
+	// rejects more of them, which is how a map gets quieter rather than
+	// smaller.
+	LabelPadding int
 }
 
 // Renderer draws views from one tile source with one style.
@@ -95,10 +125,12 @@ type Options struct {
 // and used for every view. It is not safe for concurrent use unless the
 // TileSource is, which is the source's own contract to state.
 type Renderer struct {
-	src     TileSource
-	style   Style
-	palette Palette
-	credit  string
+	src       TileSource
+	style     Style
+	palette   Palette
+	credit    string
+	labelFace font.Face
+	labelPad  int
 }
 
 // New returns a Renderer, refusing options it could only draw a blank from.
@@ -117,7 +149,14 @@ func New(src TileSource, o Options) (*Renderer, error) {
 	if err := o.Style.Validate(); err != nil {
 		return nil, err
 	}
-	return &Renderer{src: src, style: o.Style, palette: o.Palette, credit: o.Attribution}, nil
+	pad := o.LabelPadding
+	if pad == 0 {
+		pad = DefaultLabelPadding
+	}
+	return &Renderer{
+		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
+		labelFace: o.LabelFace, labelPad: pad,
+	}, nil
 }
 
 // Result is a rendered view and the account of what went into it.
@@ -205,6 +244,17 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		// the nesting is trap T1 and it is enforced by where the loop is
 		// rather than by a comment asking for it.
 		d.drawRule(surface, rule, tiles, r.palette.colour(rule.Paint.Role))
+	}
+
+	// Labels last of all except the hatch, so that a name is never drawn over
+	// by a road that happened to come after it in the rule order. They are
+	// collected from the same tiles the geometry came from, so a label cannot
+	// name a feature the picture does not show.
+	if r.labelFace != nil && len(r.style.Labels) > 0 {
+		cands := d.collectLabels(r.style.Labels, tiles, p.tileZoom)
+		for _, l := range placeLabels(cands, r.labelFace, r.labelPad, surface.Bounds()) {
+			drawLabel(surface.RGBA(), l, r.labelFace, r.palette.Label, r.labelPad)
+		}
 	}
 
 	// The hatch goes on last so that it is over everything, including any ink a

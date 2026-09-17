@@ -126,3 +126,19 @@ func drawable(face font.Face, s string) string {
 	}
 	return b.String()
 }
+
+// labelFace is the face this command draws map labels in.
+//
+// basicfont, the same 7x13 bitmap the credit uses, because the library takes
+// a face rather than shipping one and this command has no other. It is a real
+// limitation and it is confined to this preview tool: the face has no glyphs
+// beyond its own small table, so a place name in Danish, Greek or Japanese
+// comes out with boxes in it. A consumer that cares -- one rendering a video
+// somebody will watch -- passes a scalable face of its own, which is the
+// arrangement the option exists for.
+//
+// Parsing a TTF here instead would mean x/image/font/opentype, which imports
+// x/image/font/sfnt, which imports golang.org/x/text: a second module in a
+// library whose having exactly one is the property the dependency gate exists
+// to hold.
+func labelFace() font.Face { return basicfont.Face7x13 }

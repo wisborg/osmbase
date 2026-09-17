@@ -58,6 +58,18 @@ const (
 	// hatch exists to prevent. See docs/architecture.md, "A cache miss at
 	// render time".
 	RoleNoData
+
+	// RoleLabel is text drawn on the map: place names now, and the water and
+	// road names a later style will ask for.
+	//
+	// Its own role rather than a shade of RoleInk because it is judged
+	// differently. Every other map colour fills an area or draws a line, and
+	// the rule for those is that they must stay quiet -- a map is background.
+	// Text is not readable at the brightness an area can be: a fill at 1.8:1
+	// against its background reads as a region, and eight-pixel glyphs at
+	// 1.8:1 read as a smudge. A label that cannot be read is worse than no
+	// label, because it is clutter that also fails to inform.
+	RoleLabel
 )
 
 // Palette is the colour for each role.
@@ -76,6 +88,15 @@ type Palette struct {
 	Road       color.RGBA
 	Ink        color.RGBA
 	NoData     color.RGBA
+
+	// Label is the text drawn on the map. See RoleLabel for why it is held to
+	// a different standard than the rest of the palette.
+	//
+	// A zero value here is transparent black, which is invisible rather than
+	// wrong-looking -- so a palette written before this field existed draws no
+	// labels, which is exactly what it did before. Styles that want labels
+	// set it and say so in their own label rules.
+	Label color.RGBA
 
 	// Omitted names roles this palette does not draw at all.
 	//
@@ -150,6 +171,8 @@ func (p Palette) colour(r Role) color.RGBA {
 		return p.Road
 	case RoleNoData:
 		return p.NoData
+	case RoleLabel:
+		return p.Label
 	}
 	return p.Ink
 }
@@ -261,6 +284,19 @@ type Style struct {
 	Schema string
 
 	Rules []Rule
+
+	// Labels are the names drawn on top of the geometry, in a pass of their
+	// own after every rule above has run.
+	//
+	// A separate list rather than a field on Rule, because the two are not
+	// the same kind of thing. A Rule draws where its features are, in the
+	// order the list gives; a label competes for space and most of them are
+	// dropped. Folding them together would imply that label order is paint
+	// order, when what actually decides a label is priority and what is
+	// already on the map.
+	//
+	// Empty draws no labels, which is every style written before this field.
+	Labels []LabelRule
 }
 
 // Validate refuses a style that cannot draw what it appears to say.

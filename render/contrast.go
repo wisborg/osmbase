@@ -123,7 +123,18 @@ func (p Palette) underfoot() []namedColour {
 // distinguishable is every colour that has to be told apart from every other,
 // which is the whole palette.
 func (p Palette) distinguishable() []namedColour {
-	return p.underfoot()
+	out := p.underfoot()
+	// A label joins this list and not the others. It has to be tellable from
+	// every road, boundary and surface on the map -- a name the same colour
+	// as a road reads as part of the road network -- while being held to a
+	// floor rather than a ceiling everywhere else.
+	//
+	// A zero Label means the style draws no labels, and a colour nobody draws
+	// has nothing to be confused with.
+	if (p.Label != color.RGBA{}) {
+		out = append(out, namedColour{name: "Label", c: p.Label, role: RoleLabel})
+	}
+	return out
 }
 
 // The three thresholds, and why they are these numbers.
@@ -233,6 +244,23 @@ const (
 	// graphical object a viewer has to pick out, and it is doing the job the
 	// overlay inks do rather than the job the map does.
 	MinNoDataRatio = 3.0
+
+	// MinLabelRatio is how far a label must stand FROM the background.
+	//
+	// A floor, like the hatch's and unlike everything else here, because a
+	// label has the opposite job to the rest of the map. Every other role
+	// fills an area or draws a line and must stay quiet; a name has to be
+	// READ, and the two are not satisfied at the same brightness. A fill at
+	// 1.8:1 against its background reads perfectly well as a region, and
+	// eight-pixel glyphs at 1.8:1 read as a smudge -- clutter that also fails
+	// to inform, which is worse than leaving the name off.
+	//
+	// 4.5 is WCAG 2's ratio for normal-size text, borrowed for the same
+	// reason MinNoDataRatio borrows 3.0: the threshold was derived for small
+	// text on a background and that is exactly what this is. It sits ABOVE
+	// MaxContextRatio, which is not a contradiction -- a label is not
+	// context, and the two constraints apply to disjoint sets of roles.
+	MinLabelRatio = 4.5
 )
 
 // CheckContrast reports whether this palette can carry that overlay.
@@ -299,6 +327,23 @@ func (p Palette) CheckContrast(o Overlay) error {
 	// from a crash, which is the thing it exists to prevent. Nothing else in
 	// this file expresses a floor, so without this the hatch could drift to
 	// invisible and every test would still pass.
+	// 6. A label must be readable, which is a floor, and must not be
+	// mistaken for a road, which is rule 3 above -- Label is in
+	// distinguishable for that reason. It is NOT in context: a ceiling meant
+	// to keep areas quiet would make text unreadable, and it is not in
+	// underfoot for the same reason the hatch is not, since a route crosses a
+	// name transversely rather than lying on a field of it.
+	//
+	// Skipped entirely when the colour is the zero value, which is what a
+	// palette that draws no labels carries.
+	if (p.Label != color.RGBA{}) {
+		if r := ContrastRatio(p.Label, p.Background); r < MinLabelRatio {
+			bad = append(bad, fmt.Sprintf(
+				"Label is %.2f against Background, below %.2f: names would be a smudge rather than words",
+				r, MinLabelRatio))
+		}
+	}
+
 	if r := ContrastRatio(p.NoData, p.Background); r < MinNoDataRatio {
 		bad = append(bad, fmt.Sprintf(
 			"NoData is %.2f against Background, below %.2f: a gap would not be recognisable as a gap",

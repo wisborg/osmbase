@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -367,4 +368,97 @@ func hatchBox(g image.Rectangle, gaps []image.Rectangle, width float64) box {
 		b.MaxY -= width
 	}
 	return b
+}
+
+// collectLabels gathers every label the style asks for from the tiles in
+// view, without deciding which of them will fit.
+//
+// Two zoom filters apply and they mean different things. The rule's own
+// MinZoom is a statement about a CLASS of label -- road names below the
+// deepest zooms are noise whatever the road -- and the feature's min_zoom tag
+// is the producer's statement about that one feature, which is what keeps a
+// city visible from far out while a hamlet waits until the map is close. Both
+// have to pass, and neither can substitute for the other.
+//
+// The feature's tag is compared against the zoom being DISPLAYED rather than
+// the zoom of the tile it came from. Those differ whenever a view is drawn
+// from an overzoomed ancestor, and the display zoom is the right one: the
+// question is how much room the reader has on screen, not which file the
+// feature arrived in.
+func (d *drawer) collectLabels(rules []LabelRule, tiles []drawTile, at uint8) []candidate {
+	var out []candidate
+	for i := range rules {
+		rule := &rules[i]
+		if !rule.appliesAt(at) {
+			continue
+		}
+		// Only point placement draws today. A line rule is collected by a
+		// later change; skipping it here rather than treating it as a point
+		// keeps a half-implemented river name from appearing at the midpoint
+		// of its bounding box.
+		if rule.Placement != PlacePoint {
+			continue
+		}
+		for _, dt := range tiles {
+			d.appendTileLabels(&out, rule, dt, at)
+		}
+	}
+	return out
+}
+
+func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile, at uint8) {
+	layer, ok := dt.tile.Layer(rule.Layer)
+	if !ok {
+		return
+	}
+	extent := layer.Extent
+	if extent == 0 {
+		extent = mvt.DefaultExtent
+	}
+	tr := d.p.tileTransform(dt.ref.z, dt.ref.x, dt.ref.y, extent)
+
+	for i := range layer.Features {
+		f := &layer.Features[i]
+		if f.Type != mvt.GeomPoint || !rule.matches(f) {
+			continue
+		}
+		if v, ok := f.Tags["min_zoom"]; ok {
+			if z, isNum := v.Float64(); isNum && float64(at) < z {
+				continue
+			}
+		}
+		text, ok := labelText(f, rule.Field)
+		if !ok {
+			continue
+		}
+		for _, pnt := range f.Geometry.Points {
+			p := tr.apply(pnt.X, pnt.Y)
+			*out = append(*out, candidate{
+				text: text, x: p.X, y: p.Y,
+				priority: rule.Priority,
+				rank:     labelRank(f),
+				// The tile and the coordinate, which together are unique and
+				// stable. Only ever compared, never shown.
+				key: fmt.Sprintf("%d/%d/%d:%d,%d", dt.ref.z, dt.ref.x, dt.ref.y, pnt.X, pnt.Y),
+			})
+		}
+	}
+}
+
+// labelText reads the field a rule names, rejecting anything that is not a
+// non-empty string.
+//
+// A feature with no name is not an error and not a label: most features in
+// most layers have none. A name that is present but empty is treated the same
+// way, since an empty label would reserve space and draw nothing.
+func labelText(f *mvt.Feature, field string) (string, bool) {
+	v, ok := f.Tags[field]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.Text()
+	if !ok || s == "" {
+		return "", false
+	}
+	return s, true
 }
