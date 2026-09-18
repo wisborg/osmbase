@@ -12,12 +12,26 @@ gets forgotten by whoever ships the image.
 Software
 -------------------------------------------------------------------------------
 
-go.mod requires exactly one module, and it is the one the entry below was
-written for before anything imported it.  It stays written out in full here so
-that a second one arriving is a visible edit to this file rather than a quiet
-line in go.sum.
+go.mod requires two modules, both from the Go project, and both are written
+out in full here so that a third arriving is a visible edit to this file
+rather than a quiet line in go.sum.  The dependency target in the Makefile
+admits these two BY NAME for the same reason.
 
 golang.org/x/image         Copyright (c) 2009 The Go Authors.  BSD 3-Clause.
+
+golang.org/x/text          Copyright (c) 2009 The Go Authors.  BSD 3-Clause.
+
+  Not imported directly.  It arrives under x/image/font/opentype, which needs
+  x/image/font/sfnt, which needs x/text/encoding/charmap to read a font's
+  character map.  The command parses a font because it draws place names, and
+  the bitmap face it used before had no glyph for most of them: a map of
+  Denmark came out reading "S0nder Lindskov".  A map that misspells the places
+  on it is worse than a map with none, because the reader cannot tell which
+  names are wrong.
+
+  The LIBRARY still parses no font and draws no text without one being handed
+  in, so a consumer that supplies its own face links neither the parser nor
+  the font data.  This dependency is the command's.
                            The `vector` package rasterizes every filled path
                            this library draws.  It is the only non-standard-
                            library import in the module, and keeping it that

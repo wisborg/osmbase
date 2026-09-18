@@ -3,10 +3,8 @@ package main
 import (
 	"image"
 	"image/color"
-	"strings"
 	"testing"
 
-	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -80,26 +78,6 @@ func TestDrawCredit_PlateIsLightNotBlack(t *testing.T) {
 // A face asked for a rune it lacks draws its missing-glyph box, so the credit
 // rendered as a filled square followed by the name. The substitution is a
 // transliteration rather than a deletion because the string exists to name who
-// is owed credit, and "(c)" carries that where a dropped character would not.
-func TestDrawCredit_TransliteratesRunesTheFontCannotDraw(t *testing.T) {
-	face := basicfont.Face7x13
-	got := drawable(face, "© OpenStreetMap contributors")
-	if strings.ContainsRune(got, '©') {
-		t.Errorf("the copyright sign survived into %q, and the font cannot draw it", got)
-	}
-	if !strings.HasPrefix(got, "(c)") {
-		t.Errorf("got %q, want the copyright sign transliterated to (c)", got)
-	}
-	if !strings.Contains(got, "OpenStreetMap contributors") {
-		t.Errorf("got %q, want the name of who is owed credit intact", got)
-	}
-	// Every rune that survives must actually be drawable, or the box comes back.
-	for _, r := range got {
-		if _, _, _, _, ok := face.Glyph(fixedZero(), r); !ok {
-			t.Errorf("%q survived transliteration and the font cannot draw it", r)
-		}
-	}
-}
 
 // TestDrawCredit_DoesNothingWithoutACredit keeps an archive that names nobody
 // from getting a blank plate.

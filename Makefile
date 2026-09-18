@@ -92,13 +92,18 @@ tidy:
 # go.mod, so the graph lists it, but `go mod why` reports the main module does
 # not need it and nothing here imports it -- a graph check would fail on a
 # module that never reaches the binary.
-## deps: check nothing but golang.org/x/image crept in
+## deps: check nothing but the two admitted modules crept in
+##
+## Two, not one, since the command started drawing place names. x/text arrives
+## under x/image/font/opentype -> sfnt -> encoding/charmap, and is admitted BY
+## NAME rather than by loosening the pattern, so a third module is still a
+## failure here and a visible edit to this file and to NOTICE.
 deps:
-	@bad=$$(go mod edit -json | sed -n 's/.*"Path": "\(.*\)".*/\1/p' | grep -v '^golang.org/x/image$$' | grep -v '^github.com/wisborg/osmbase$$' || true); \
-	  if [ -n "$$bad" ]; then echo "deps: FAILED -- go.mod requires more than x/image:"; echo "$$bad"; exit 1; fi
-	@bad=$$(go list -deps ./... | grep -E '^[a-z0-9-]+\.[a-z]+/' | grep -v '^golang.org/x/image' | grep -v '^github.com/wisborg/osmbase' || true); \
+	@bad=$$(go mod edit -json | sed -n 's/.*"Path": "\(.*\)".*/\1/p' | grep -v '^golang.org/x/image$$' | grep -v '^golang.org/x/text$$' | grep -v '^github.com/wisborg/osmbase$$' || true); \
+	  if [ -n "$$bad" ]; then echo "deps: FAILED -- go.mod requires more than x/image and x/text:"; echo "$$bad"; exit 1; fi
+	@bad=$$(go list -deps ./... | grep -E '^[a-z0-9-]+\.[a-z]+/' | grep -v '^golang.org/x/image' | grep -v '^golang.org/x/text' | grep -v '^github.com/wisborg/osmbase' || true); \
 	  if [ -n "$$bad" ]; then echo "deps: FAILED -- these non-stdlib packages are compiled in:"; echo "$$bad"; exit 1; fi
-	@echo "deps: golang.org/x/image only, in go.mod and in the binary"
+	@echo "deps: golang.org/x/image and x/text only, in go.mod and in the binary"
 
 ## clean: remove the binary and empty .scratch/
 clean:

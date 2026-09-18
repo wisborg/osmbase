@@ -4,12 +4,10 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"strings"
 
 	"github.com/wisborg/osmbase/render"
 
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -28,17 +26,19 @@ import (
 // with, which is why the drawing is here rather than in render/. fitdash, the
 // other consumer, has its own text stack and draws the same string itself.
 //
-// basicfont.Face7x13 is the font because it is already inside
-// golang.org/x/image, this module's one admitted dependency. An opentype face
-// would look better and would mean either embedding a font file or reaching
-// for a second module, and neither is worth it for one line of small print.
+// The face is the one the map labels use -- see textFace. It used to be
+// basicfont, which has no copyright sign, so this drew "(c) OpenStreetMap"
+// through a transliteration step. With a real font the credit is the string
+// the data actually asks for.
 func drawCredit(img *image.RGBA, credit string) {
 	credit = render.PlainCredit(credit)
 	if img == nil || credit == "" {
 		return
 	}
-	face := basicfont.Face7x13
-	credit = drawable(face, credit)
+	face := labelFace()
+	if face == nil {
+		return
+	}
 	b := img.Bounds()
 
 	const pad = 4
@@ -86,59 +86,3 @@ func drawCredit(img *image.RGBA, credit string) {
 	}
 	d.DrawString(credit)
 }
-
-// drawable replaces any rune the face cannot draw.
-//
-// basicfont.Face7x13 covers little more than ASCII, and an attribution string
-// is full of things that are not: the copyright sign above all, which is how
-// every map service writes its credit. A face asked for a rune it lacks draws
-// its missing-glyph box, so "(c) OpenStreetMap" came out as a filled square
-// followed by the name -- legible enough to miss in a thumbnail and wrong in a
-// document that exists to satisfy a licence.
-//
-// The substitutions are transliterations rather than deletions, because the
-// point of the string is to name who is owed credit. "(c)" is the accepted
-// ASCII form of the copyright sign and carries the same meaning; a dropped
-// character would not. Anything else unrenderable becomes a question mark,
-// which is visibly wrong rather than silently absent -- a credit that looks
-// damaged gets fixed, and one that quietly lost a word does not.
-func drawable(face font.Face, s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if _, _, _, _, ok := face.Glyph(fixed.Point26_6{}, r); ok {
-			b.WriteRune(r)
-			continue
-		}
-		switch r {
-		case '\u00a9':
-			b.WriteString("(c)")
-		case '\u00ae':
-			b.WriteString("(r)")
-		case '\u2019', '\u2018':
-			b.WriteByte('\'')
-		case '\u201c', '\u201d':
-			b.WriteByte('"')
-		case '\u2013', '\u2014':
-			b.WriteByte('-')
-		default:
-			b.WriteByte('?')
-		}
-	}
-	return b.String()
-}
-
-// labelFace is the face this command draws map labels in.
-//
-// basicfont, the same 7x13 bitmap the credit uses, because the library takes
-// a face rather than shipping one and this command has no other. It is a real
-// limitation and it is confined to this preview tool: the face has no glyphs
-// beyond its own small table, so a place name in Danish, Greek or Japanese
-// comes out with boxes in it. A consumer that cares -- one rendering a video
-// somebody will watch -- passes a scalable face of its own, which is the
-// arrangement the option exists for.
-//
-// Parsing a TTF here instead would mean x/image/font/opentype, which imports
-// x/image/font/sfnt, which imports golang.org/x/text: a second module in a
-// library whose having exactly one is the property the dependency gate exists
-// to hold.
-func labelFace() font.Face { return basicfont.Face7x13 }
