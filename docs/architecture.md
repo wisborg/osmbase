@@ -42,7 +42,7 @@ package inside either of them.
 | Package | Contents |
 |---|---|
 | `osmbase` | `View`, `Bounds`, `Result`, `Renderer`, `Style`, `Palette`, `Place`, errors |
-| `osmbase/pmtiles` | PMTiles v3 archive reader. Ours. See "Zero third-party modules" |
+| `osmbase/pmtiles` | PMTiles v3 archive reader. Ours. See "Almost zero third-party modules" |
 | `osmbase/mvt` | Mapbox Vector Tile decoder. Ours |
 | `osmbase/mercator` | Web Mercator and the tile grid: degrees to a tile, a tile's local integers back to degrees. Not in `mvt`, which deliberately does not project |
 | `osmbase/osmpbf` | Streaming OpenStreetMap PBF reader. Ours |
@@ -104,10 +104,24 @@ Raw OSM comes back into the design, narrowly, for admin boundaries. See "Place n
 - **No named administrative polygons**, which is why place containment needs a second
   source.
 
-## Zero third-party modules
+## Almost zero third-party modules
 
-`golang.org/x/image` is the only non-standard-library import in this module, and it is
-there for one package, `vector`.
+`golang.org/x/image` and `golang.org/x/text` are the only non-standard-library imports in
+this module. The first is there for `vector`, the rasterizer, and later for `opentype` as
+well; the second is not imported directly at all and arrives beneath it, since `opentype`
+needs `sfnt`, which needs `text/encoding/charmap` to read a font's character map.
+
+The heading used to read "Zero third-party modules" and the second module is a deliberate,
+visible edit rather than a drift. It was spent on map labels: the command drew them in
+`basicfont`, which has no glyphs beyond its own small table, and a map of Denmark came out
+reading "S0nder Lindskov". A map that misspells the places on it is worse than one with no
+names, because the reader cannot tell which names are wrong. `NOTICE` names both modules and
+the `deps` target admits them BY NAME, so a third is still a failure and still an edit
+somebody has to make on purpose.
+
+The LIBRARY still parses no font and draws no text without a face handed in, so a consumer
+supplying its own links neither the parser nor any font data. That cost belongs to the
+command.
 
 This is a deliberate constraint rather than an accident of scope. The library will be
 depended on by at least two public Apache-2.0 programs whose `NOTICE` files are
@@ -118,7 +132,8 @@ maintained by hand, and every module that arrives here arrives in both of them.
 | `github.com/protomaps/go-pmtiles` | BSD-3 and correct, but its requires include `gocloud.dev`, the AWS, Azure and Google cloud SDKs, `caddyserver/caddy`, Prometheus, zap and `zombiezen.com/go/sqlite`. Importing it for one `Extract` call puts a web server and three cloud SDKs in fitdash's `go.sum` and `NOTICE`. |
 | `github.com/paulmach/orb` | MIT, but its MVT path routes every geometry through GeoJSON, and the module pulls `go.mongodb.org/mongo-driver` for BSON. |
 | `github.com/paulmach/osm` | MIT and pure Go, and it pulls `orb`, and thence the above. |
-| `github.com/fogleman/gg` | MIT, and already in fitdash's tree so it would have been free *there*. It reaches `github.com/golang/freetype`, which is FTL/GPLv2 dual-licensed and whose advertising clause makes the credit mandatory rather than courteous. We need no text, so this is a second independent path to that dependency bought for nothing. |
+| `github.com/fogleman/gg` | MIT, and already in fitdash's tree so it would have been free *there*. It reaches `github.com/golang/freetype`, which is FTL/GPLv2 dual-licensed and whose advertising clause makes the credit mandatory rather than courteous. Text arrived here eventually, and went through `x/image/font/opentype` instead — same capability, no new licence to weigh. |
+| `github.com/wisborg/output` | Would give the `locate` command CSV, YAML and table output for free. It brings `uax29` and `go-runewidth`, taking this module from two dependencies to five, and the consumer that wants those formats also wants FIT decoding, which is a sixth. Both belong in a program built on this library rather than in it. See [locate.md](locate.md). |
 
 `golang.org/x/image` is treated as materially different from a third-party module: it is
 Go-team BSD-3, versioned and released with the toolchain, and already present in the
@@ -439,6 +454,13 @@ somebody who was in the next suburb.
 Resolution order is containment at the deepest wanted admin level, then shallower levels,
 then the tile schema's own place points within a distance cap, then nothing. **Beyond the
 cap there is no answer**, rather than a distant one.
+
+The detailed plan — what the tile data can and cannot answer, which boundary source is used
+at which stage, how the data is fetched, and the API shape — is in
+**[locate.md](locate.md)**. It adds one thing this section did not settle: the boundary work
+is staged, with Natural Earth first for country and region because it is public domain and
+those two levels are the ones nearest-point cannot answer at all, and the OSM relation
+pipeline described above second, because it is the only route to suburb.
 
 ## Styling
 
