@@ -349,3 +349,113 @@ func TestLabelInk_FallsBackWhenAPaletteNamesOnlyOne(t *testing.T) {
 		t.Errorf("a palette naming one ink drew a minor label in %v, want the ink it has, %v: the zero value is transparent black and the name would disappear", got, major)
 	}
 }
+
+// TestAllowsFeature_BiasMovesBOTHZoomTests is the bug this function exists to
+// have made impossible.
+//
+// A label appears only when the RULE allows it and the FEATURE's own min_zoom
+// allows it. The first version of the density dial moved the rule's threshold
+// and left the feature test judging the map's raw zoom, which produced a knob
+// that worked in one direction and did nothing in the other: asking for
+// denser labels let a whole class of road through the rule while every
+// individual road went on vetoing itself. Both halves are asserted here, and
+// the denser direction is the one that was broken.
+func TestAllowsFeature_BiasMovesBothZoomTests(t *testing.T) {
+	// A road the producer says is worth showing from zoom 15, under a rule
+	// that starts at 15.
+	road := &mvt.Feature{Tags: map[string]mvt.Value{"min_zoom": mvt.SintValue(15)}}
+	rule := LabelRule{MinZoom: 15, MaxZoom: MaxRuleZoom}
+
+	if rule.allowsFeature(road, 14) {
+		t.Error("allowed at zoom 14, where neither the rule nor the feature admits it")
+	}
+	if !rule.allowsFeature(road, 15) {
+		t.Error("refused at zoom 15, where both admit it")
+	}
+
+	// One zoom denser: the rule must admit it AND the feature test must move
+	// with it. If only the rule moved, this stays false and the dial is dead
+	// in this direction.
+	denser := rule
+	denser.ZoomBias = 1
+	if !denser.allowsFeature(road, 14) {
+		t.Error("a +1 bias did not admit at zoom 14 a feature that zoom 15 admits: the feature's own min_zoom is still being judged against the map's raw zoom")
+	}
+
+	// And one zoom sparser must withhold at the zoom that plain admits.
+	sparser := rule
+	sparser.ZoomBias = -1
+	if sparser.allowsFeature(road, 15) {
+		t.Error("a -1 bias still admitted at zoom 15")
+	}
+
+	// A feature with no declared min_zoom is governed by the rule alone.
+	bare := &mvt.Feature{Tags: map[string]mvt.Value{}}
+	if !rule.allowsFeature(bare, 15) {
+		t.Error("a feature declaring no min_zoom was refused by a rule that admits its zoom")
+	}
+}
+
+// TestShiftLineLabels_MovesTheStreetsAndLeavesThePlaces pins which half of
+// the label set the density dial touches.
+//
+// Places are not what crowds a map. There are few of them, they are the names
+// a reader is looking for, and thinning them is what makes a busy map
+// unreadable rather than what fixes it. The rules the dial may touch are
+// exactly those marked Minor.
+func TestShiftLineLabels_MovesTheStreetsAndLeavesThePlaces(t *testing.T) {
+	base := BasemapStyle()
+	shifted := base.ShiftLineLabels(-1)
+
+	if len(shifted.Labels) != len(base.Labels) {
+		t.Fatalf("shifting changed the number of rules, %d to %d", len(base.Labels), len(shifted.Labels))
+	}
+	var moved, still int
+	for i := range base.Labels {
+		b, s := base.Labels[i], shifted.Labels[i]
+		switch {
+		case b.Minor && s.ZoomBias == b.ZoomBias-1:
+			moved++
+		case !b.Minor && s.ZoomBias == b.ZoomBias:
+			still++
+		default:
+			t.Errorf("rule %d (%s, minor=%v) has bias %d, want %d", i, b.Layer, b.Minor, s.ZoomBias, b.ZoomBias)
+		}
+	}
+	if moved == 0 || still == 0 {
+		t.Fatalf("precondition: %d rules moved and %d stayed; the test needs some of each to mean anything", moved, still)
+	}
+
+	// The original must be untouched: a style is a value, and a caller
+	// holding one expects it to stay as it was.
+	for i, r := range BasemapStyle().Labels {
+		if base.Labels[i].ZoomBias != r.ZoomBias {
+			t.Errorf("shifting a copy changed the original's rule %d", i)
+		}
+	}
+}
+
+// TestWithoutLineLabels_KeepsThePlacesAndNothingElse covers the setting that
+// is not a shift.
+//
+// "Not at all" is a different statement from "later", and a caller asking for
+// it should not have to know how many zoom levels count as infinity.
+func TestWithoutLineLabels_KeepsThePlacesAndNothingElse(t *testing.T) {
+	base := BasemapStyle()
+	only := base.WithoutLineLabels()
+
+	if len(only.Labels) == 0 {
+		t.Fatal("every label rule was dropped; places are meant to survive")
+	}
+	for _, r := range only.Labels {
+		if r.Minor {
+			t.Errorf("a minor rule for layer %q survived", r.Layer)
+		}
+	}
+	if len(only.Labels) >= len(base.Labels) {
+		t.Errorf("nothing was dropped: %d rules before, %d after", len(base.Labels), len(only.Labels))
+	}
+	if len(BasemapStyle().Labels) != len(base.Labels) {
+		t.Error("dropping from a copy changed the original")
+	}
+}

@@ -72,6 +72,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		store         string
 		archive       string
 		out           string
+		labels        string
 	)
 	fs := newFlagSet("render", renderUsage)
 	coords.bind(fs)
@@ -80,6 +81,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&palette, "palette", "light", "colours to draw with: light, dark, or dark-linework -- the dark map with its landuse fills dropped, leaving roads, rail and boundaries over near-black with water as the only fill")
 	fs.StringVar(&store, "store", "", "draw from a store filled by \"osmbase fetch\" instead of from an archive; nothing reaches the network")
 	fs.StringVar(&archive, "archive", "", "which archive in the store to draw from, by ID or by part of its name; only needed when the store holds more than one")
+	fs.StringVar(&labels, "labels", "normal", labelHelp())
 	fs.StringVar(&out, "out", "map.png", "file to write the PNG to")
 
 	source, err := parseArgs(fs, args, stdout)
@@ -100,6 +102,10 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	style, err := labelStyle(render.BasemapStyle(), labels)
+	if err != nil {
+		return err
+	}
 
 	// A store and an archive are two different things to draw from, and the
 	// difference is the point of the store existing: reading one contacts
@@ -110,7 +116,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		if source != "" {
 			return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
 		}
-		return renderFromStore(store, archive, coords, width, height, colours, palette, out, stdout, stderr)
+		return renderFromStore(store, archive, coords, width, height, colours, style, palette, out, stdout, stderr)
 	}
 
 	a, err := openArchive(source, stderr)
@@ -139,7 +145,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	}
 
 	r, err := render.New(a.Reader(), render.Options{
-		Style:        render.BasemapStyle(),
+		Style:        style,
 		Palette:      colours,
 		Attribution:  attributionOf(a, stderr),
 		LabelFace:    labelFace(),
@@ -346,7 +352,7 @@ func percent(f float64) string {
 // here, no URL, and nothing that could contact anyone. slice imports neither
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
-func renderFromStore(root, archive string, coords coordFlags, width, height int, colours render.Palette, palette, out string, stdout, stderr io.Writer) error {
+func renderFromStore(root, archive string, coords coordFlags, width, height int, colours render.Palette, style render.Style, palette, out string, stdout, stderr io.Writer) error {
 	st, err := slice.Open(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -374,7 +380,7 @@ func renderFromStore(root, archive string, coords coordFlags, width, height int,
 	}
 
 	r, err := render.New(src, render.Options{
-		Style:        render.BasemapStyle(),
+		Style:        style,
 		Palette:      colours,
 		Attribution:  sources[0].Attribution,
 		LabelFace:    labelFace(),

@@ -208,8 +208,14 @@ func placeLabelRules() []LabelRule {
 			OncePerName: true,
 		},
 
-		// Roads, and only when the map is close. This is the rule the
-		// per-rule MinZoom exists for: the features carry min_zoom values
+		// Roads, in four tiers rather than two. The tiers are what make
+		// Style.ShiftLineLabels behave like a dial instead of a switch: with
+		// every road in one rule, asking for "one zoom quieter" at the zoom
+		// that rule starts at removes every street name at once, which is not
+		// what anybody means by quieter. Four tiers a zoom apart give the
+		// shift somewhere to land.
+		//
+		// This is also the rule the per-rule MinZoom exists for: the features carry min_zoom values
 		// from 7 upward, so honouring the data alone would start naming trunk
 		// roads on a view spanning a county, where a road name tells a reader
 		// nothing they can use and takes the space a place name would have
@@ -226,7 +232,17 @@ func placeLabelRules() []LabelRule {
 		// features all called the same thing.
 		{
 			Layer:     "roads",
-			Kinds:     []string{"highway", "major_road"},
+			Kinds:     []string{"highway"},
+			Field:     "name",
+			Placement: PlaceLine,
+			MinZoom:   13, MaxZoom: MaxRuleZoom,
+			Priority:    12,
+			Minor:       true,
+			OncePerName: true,
+		},
+		{
+			Layer:     "roads",
+			Kinds:     []string{"major_road"},
 			Field:     "name",
 			Placement: PlaceLine,
 			MinZoom:   14, MaxZoom: MaxRuleZoom,
@@ -242,11 +258,26 @@ func placeLabelRules() []LabelRule {
 			// what lets a z14 view name the roads that cross a district while
 			// a z15 view names the streets within it.
 			Layer:     "roads",
-			Kinds:     []string{"medium_road", "minor_road"},
+			Kinds:     []string{"medium_road"},
 			Field:     "name",
 			Placement: PlaceLine,
 			MinZoom:   15, MaxZoom: MaxRuleZoom,
 			Priority:    5,
+			SizeScale:   0.9,
+			Minor:       true,
+			OncePerName: true,
+		},
+		{
+			// The street outside a front door. Only at the zoom where that is
+			// what the map is of, which is one deeper than the roads that
+			// connect districts: at 15 these put about seventy names on a
+			// view of one suburb, and the places drown among them.
+			Layer:     "roads",
+			Kinds:     []string{"minor_road"},
+			Field:     "name",
+			Placement: PlaceLine,
+			MinZoom:   16, MaxZoom: MaxRuleZoom,
+			Priority:    3,
 			SizeScale:   0.9,
 			Minor:       true,
 			OncePerName: true,

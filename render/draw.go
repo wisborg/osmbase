@@ -417,13 +417,8 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 
 	for i := range layer.Features {
 		f := &layer.Features[i]
-		if !rule.matches(f) || !rule.labels(f.Type) {
+		if !rule.matches(f) || !rule.labels(f.Type) || !rule.allowsFeature(f, at) {
 			continue
-		}
-		if v, ok := f.Tags["min_zoom"]; ok {
-			if z, isNum := v.Float64(); isNum && float64(at) < z {
-				continue
-			}
 		}
 		text, ok := labelText(f, rule.Field)
 		if !ok {

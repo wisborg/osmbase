@@ -60,6 +60,21 @@ type LabelRule struct {
 	// MinZoom and MaxZoom bound the rule itself, inclusive.
 	MinZoom, MaxZoom uint8
 
+	// ZoomBias evaluates this rule as though the map were that many zoom
+	// levels deeper (positive) or shallower (negative).
+	//
+	// It applies to BOTH zoom tests, which is the whole point of it existing
+	// rather than callers adjusting MinZoom themselves. A label appears only
+	// when the rule allows it AND the feature's own min_zoom allows it, and
+	// moving one without the other produces a dial that does nothing in one
+	// direction: shifting only the rule earlier lets a class of road through
+	// that every individual road still vetoes. Asking to be one zoom denser
+	// has to mean "pretend the map is one zoom closer" for both questions or
+	// it means very little.
+	//
+	// Set by Style.ShiftLineLabels. Zero, and therefore nothing, by default.
+	ZoomBias int
+
 	// Priority orders labels against labels from OTHER rules when they
 	// collide, higher first. Within one rule the data decides -- see
 	// labelRank.
@@ -120,8 +135,47 @@ func (r *LabelRule) labels(t mvt.GeomType) bool {
 	return false
 }
 
-// appliesAt reports whether this rule runs at a zoom.
-func (r *LabelRule) appliesAt(z uint8) bool { return z >= r.MinZoom && z <= r.MaxZoom }
+// appliesAt reports whether this rule runs at a zoom, after its bias.
+func (r *LabelRule) appliesAt(z uint8) bool {
+	e, ok := r.effectiveZoom(z)
+	return ok && e >= r.MinZoom && e <= r.MaxZoom
+}
+
+// effectiveZoom is the zoom this rule judges by: the map's, moved by the
+// rule's bias and clamped to what a zoom can be.
+//
+// The second result is false when the bias takes it off either end, which is
+// how a shift far enough in either direction turns a rule off rather than
+// wrapping it around to the other extreme.
+func (r *LabelRule) effectiveZoom(z uint8) (uint8, bool) {
+	e := int(z) + r.ZoomBias
+	if e < 0 || e > int(MaxRuleZoom) {
+		return 0, false
+	}
+	return uint8(e), true
+}
+
+// allowsFeature reports whether this rule labels a feature at a map zoom,
+// applying BOTH zoom tests: its own threshold and the feature's declared
+// min_zoom, each judged at the rule's effective zoom.
+//
+// One function rather than two tests spread across the collection loop,
+// because the two have to move together. Biasing only the rule was the first
+// version of this and it produced a dial that did nothing in the denser
+// direction: a whole class of road let through by the rule, and every
+// individual road vetoing itself.
+func (r *LabelRule) allowsFeature(f *mvt.Feature, at uint8) bool {
+	e, ok := r.effectiveZoom(at)
+	if !ok || e < r.MinZoom || e > r.MaxZoom {
+		return false
+	}
+	if v, ok := f.Tags["min_zoom"]; ok {
+		if z, isNum := v.Float64(); isNum && float64(e) < z {
+			return false
+		}
+	}
+	return true
+}
 
 // matches reports whether a feature is one this rule labels.
 func (r *LabelRule) matches(f *mvt.Feature) bool {

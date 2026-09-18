@@ -358,3 +358,68 @@ func (s Style) maxStrokeWidth(z uint8) float32 {
 	}
 	return w
 }
+
+// ShiftLineLabels returns a copy of the style with its street and water names
+// appearing later (a negative shift) or earlier (a positive one).
+//
+// # Why a zoom shift and not a list of road classes
+//
+// The obvious way to thin street names is to name fewer kinds of road, and it
+// was tried. It behaves very differently from place to place: dropping
+// major_road at zoom 14 left a large Sydney suburb with its motorways and
+// left a Danish town centre with no street names whatever. A zoom shift
+// composes with the per-feature min_zoom already doing the work, so "one
+// zoom quieter" means the same thing everywhere rather than something that
+// has to be re-tuned for each kind of place.
+//
+// # Why only the line labels
+//
+// Places are not what crowds a map. There are few of them, they are the names
+// a reader is actually looking for, and shifting them would take away the
+// thing that makes a busy map legible. The rules this touches are exactly
+// those marked Minor -- the names of things the map DRAWS, as against the
+// names of the places it is of.
+//
+// It sets a bias rather than editing each rule's MinZoom, because a label
+// has to clear the rule's threshold AND the feature's own min_zoom, and
+// moving only the first gives a dial that does nothing in one direction --
+// letting a class of road through that every individual road still vetoes.
+// See LabelRule.ZoomBias.
+//
+// The copy is shallow except for the label rules, which is the only part
+// changed. A style is a value and a caller that keeps the original expects it
+// to stay as it was.
+func (s Style) ShiftLineLabels(zooms int) Style {
+	if zooms == 0 {
+		return s
+	}
+	out := s
+	out.Labels = make([]LabelRule, len(s.Labels))
+	copy(out.Labels, s.Labels)
+	for i := range out.Labels {
+		r := &out.Labels[i]
+		if !r.Minor {
+			continue
+		}
+		r.ZoomBias += zooms
+	}
+	return out
+}
+
+// WithoutLineLabels returns a copy of the style that names places and nothing
+// else.
+//
+// Separate from ShiftLineLabels rather than a large shift, because it is a
+// different statement. A shift says "later"; this says "not at all", and a
+// caller asking for it should not have to know how many zoom levels count as
+// infinity.
+func (s Style) WithoutLineLabels() Style {
+	out := s
+	out.Labels = nil
+	for _, r := range s.Labels {
+		if !r.Minor {
+			out.Labels = append(out.Labels, r)
+		}
+	}
+	return out
+}
