@@ -180,3 +180,99 @@ func TestLabelRank_ReadsTheProducersOwnImportance(t *testing.T) {
 		t.Error("a feature carrying no importance at all outranks one that does; an unranked label should lose, because the ranked one is KNOWN to matter")
 	}
 }
+
+// TestLineAnchor_TakesTheMidpointOfTheLongestPartByDISTANCE covers where a
+// line's name is written, which is two decisions rather than one.
+//
+// A feature arrives as several parts when a tile cut it, so the longest part
+// is taken: pinning a name to the two-pixel fragment of a road that clipped a
+// tile corner would put it at the edge of the view on a stub nobody can see
+// is a road. And within that part the midpoint is found by walking the
+// distance rather than by taking the middle vertex, because a line that
+// curves and then runs straight has its points bunched at one end -- its
+// middle vertex can sit a long way from its middle.
+func TestLineAnchor_TakesTheMidpointOfTheLongestPartByDistance(t *testing.T) {
+	// A short stub and a long line. The long one runs 0..1000 on x with its
+	// vertices crowded into the first tenth.
+	long := []mvt.Point{{X: 0, Y: 50}, {X: 20, Y: 50}, {X: 40, Y: 50}, {X: 60, Y: 50}, {X: 1000, Y: 50}}
+	stub := []mvt.Point{{X: 0, Y: 900}, {X: 8, Y: 900}}
+
+	x, y, ok := lineAnchor([][]mvt.Point{stub, long})
+	if !ok {
+		t.Fatal("no anchor found for a feature with two parts")
+	}
+	if y != 50 {
+		t.Errorf("anchor is at y=%d, want 50: it should sit on the long part, not the stub", y)
+	}
+	if x < 400 || x > 600 {
+		t.Errorf("anchor is at x=%d, want near the midpoint 500: the middle VERTEX is at x=40, so this is taking the vertex rather than walking the distance", x)
+	}
+}
+
+// TestLineAnchor_HasNothingToSayAboutAnEmptyGeometry pins the case that would
+// otherwise put a name at the origin.
+func TestLineAnchor_HasNothingToSayAboutAnEmptyGeometry(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		lines [][]mvt.Point
+	}{
+		{"no parts", nil},
+		{"an empty part", [][]mvt.Point{{}}},
+		{"a part with one point", [][]mvt.Point{{{X: 5, Y: 5}}}},
+	} {
+		if _, _, ok := lineAnchor(c.lines); ok {
+			t.Errorf("%s produced an anchor; a name would be drawn at 0,0 or on a line with no length", c.name)
+		}
+	}
+}
+
+// TestPlaceLabels_OncePerNameIsARulesChoiceAndNotThePassesHabit is the
+// difference between a road and a place, held as a property.
+//
+// A road is cut into a feature per tile and often several within one, so a
+// street crossing the view arrives as a dozen features with the same name;
+// drawn as they come, the map writes the name a dozen times down one road. A
+// PLACE must not be treated that way -- two towns can share a name and a map
+// should show both -- so this cannot be a habit of the placement pass, and
+// the test asserts both halves to stop it becoming one.
+func TestPlaceLabels_OncePerNameIsARulesChoiceAndNotThePassesHabit(t *testing.T) {
+	bounds := image.Rect(0, 0, 600, 400)
+	spread := func(once bool) []candidate {
+		return []candidate{
+			{text: "Vestergade", x: 100, y: 80, priority: 10, rank: 1, key: "a", once: once},
+			{text: "Vestergade", x: 400, y: 300, priority: 10, rank: 1, key: "b", once: once},
+		}
+	}
+
+	if got := placeLabels(spread(true), testFace(), DefaultLabelPadding, bounds); len(got) != 1 {
+		t.Errorf("a rule asking for one label per name placed %d; a street crossing the view would be written repeatedly", len(got))
+	}
+	if got := placeLabels(spread(false), testFace(), DefaultLabelPadding, bounds); len(got) != 2 {
+		t.Errorf("a rule NOT asking for that placed %d; two places sharing a name must both be shown", len(got))
+	}
+}
+
+// TestLabelRule_ReadsOnlyTheGeometryItsPlacementIsFor stops a rule being
+// handed features it did not ask for.
+//
+// The roads layer carries named POINTS as well as lines -- junctions, and in
+// the water layer, fountains. A line rule handed those would label a road
+// junction as though it were the road, at whatever point the junction happens
+// to sit.
+func TestLabelRule_ReadsOnlyTheGeometryItsPlacementIsFor(t *testing.T) {
+	line := LabelRule{Placement: PlaceLine}
+	point := LabelRule{Placement: PlacePoint}
+
+	if line.labels(mvt.GeomPoint) {
+		t.Error("a line rule accepts point features; a junction would be labelled as a road")
+	}
+	if !line.labels(mvt.GeomLineString) {
+		t.Error("a line rule rejects line features")
+	}
+	if point.labels(mvt.GeomLineString) {
+		t.Error("a point rule accepts line features")
+	}
+	if !point.labels(mvt.GeomPoint) {
+		t.Error("a point rule rejects point features")
+	}
+}

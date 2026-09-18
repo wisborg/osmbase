@@ -183,6 +183,46 @@ func placeLabelRules() []LabelRule {
 			MinZoom: 0, MaxZoom: MaxRuleZoom,
 			Priority: 20,
 		},
+
+		// Water. Earlier than the roads and quieter than the places: a river
+		// or a lake is the strongest orientation cue a map has after the
+		// street pattern, and there are few enough of them that naming one
+		// costs almost nothing. Below zoom 12 the name would be longer than
+		// the water it sits on.
+		{
+			Layer:     "water",
+			Field:     "name",
+			Placement: PlaceLine,
+			MinZoom:   12, MaxZoom: MaxRuleZoom,
+			Priority:    15,
+			OncePerName: true,
+		},
+
+		// Roads, and only when the map is close. This is the rule the
+		// per-rule MinZoom exists for: the features carry min_zoom values
+		// from 7 upward, so honouring the data alone would start naming trunk
+		// roads on a view spanning a county, where a road name tells a reader
+		// nothing they can use and takes the space a place name would have
+		// used. 14 is where a street is long enough on screen for its name to
+		// be about that street.
+		//
+		// Ranked below water and places deliberately. When a suburb and the
+		// road through it cannot both fit, the suburb is the more useful
+		// answer: it locates the route, where the road only names a line
+		// already drawn.
+		//
+		// OncePerName because a road arrives cut into a feature per tile and
+		// often several within one, so a street crossing the view is a dozen
+		// features all called the same thing.
+		{
+			Layer:     "roads",
+			Kinds:     []string{"highway", "major_road", "medium_road"},
+			Field:     "name",
+			Placement: PlaceLine,
+			MinZoom:   14, MaxZoom: MaxRuleZoom,
+			Priority:    10,
+			OncePerName: true,
+		},
 	}
 }
 

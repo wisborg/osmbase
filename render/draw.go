@@ -392,13 +392,6 @@ func (d *drawer) collectLabels(rules []LabelRule, tiles []drawTile, at uint8) []
 		if !rule.appliesAt(at) {
 			continue
 		}
-		// Only point placement draws today. A line rule is collected by a
-		// later change; skipping it here rather than treating it as a point
-		// keeps a half-implemented river name from appearing at the midpoint
-		// of its bounding box.
-		if rule.Placement != PlacePoint {
-			continue
-		}
 		for _, dt := range tiles {
 			d.appendTileLabels(&out, rule, dt, at)
 		}
@@ -419,7 +412,7 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 
 	for i := range layer.Features {
 		f := &layer.Features[i]
-		if f.Type != mvt.GeomPoint || !rule.matches(f) {
+		if !rule.matches(f) || !rule.labels(f.Type) {
 			continue
 		}
 		if v, ok := f.Tags["min_zoom"]; ok {
@@ -431,15 +424,16 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 		if !ok {
 			continue
 		}
-		for _, pnt := range f.Geometry.Points {
-			p := tr.apply(pnt.X, pnt.Y)
+		for _, a := range labelAnchors(rule, f) {
+			p := tr.apply(a.X, a.Y)
 			*out = append(*out, candidate{
 				text: text, x: p.X, y: p.Y,
 				priority: rule.Priority,
 				rank:     labelRank(f),
+				once:     rule.OncePerName,
 				// The tile and the coordinate, which together are unique and
 				// stable. Only ever compared, never shown.
-				key: fmt.Sprintf("%d/%d/%d:%d,%d", dt.ref.z, dt.ref.x, dt.ref.y, pnt.X, pnt.Y),
+				key: fmt.Sprintf("%d/%d/%d:%d,%d", dt.ref.z, dt.ref.x, dt.ref.y, a.X, a.Y),
 			})
 		}
 	}
@@ -461,4 +455,24 @@ func labelText(f *mvt.Feature, field string) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+// labelAnchors is where on a feature its name could be written.
+//
+// A point feature offers each of its points; a line offers one, the midpoint
+// of its longest part. One rather than several along the way, because
+// repeating a name down a road is a decision about how crowded a map should
+// look and this pass has no way to judge that -- and because the rule that
+// wants line labels at all also wants OncePerName, which would discard the
+// repeats anyway.
+func labelAnchors(rule *LabelRule, f *mvt.Feature) []mvt.Point {
+	switch rule.Placement {
+	case PlacePoint:
+		return f.Geometry.Points
+	case PlaceLine:
+		if x, y, ok := lineAnchor(f.Geometry.Lines); ok {
+			return []mvt.Point{{X: x, Y: y}}
+		}
+	}
+	return nil
 }

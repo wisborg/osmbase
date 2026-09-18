@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"image"
 	"image/color"
+	"math"
 	"slices"
 
 	"golang.org/x/image/font"
@@ -20,13 +21,18 @@ const (
 	// package currently draws is one of these: the places layer is points.
 	PlacePoint Placement = iota
 
-	// PlaceLine runs the text along a line feature, for river and road names.
+	// PlaceLine names a line feature -- a river, a road -- by anchoring the
+	// text to a point ON that line.
 	//
-	// Declared but not yet drawn. It is here because it changes the shape of
-	// everything around it -- a line label needs a path to follow, a decision
-	// about which of several segments to sit on, and repetition along a long
-	// way -- and a LabelRule that could only ever mean "point" would have to
-	// be widened later in a way that touched every rule written against it.
+	// The text stays HORIZONTAL. Setting it along the curve is what a
+	// cartographer would do and it is not what this does, for two reasons
+	// that both point the same way here. A basemap under a route is read at a
+	// glance and horizontal text is read faster than text on a slope; and
+	// rotating glyphs means rendering them to a buffer and resampling it,
+	// which at the size a map label is drawn looks worse than leaving it
+	// straight. If curved text is ever wanted it is a change to how a placed
+	// label is DRAWN, not to how one is chosen, which is why the anchor is
+	// computed separately below.
 	PlaceLine
 )
 
@@ -58,6 +64,31 @@ type LabelRule struct {
 	// collide, higher first. Within one rule the data decides -- see
 	// labelRank.
 	Priority int
+
+	// OncePerName draws at most one label for any given name.
+	//
+	// It is what separates a line from a place. A road is cut into a feature
+	// per tile and often several within one tile, so a street crossing the
+	// view arrives as a dozen features all called the same thing, and
+	// labelling each would write the name a dozen times down one road. A
+	// PLACE must not do this: two towns can share a name and a map should
+	// show both, which is why this is a per-rule choice and not a property of
+	// the placement pass.
+	OncePerName bool
+}
+
+// labels reports whether a geometry type is the one this rule's placement
+// reads. A rule looking for line names must not be handed the layer's point
+// features, which in the roads layer are junctions and in the water layer are
+// fountains -- named, and not what the rule asked for.
+func (r *LabelRule) labels(t mvt.GeomType) bool {
+	switch r.Placement {
+	case PlacePoint:
+		return t == mvt.GeomPoint
+	case PlaceLine:
+		return t == mvt.GeomLineString
+	}
+	return false
 }
 
 // appliesAt reports whether this rule runs at a zoom.
@@ -100,6 +131,9 @@ type candidate struct {
 	// same name and importance are otherwise ordered by whatever sequence the
 	// tiles happened to be walked in.
 	key string
+
+	// once carries the rule's OncePerName to the placement pass.
+	once bool
 }
 
 // labelRank is how important a feature is among others from the same rule.
@@ -158,8 +192,15 @@ func placeLabels(cands []candidate, face font.Face, pad int, bounds image.Rectan
 	// instead would additionally suppress two genuinely different places that
 	// happen to share a name, which is common and which the map should show
 	// both of.
+	// Names already drawn for rules that ask for one label each. Not a
+	// property of the pass: see LabelRule.OncePerName.
+	drawn := map[string]bool{}
+
 	var out []placed
 	for _, c := range cands {
+		if c.once && drawn[c.text] {
+			continue
+		}
 		box := labelBox(c, face, pad)
 		if !box.In(bounds) {
 			// Partly off the edge. Dropped rather than nudged inward: a label
@@ -169,6 +210,9 @@ func placeLabels(cands []candidate, face font.Face, pad int, bounds image.Rectan
 		}
 		if slices.ContainsFunc(out, func(p placed) bool { return p.box.Overlaps(box) }) {
 			continue
+		}
+		if c.once {
+			drawn[c.text] = true
 		}
 		out = append(out, placed{text: c.text, box: box})
 	}
@@ -212,4 +256,57 @@ func drawLabel(dst *image.RGBA, l placed, face font.Face, ink color.RGBA, pad in
 	d := font.Drawer{Dst: dst, Src: image.NewUniform(ink), Face: face}
 	d.Dot = fixed.P(l.box.Min.X+pad, l.box.Min.Y+pad+face.Metrics().Ascent.Ceil())
 	d.DrawString(l.text)
+}
+
+// lineAnchor is the point on a line feature where its name is written.
+//
+// The midpoint of the LONGEST part, which is where a name has the most room
+// either side of it and the least chance of landing on a bend or on a stub
+// that barely enters the view. A feature arrives as several parts when the
+// tile cut it, so taking the longest is also what stops a name being pinned
+// to the two-pixel fragment of a road that clipped the corner of a tile.
+//
+// Length is measured in the tile's own coordinates rather than in surface
+// pixels, which costs a comparison and saves transforming every point of
+// every line that will not be labelled.
+func lineAnchor(lines [][]mvt.Point) (x, y int32, ok bool) {
+	var best []mvt.Point
+	var bestLen float64
+	for _, line := range lines {
+		if len(line) < 2 {
+			continue
+		}
+		var n float64
+		for i := 1; i < len(line); i++ {
+			dx := float64(line[i].X - line[i-1].X)
+			dy := float64(line[i].Y - line[i-1].Y)
+			n += math.Hypot(dx, dy)
+		}
+		if n > bestLen {
+			best, bestLen = line, n
+		}
+	}
+	if best == nil {
+		return 0, 0, false
+	}
+	// Walked rather than indexed: the midpoint by DISTANCE, not the middle
+	// vertex. A line whose points bunch at one end -- which is every line
+	// that follows a curve then runs straight -- has its middle vertex a long
+	// way from its middle.
+	half := bestLen / 2
+	var run float64
+	for i := 1; i < len(best); i++ {
+		dx := float64(best[i].X - best[i-1].X)
+		dy := float64(best[i].Y - best[i-1].Y)
+		seg := math.Hypot(dx, dy)
+		if run+seg >= half {
+			t := 0.0
+			if seg > 0 {
+				t = (half - run) / seg
+			}
+			return best[i-1].X + int32(t*dx), best[i-1].Y + int32(t*dy), true
+		}
+		run += seg
+	}
+	return best[len(best)-1].X, best[len(best)-1].Y, true
 }
