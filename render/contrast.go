@@ -131,8 +131,22 @@ func (p Palette) distinguishable() []namedColour {
 	//
 	// A zero Label means the style draws no labels, and a colour nobody draws
 	// has nothing to be confused with.
+	return append(out, p.labels()...)
+}
+
+// labels is the label inks a palette actually draws with.
+//
+// A zero colour means the style has no such label, and a colour nobody draws
+// has nothing to be read against and nothing to be confused with. LabelMinor
+// falling back to Label is handled at the drawing end, so a palette naming
+// only one ink is checked once rather than twice against the same value.
+func (p Palette) labels() []namedColour {
+	var out []namedColour
 	if (p.Label != color.RGBA{}) {
 		out = append(out, namedColour{name: "Label", c: p.Label, role: RoleLabel})
+	}
+	if (p.LabelMinor != color.RGBA{}) {
+		out = append(out, namedColour{name: "LabelMinor", c: p.LabelMinor, role: RoleLabelMinor})
 	}
 	return out
 }
@@ -336,11 +350,14 @@ func (p Palette) CheckContrast(o Overlay) error {
 	//
 	// Skipped entirely when the colour is the zero value, which is what a
 	// palette that draws no labels carries.
-	if (p.Label != color.RGBA{}) {
-		if r := ContrastRatio(p.Label, p.Background); r < MinLabelRatio {
+	// Both label inks, and the minor one is the point of checking rather than
+	// an afterthought: it exists to be quieter, so it is the one that will be
+	// pushed until it stops being readable.
+	for _, l := range p.labels() {
+		if r := ContrastRatio(l.c, p.Background); r < MinLabelRatio {
 			bad = append(bad, fmt.Sprintf(
-				"Label is %.2f against Background, below %.2f: names would be a smudge rather than words",
-				r, MinLabelRatio))
+				"%s is %.2f against Background, below %.2f: names would be a smudge rather than words",
+				l.name, r, MinLabelRatio))
 		}
 	}
 

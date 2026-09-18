@@ -436,6 +436,7 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 				priority: rule.Priority,
 				rank:     labelRank(f),
 				once:     rule.OncePerName,
+				minor:    rule.Minor,
 				face:     face,
 				// The tile and the coordinate, which together are unique and
 				// stable. Only ever compared, never shown.

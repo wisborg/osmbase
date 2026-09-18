@@ -204,6 +204,7 @@ func placeLabelRules() []LabelRule {
 			Placement: PlaceLine,
 			MinZoom:   13, MaxZoom: MaxRuleZoom,
 			Priority:    15,
+			Minor:       true,
 			OncePerName: true,
 		},
 
@@ -230,6 +231,7 @@ func placeLabelRules() []LabelRule {
 			Placement: PlaceLine,
 			MinZoom:   14, MaxZoom: MaxRuleZoom,
 			Priority:    10,
+			Minor:       true,
 			OncePerName: true,
 		},
 		{
@@ -246,6 +248,7 @@ func placeLabelRules() []LabelRule {
 			MinZoom:   15, MaxZoom: MaxRuleZoom,
 			Priority:    5,
 			SizeScale:   0.9,
+			Minor:       true,
 			OncePerName: true,
 		},
 	}
@@ -273,8 +276,14 @@ func LightPalette() Palette {
 		// Darker than anything else on this map, which is the point: a label
 		// is held to a floor against the background rather than the ceiling
 		// the surfaces and linework are held to. See MinLabelRatio.
-		Label:  color.RGBA{R: 0x3a, G: 0x40, B: 0x4a, A: 0xff},
-		NoData: color.RGBA{R: 0x8f, G: 0x2f, B: 0x20, A: 0xff},
+		Label: color.RGBA{R: 0x3a, G: 0x40, B: 0x4a, A: 0xff},
+		// Lighter than Label: quieter means closer to the background,
+		// whichever direction that is. It works here and does not on the dark
+		// palettes -- see DarkPalette -- because a light ground leaves room
+		// between "as dark as a place name" and "too pale to read", where a
+		// dark ground does not.
+		LabelMinor: color.RGBA{R: 0x58, G: 0x5e, B: 0x68, A: 0xff},
+		NoData:     color.RGBA{R: 0x8f, G: 0x2f, B: 0x20, A: 0xff},
 	}
 }
 
@@ -295,7 +304,13 @@ func DarkPalette() Palette {
 		Ink:        color.RGBA{R: 0x45, G: 0x3d, B: 0x2e, A: 0xff},
 		// Brighter than anything else on this map. See MinLabelRatio: text is
 		// held to a floor, not to the ceiling the rest of the palette obeys.
-		Label:  color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff},
+		Label: color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff},
+		// No LabelMinor, deliberately, so street names are told from place
+		// names by SIZE alone here. It was tried and it does not work on a
+		// dark ground: both inks are light greys, the readable floor is 4.5:1
+		// and the place ink is at 7.6, so the whole available range is one
+		// step wide and the difference between the two barely reads. On a
+		// light ground the same idea works, and LightPalette uses it.
 		NoData: color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
 	}
 }
@@ -352,7 +367,9 @@ func DarkLineworkPalette() Palette {
 		Ink:   color.RGBA{R: 0x3e, G: 0x34, B: 0x26, A: 0xff},
 		// The linework is quiet by design and the names are not: on a map
 		// stripped to its lines, the names are most of what is left to read.
-		Label:   color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff},
+		Label: color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff},
+		// See DarkPalette: on a dark ground the two label inks are too close
+		// to separate, so this leans on size alone as well.
 		NoData:  color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
 		Omitted: Roles(RoleLand, RoleGreen, RoleBuilt),
 	}

@@ -275,7 +275,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	if r.labelFace != nil && len(r.style.Labels) > 0 {
 		cands := d.collectLabels(r.style.Labels, tiles, p.tileZoom, r.faceFor)
 		for _, l := range placeLabels(cands, r.labelPad, surface.Bounds()) {
-			drawLabel(surface.RGBA(), l, r.palette.Label, r.labelPad)
+			drawLabel(surface.RGBA(), l, r.palette, r.labelPad)
 		}
 	}
 

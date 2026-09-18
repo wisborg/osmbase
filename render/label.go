@@ -81,6 +81,19 @@ type LabelRule struct {
 	// one size for everything, which is what happened before this existed.
 	SizeScale float64
 
+	// Minor draws this rule's labels in the quieter of the two label inks.
+	//
+	// The distinction is what the name is OF. A place name says where the
+	// reader is; a street or river name identifies a line already drawn on
+	// the map. The second is useful and secondary, and saying so in colour as
+	// well as in size is what lets the eye pick the places out without
+	// reading the streets first.
+	//
+	// A bool rather than a Role field, because a Role's zero value is
+	// RoleBackground -- a rule that forgot to set it would draw its names in
+	// the background colour and vanish, which is the worst kind of default.
+	Minor bool
+
 	// OncePerName draws at most one label for any given name.
 	//
 	// It is what separates a line from a place. A road is cut into a feature
@@ -150,6 +163,11 @@ type candidate struct {
 
 	// once carries the rule's OncePerName to the placement pass.
 	once bool
+
+	// minor selects the quieter label ink. Carried per candidate for the same
+	// reason the face is: two labels competing for one space can come from
+	// rules that differ in both.
+	minor bool
 
 	// face is the resolved face for this label. Carried per candidate rather
 	// than passed alongside, because two labels competing for the same space
@@ -236,16 +254,17 @@ func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 		if c.once {
 			drawn[c.text] = true
 		}
-		out = append(out, placed{text: c.text, box: box, face: c.face})
+		out = append(out, placed{text: c.text, box: box, face: c.face, minor: c.minor})
 	}
 	return out
 }
 
 // placed is a label that will be drawn, with the space it occupies.
 type placed struct {
-	text string
-	box  image.Rectangle
-	face font.Face
+	text  string
+	box   image.Rectangle
+	face  font.Face
+	minor bool
 }
 
 // labelBox is the space a candidate's text would occupy, padded.
@@ -275,8 +294,8 @@ func labelBox(c candidate, face font.Face, pad int) image.Rectangle {
 const DefaultLabelPadding = 4
 
 // drawLabel writes one placed label onto the image.
-func drawLabel(dst *image.RGBA, l placed, ink color.RGBA, pad int) {
-	d := font.Drawer{Dst: dst, Src: image.NewUniform(ink), Face: l.face}
+func drawLabel(dst *image.RGBA, l placed, p Palette, pad int) {
+	d := font.Drawer{Dst: dst, Src: image.NewUniform(labelInk(p, l.minor)), Face: l.face}
 	d.Dot = fixed.P(l.box.Min.X+pad, l.box.Min.Y+pad+l.face.Metrics().Ascent.Ceil())
 	d.DrawString(l.text)
 }
@@ -332,4 +351,20 @@ func lineAnchor(lines [][]mvt.Point) (x, y int32, ok bool) {
 		run += seg
 	}
 	return best[len(best)-1].X, best[len(best)-1].Y, true
+}
+
+// labelInk is the colour a label is drawn in.
+//
+// A palette that names no minor ink draws every name in the one it has, which
+// is what every palette did before there were two and is a choice a palette
+// can still make: both built-in dark palettes decline the second ink, because
+// on a dark ground the readable floor and the place ink are close enough
+// together that two label colours barely separate. Without this fallback an
+// unset LabelMinor would be a zero RGBA -- transparent black -- and every
+// street name on those palettes would vanish.
+func labelInk(p Palette, minor bool) color.RGBA {
+	if minor && p.LabelMinor != (color.RGBA{}) {
+		return p.LabelMinor
+	}
+	return p.Label
 }

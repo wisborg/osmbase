@@ -70,6 +70,17 @@ const (
 	// 1.8:1 read as a smudge. A label that cannot be read is worse than no
 	// label, because it is clutter that also fails to inform.
 	RoleLabel
+
+	// RoleLabelMinor is a label for something the map draws rather than
+	// something it is OF: a street name, a river name.
+	//
+	// Its own role because size alone turned out not to be enough. With one
+	// ink, a large "Hornsby" and a small "Clarke Road" are the same colour
+	// and the eye still has to read both to sort them; dropping the minor
+	// names toward the map lets it skip them until it wants them. It is
+	// still text and still held to MinLabelRatio -- quieter than a place
+	// name, never quiet enough to be unreadable.
+	RoleLabelMinor
 )
 
 // Palette is the colour for each role.
@@ -88,6 +99,12 @@ type Palette struct {
 	Road       color.RGBA
 	Ink        color.RGBA
 	NoData     color.RGBA
+
+	// LabelMinor is the text for streets and water -- names of things the map
+	// draws, as against names of the places it is of. A zero value falls back
+	// to Label, so a palette written before this field draws every name in
+	// one colour, as it did.
+	LabelMinor color.RGBA
 
 	// Label is the text drawn on the map. See RoleLabel for why it is held to
 	// a different standard than the rest of the palette.
@@ -173,6 +190,8 @@ func (p Palette) colour(r Role) color.RGBA {
 		return p.NoData
 	case RoleLabel:
 		return p.Label
+	case RoleLabelMinor:
+		return p.LabelMinor
 	}
 	return p.Ink
 }

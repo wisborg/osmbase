@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"image/color"
 
 	"golang.org/x/image/font"
 	"strings"
@@ -319,5 +320,32 @@ func TestPlaceLabels_MeasuresEachLabelInItsOwnFace(t *testing.T) {
 	want := labelBox(candidate{text: got[0].text, x: 200, y: 100, face: got[0].face}, got[0].face, DefaultLabelPadding)
 	if got[0].box != want {
 		t.Errorf("box is %v, want %v: the reserved space must be measured in the label's OWN face", got[0].box, want)
+	}
+}
+
+// TestLabelInk_FallsBackWhenAPaletteNamesOnlyOne is what lets a palette
+// decline the colour cue.
+//
+// An unset LabelMinor is a zero RGBA, which is transparent black. Read
+// literally that would draw every street name as nothing at all, on exactly
+// the palettes that chose to tell places from streets by size alone -- which
+// is both built-in dark ones, because on a dark ground the readable floor at
+// 4.5:1 and the place ink at 7.6:1 leave too little room for two colours to
+// separate.
+func TestLabelInk_FallsBackWhenAPaletteNamesOnlyOne(t *testing.T) {
+	major := color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff}
+	minor := color.RGBA{R: 0x58, G: 0x5e, B: 0x68, A: 0xff}
+
+	two := Palette{Label: major, LabelMinor: minor}
+	if got := labelInk(two, true); got != minor {
+		t.Errorf("a palette naming two inks drew a minor label in %v, want %v", got, minor)
+	}
+	if got := labelInk(two, false); got != major {
+		t.Errorf("a palette naming two inks drew a major label in %v, want %v", got, major)
+	}
+
+	one := Palette{Label: major}
+	if got := labelInk(one, true); got != major {
+		t.Errorf("a palette naming one ink drew a minor label in %v, want the ink it has, %v: the zero value is transparent black and the name would disappear", got, major)
 	}
 }

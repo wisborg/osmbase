@@ -405,3 +405,66 @@ func TestPaletteStaysComparable(t *testing.T) {
 		t.Error("the empty set claims to hold a role; the zero value must omit nothing")
 	}
 }
+
+// TestDrawLabel_MinorFallsBackToTheOneInkAPaletteHas is what lets a palette
+// decline the colour cue.
+//
+// The two built-in dark palettes do decline it: on a dark ground both label
+// inks are light greys, the readable floor is 4.5:1 and the place ink sits at
+// 7.6, so the whole usable range is one step wide and the difference barely
+// reads. They tell a place from a street by SIZE alone. The light palette
+// uses both, because a light ground leaves room between "as dark as a place
+// name" and "too pale to read".
+//
+// That choice is only available if an unset LabelMinor means "use the one I
+// have" rather than "draw in transparent black", which is what a zero RGBA
+// is. Asserted on the built-ins rather than on a hand-made palette, so that
+// setting a minor ink on a dark palette later has to come past this test.
+func TestDrawLabel_MinorFallsBackToTheOneInkAPaletteHas(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		p    render.Palette
+		want bool
+	}{
+		{"dark", render.DarkPalette(), false},
+		{"dark-linework", render.DarkLineworkPalette(), false},
+		{"light", render.LightPalette(), true},
+	} {
+		empty := c.p.LabelMinor == (color.RGBA{})
+		if empty == c.want {
+			t.Errorf("%s: LabelMinor set = %v, want %v", c.name, !empty, c.want)
+		}
+		if c.p.Label == (color.RGBA{}) {
+			t.Errorf("%s has no Label ink at all, so it draws no names", c.name)
+		}
+	}
+}
+
+// TestAMinorLabelInkTooQuietToReadIsRefused is the constraint that stops the
+// second label colour from being pushed until it stops being a label.
+//
+// LabelMinor exists to be quieter, so it is the ink somebody will darken --
+// or lighten -- one step too far while making a map look calmer. It is text
+// either way, and a street name at 3:1 on its background is not a quiet
+// label, it is a smudge that still takes up the space a readable one would
+// have.
+//
+// Checking the palette's own value would prove nothing: the built-ins pass,
+// which is why an earlier version of this check could be deleted outright
+// with every test still green.
+func TestAMinorLabelInkTooQuietToReadIsRefused(t *testing.T) {
+	p := render.LightPalette()
+	if err := p.CheckContrast(render.LightOverlay()); err != nil {
+		t.Fatalf("precondition: the light palette does not pass as shipped: %v", err)
+	}
+
+	// A pale grey on pale paper: plausible, prettier, unreadable.
+	p.LabelMinor = color.RGBA{R: 0xa8, G: 0xad, B: 0xb4, A: 0xff}
+	err := p.CheckContrast(render.LightOverlay())
+	if err == nil {
+		t.Fatal("a minor label ink below the readable floor was accepted")
+	}
+	if !strings.Contains(err.Error(), "LabelMinor") {
+		t.Errorf("the refusal does not name the ink at fault, so it cannot be acted on: %v", err)
+	}
+}
