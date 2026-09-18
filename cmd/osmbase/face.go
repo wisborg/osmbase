@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sync"
 
 	"golang.org/x/image/font"
@@ -36,29 +37,58 @@ import (
 // They are inside x/image already, so the font data brings no third module
 // and no new licence to record. They are also made for screens and legible
 // small, which is the only size any of this is drawn at.
-var textFace = sync.OnceValues(func() (font.Face, error) {
-	ttf, err := opentype.Parse(goregular.TTF)
+const baseTextSize = 13
+
+var parsedFont = sync.OnceValues(func() (*opentype.Font, error) {
+	f, err := opentype.Parse(goregular.TTF)
 	if err != nil {
 		return nil, fmt.Errorf("parsing the built-in label font: %w", err)
 	}
-	face, err := opentype.NewFace(ttf, &opentype.FaceOptions{
-		Size: 13, DPI: 72, Hinting: font.HintingFull,
+	return f, nil
+})
+
+// faceAt builds a face at a size, keeping one per size.
+//
+// Cached because the label pass asks once per RULE and a style has several,
+// and because building a face is not free. Keyed on the rounded pixel size,
+// so two rules whose scales land on the same size share a face.
+var (
+	faceMu     sync.Mutex
+	faceBySize = map[int]font.Face{}
+)
+
+func faceAt(px float64) font.Face {
+	if px < 1 {
+		px = 1
+	}
+	key := int(math.Round(px))
+
+	faceMu.Lock()
+	defer faceMu.Unlock()
+	if f, ok := faceBySize[key]; ok {
+		return f
+	}
+	ttf, err := parsedFont()
+	if err != nil {
+		return nil
+	}
+	f, err := opentype.NewFace(ttf, &opentype.FaceOptions{
+		Size: float64(key), DPI: 72, Hinting: font.HintingFull,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("building the built-in label face: %w", err)
+		return nil
 	}
-	return face, nil
-})
+	faceBySize[key] = f
+	return f
+}
+
+// labelFaceFor resolves a label rule's size scale, so that a place name is
+// set larger than a street name and a reader can tell which is which.
+func labelFaceFor(scale float64) font.Face { return faceAt(baseTextSize * scale) }
 
 // labelFace is the face for map labels, or nil if it could not be built.
 //
 // A nil face draws no labels rather than failing the render: a map without
 // names is still a map, and refusing to draw one because a font would not
 // parse would be losing the picture over the caption.
-func labelFace() font.Face {
-	f, err := textFace()
-	if err != nil {
-		return nil
-	}
-	return f
-}
+func labelFace() font.Face { return faceAt(baseTextSize) }

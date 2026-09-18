@@ -65,6 +65,22 @@ type LabelRule struct {
 	// labelRank.
 	Priority int
 
+	// SizeScale is this rule's text size relative to the caller's base face,
+	// and 0 means 1.
+	//
+	// It is how a reader tells a PLACE from a STREET. Without it every name
+	// on the map is set identically and "Hornsby" looks exactly like "Clarke
+	// Road" -- the map is full of words and none of them says what kind of
+	// thing it names. Size is the conventional signal for that and the one
+	// that survives being glanced at, which is how a basemap under something
+	// else is read.
+	//
+	// A scale rather than a face, because this package cannot build one: it
+	// parses no fonts, deliberately. The caller turns a scale into a face
+	// through Options.LabelFaceFor, and a caller that does not bother gets
+	// one size for everything, which is what happened before this existed.
+	SizeScale float64
+
 	// OncePerName draws at most one label for any given name.
 	//
 	// It is what separates a line from a place. A road is cut into a feature
@@ -134,6 +150,12 @@ type candidate struct {
 
 	// once carries the rule's OncePerName to the placement pass.
 	once bool
+
+	// face is the resolved face for this label. Carried per candidate rather
+	// than passed alongside, because two labels competing for the same space
+	// can now be different sizes, and the box that decides the collision has
+	// to be measured in the face the label will actually be drawn in.
+	face font.Face
 }
 
 // labelRank is how important a feature is among others from the same rule.
@@ -174,7 +196,7 @@ func labelRank(f *mvt.Feature) int {
 // Deterministic throughout. Candidates are sorted on a total order before
 // placement, so the same tiles produce the same labels in the same positions
 // every run, which the whole renderer is required to do.
-func placeLabels(cands []candidate, face font.Face, pad int, bounds image.Rectangle) []placed {
+func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 	slices.SortFunc(cands, func(a, b candidate) int {
 		if c := cmp.Compare(b.priority, a.priority); c != 0 {
 			return c
@@ -201,7 +223,7 @@ func placeLabels(cands []candidate, face font.Face, pad int, bounds image.Rectan
 		if c.once && drawn[c.text] {
 			continue
 		}
-		box := labelBox(c, face, pad)
+		box := labelBox(c, c.face, pad)
 		if !box.In(bounds) {
 			// Partly off the edge. Dropped rather than nudged inward: a label
 			// pulled to fit no longer sits on the thing it names, and a name
@@ -214,7 +236,7 @@ func placeLabels(cands []candidate, face font.Face, pad int, bounds image.Rectan
 		if c.once {
 			drawn[c.text] = true
 		}
-		out = append(out, placed{text: c.text, box: box})
+		out = append(out, placed{text: c.text, box: box, face: c.face})
 	}
 	return out
 }
@@ -223,6 +245,7 @@ func placeLabels(cands []candidate, face font.Face, pad int, bounds image.Rectan
 type placed struct {
 	text string
 	box  image.Rectangle
+	face font.Face
 }
 
 // labelBox is the space a candidate's text would occupy, padded.
@@ -252,9 +275,9 @@ func labelBox(c candidate, face font.Face, pad int) image.Rectangle {
 const DefaultLabelPadding = 4
 
 // drawLabel writes one placed label onto the image.
-func drawLabel(dst *image.RGBA, l placed, face font.Face, ink color.RGBA, pad int) {
-	d := font.Drawer{Dst: dst, Src: image.NewUniform(ink), Face: face}
-	d.Dot = fixed.P(l.box.Min.X+pad, l.box.Min.Y+pad+face.Metrics().Ascent.Ceil())
+func drawLabel(dst *image.RGBA, l placed, ink color.RGBA, pad int) {
+	d := font.Drawer{Dst: dst, Src: image.NewUniform(ink), Face: l.face}
+	d.Dot = fixed.P(l.box.Min.X+pad, l.box.Min.Y+pad+l.face.Metrics().Ascent.Ceil())
 	d.DrawString(l.text)
 }
 

@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"golang.org/x/image/font"
 	"image"
 	"image/color"
 	"math"
@@ -385,21 +386,25 @@ func hatchBox(g image.Rectangle, gaps []image.Rectangle, width float64) box {
 // from an overzoomed ancestor, and the display zoom is the right one: the
 // question is how much room the reader has on screen, not which file the
 // feature arrived in.
-func (d *drawer) collectLabels(rules []LabelRule, tiles []drawTile, at uint8) []candidate {
+func (d *drawer) collectLabels(rules []LabelRule, tiles []drawTile, at uint8, faceFor func(float64) font.Face) []candidate {
 	var out []candidate
 	for i := range rules {
 		rule := &rules[i]
 		if !rule.appliesAt(at) {
 			continue
 		}
+		face := faceFor(rule.SizeScale)
+		if face == nil {
+			continue
+		}
 		for _, dt := range tiles {
-			d.appendTileLabels(&out, rule, dt, at)
+			d.appendTileLabels(&out, rule, dt, at, face)
 		}
 	}
 	return out
 }
 
-func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile, at uint8) {
+func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile, at uint8, face font.Face) {
 	layer, ok := dt.tile.Layer(rule.Layer)
 	if !ok {
 		return
@@ -431,6 +436,7 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 				priority: rule.Priority,
 				rank:     labelRank(f),
 				once:     rule.OncePerName,
+				face:     face,
 				// The tile and the coordinate, which together are unique and
 				// stable. Only ever compared, never shown.
 				key: fmt.Sprintf("%d/%d/%d:%d,%d", dt.ref.z, dt.ref.x, dt.ref.y, a.X, a.Y),

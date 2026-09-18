@@ -108,6 +108,16 @@ type Options struct {
 	// one that has no font was not asking for text.
 	LabelFace font.Face
 
+	// LabelFaceFor resolves a rule's SizeScale into a face, so that place
+	// names can be set larger than street names.
+	//
+	// Optional. A nil function, or one returning nil, falls back to LabelFace
+	// -- so a caller that does not care gets one size for everything, which
+	// is what this drew before rules had sizes. It is a function rather than
+	// a set of faces because only the caller can build one: this package
+	// parses no fonts.
+	LabelFaceFor func(scale float64) font.Face
+
 	// LabelPadding is the space kept clear around each label, in pixels, and
 	// defaults to DefaultLabelPadding when zero.
 	//
@@ -125,12 +135,24 @@ type Options struct {
 // and used for every view. It is not safe for concurrent use unless the
 // TileSource is, which is the source's own contract to state.
 type Renderer struct {
-	src       TileSource
-	style     Style
-	palette   Palette
-	credit    string
-	labelFace font.Face
-	labelPad  int
+	src        TileSource
+	style      Style
+	palette    Palette
+	credit     string
+	labelFace  font.Face
+	labelFaces func(float64) font.Face
+	labelPad   int
+}
+
+// faceFor is the face a rule's labels are drawn in, falling back to the base
+// face whenever the caller has not offered a better answer.
+func (r *Renderer) faceFor(scale float64) font.Face {
+	if r.labelFaces != nil && scale != 0 && scale != 1 {
+		if f := r.labelFaces(scale); f != nil {
+			return f
+		}
+	}
+	return r.labelFace
 }
 
 // New returns a Renderer, refusing options it could only draw a blank from.
@@ -155,7 +177,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 	}
 	return &Renderer{
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
-		labelFace: o.LabelFace, labelPad: pad,
+		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
 	}, nil
 }
 
@@ -251,9 +273,9 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	// collected from the same tiles the geometry came from, so a label cannot
 	// name a feature the picture does not show.
 	if r.labelFace != nil && len(r.style.Labels) > 0 {
-		cands := d.collectLabels(r.style.Labels, tiles, p.tileZoom)
-		for _, l := range placeLabels(cands, r.labelFace, r.labelPad, surface.Bounds()) {
-			drawLabel(surface.RGBA(), l, r.labelFace, r.palette.Label, r.labelPad)
+		cands := d.collectLabels(r.style.Labels, tiles, p.tileZoom, r.faceFor)
+		for _, l := range placeLabels(cands, r.labelPad, surface.Bounds()) {
+			drawLabel(surface.RGBA(), l, r.palette.Label, r.labelPad)
 		}
 	}
 

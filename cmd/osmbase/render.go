@@ -139,10 +139,11 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	}
 
 	r, err := render.New(a.Reader(), render.Options{
-		Style:       render.BasemapStyle(),
-		Palette:     colours,
-		Attribution: attributionOf(a, stderr),
-		LabelFace:   labelFace(),
+		Style:        render.BasemapStyle(),
+		Palette:      colours,
+		Attribution:  attributionOf(a, stderr),
+		LabelFace:    labelFace(),
+		LabelFaceFor: labelFaceFor,
 	})
 	if err != nil {
 		return err
@@ -373,10 +374,11 @@ func renderFromStore(root, archive string, coords coordFlags, width, height int,
 	}
 
 	r, err := render.New(src, render.Options{
-		Style:       render.BasemapStyle(),
-		Palette:     colours,
-		Attribution: sources[0].Attribution,
-		LabelFace:   labelFace(),
+		Style:        render.BasemapStyle(),
+		Palette:      colours,
+		Attribution:  sources[0].Attribution,
+		LabelFace:    labelFace(),
+		LabelFaceFor: labelFaceFor,
 	})
 	if err != nil {
 		return err

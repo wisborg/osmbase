@@ -163,14 +163,16 @@ func placeLabelRules() []LabelRule {
 			Kinds:   []string{"country", "region", "province", "state"},
 			Field:   "name",
 			MinZoom: 0, MaxZoom: MaxRuleZoom,
-			Priority: 40,
+			Priority:  40,
+			SizeScale: 1.5,
 		},
 		{
 			Layer:   "places",
 			Kinds:   []string{"locality", "city", "town", "village", "hamlet"},
 			Field:   "name",
 			MinZoom: 0, MaxZoom: MaxRuleZoom,
-			Priority: 30,
+			Priority:  30,
+			SizeScale: 1.35,
 		},
 		{
 			// The granularity that tells somebody where a route actually
@@ -181,19 +183,26 @@ func placeLabelRules() []LabelRule {
 			Kinds:   []string{"macrohood", "neighbourhood", "borough", "suburb", "quarter"},
 			Field:   "name",
 			MinZoom: 0, MaxZoom: MaxRuleZoom,
-			Priority: 20,
+			Priority:  20,
+			SizeScale: 1.2,
 		},
 
-		// Water. Earlier than the roads and quieter than the places: a river
-		// or a lake is the strongest orientation cue a map has after the
-		// street pattern, and there are few enough of them that naming one
-		// costs almost nothing. Below zoom 12 the name would be longer than
-		// the water it sits on.
+		// Water, and only water big enough to orient by. A river or a canal
+		// is the strongest cue a map has after the street pattern; a named
+		// creek is not, and there are a great many of them. Left unfiltered
+		// this rule put fifty names on one view of a suburb, almost all of
+		// them gullies and brooks, and buried the places among them.
+		//
+		// The excluded kinds are the reason the list is explicit rather than
+		// "every kind in the layer" the way the DRAWING rule for water is:
+		// stream, dock and fountain are all worth drawing and none is worth
+		// naming on a map somebody is reading a route off.
 		{
 			Layer:     "water",
+			Kinds:     []string{"river", "canal", "lake", "water"},
 			Field:     "name",
 			Placement: PlaceLine,
-			MinZoom:   12, MaxZoom: MaxRuleZoom,
+			MinZoom:   13, MaxZoom: MaxRuleZoom,
 			Priority:    15,
 			OncePerName: true,
 		},
@@ -216,11 +225,27 @@ func placeLabelRules() []LabelRule {
 		// features all called the same thing.
 		{
 			Layer:     "roads",
-			Kinds:     []string{"highway", "major_road", "medium_road"},
+			Kinds:     []string{"highway", "major_road"},
 			Field:     "name",
 			Placement: PlaceLine,
 			MinZoom:   14, MaxZoom: MaxRuleZoom,
 			Priority:    10,
+			OncePerName: true,
+		},
+		{
+			// The street you actually ran along, which is worth naming only
+			// once the map is close enough that it is the subject rather than
+			// one line among hundreds. Splitting it from the rule above --
+			// same layer, same everything but the zoom and the kinds -- is
+			// what lets a z14 view name the roads that cross a district while
+			// a z15 view names the streets within it.
+			Layer:     "roads",
+			Kinds:     []string{"medium_road", "minor_road"},
+			Field:     "name",
+			Placement: PlaceLine,
+			MinZoom:   15, MaxZoom: MaxRuleZoom,
+			Priority:    5,
+			SizeScale:   0.9,
 			OncePerName: true,
 		},
 	}

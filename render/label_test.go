@@ -2,6 +2,8 @@ package render
 
 import (
 	"image"
+
+	"golang.org/x/image/font"
 	"strings"
 	"testing"
 
@@ -13,7 +15,18 @@ import (
 func testFace() *basicfont.Face { return basicfont.Face7x13 }
 
 func cand(text string, x, y float64, priority, rank int) candidate {
-	return candidate{text: text, x: x, y: y, priority: priority, rank: rank, key: text}
+	return candidate{text: text, x: x, y: y, priority: priority, rank: rank, key: text, face: testFace()}
+}
+
+// placeLabelsT fills in the face every candidate now carries, so the tests
+// below stay about placement rather than about typography.
+func placeLabelsT(cands []candidate, face font.Face, pad int, bounds image.Rectangle) []placed {
+	for i := range cands {
+		if cands[i].face == nil {
+			cands[i].face = face
+		}
+	}
+	return placeLabels(cands, pad, bounds)
 }
 
 // TestPlaceLabels_DropsWhatWillNotFitRatherThanOverlapping is the whole job of
@@ -27,7 +40,7 @@ func cand(text string, x, y float64, priority, rank int) candidate {
 func TestPlaceLabels_DropsWhatWillNotFitRatherThanOverlapping(t *testing.T) {
 	bounds := image.Rect(0, 0, 400, 200)
 	// Two names at the same point: they cannot both be drawn.
-	got := placeLabels([]candidate{
+	got := placeLabelsT([]candidate{
 		cand("Smallville", 200, 100, 20, 1),
 		cand("Metropolis", 200, 100, 30, 1),
 	}, testFace(), DefaultLabelPadding, bounds)
@@ -49,7 +62,7 @@ func TestPlaceLabels_DropsWhatWillNotFitRatherThanOverlapping(t *testing.T) {
 // makes those fields load-bearing rather than decorative.
 func TestPlaceLabels_RankDecidesWithinOnePriority(t *testing.T) {
 	bounds := image.Rect(0, 0, 400, 200)
-	got := placeLabels([]candidate{
+	got := placeLabelsT([]candidate{
 		cand("Hamlet", 200, 100, 20, 5),
 		cand("Town", 200, 100, 20, 900),
 	}, testFace(), DefaultLabelPadding, bounds)
@@ -72,9 +85,9 @@ func TestPlaceLabels_IsTheSameEveryRun(t *testing.T) {
 		{text: "Eastwick", x: 200, y: 100, priority: 20, rank: 7, key: "b"},
 		{text: "Westwick", x: 200, y: 100, priority: 20, rank: 7, key: "a"},
 	}
-	first := placeLabels(append([]candidate(nil), in...), testFace(), DefaultLabelPadding, bounds)
+	first := placeLabelsT(append([]candidate(nil), in...), testFace(), DefaultLabelPadding, bounds)
 	for i := range 20 {
-		got := placeLabels(append([]candidate(nil), in...), testFace(), DefaultLabelPadding, bounds)
+		got := placeLabelsT(append([]candidate(nil), in...), testFace(), DefaultLabelPadding, bounds)
 		if len(got) != len(first) || got[0].text != first[0].text {
 			t.Fatalf("run %d placed %v, first run placed %v: a tie must resolve the same way every time", i, got, first)
 		}
@@ -94,7 +107,7 @@ func TestPlaceLabels_IsTheSameEveryRun(t *testing.T) {
 // of -- must survive when they are far enough apart to fit.
 func TestPlaceLabels_TheSamePlaceTwiceIsDrawnOnce(t *testing.T) {
 	bounds := image.Rect(0, 0, 400, 200)
-	got := placeLabels([]candidate{
+	got := placeLabelsT([]candidate{
 		{text: "Riverside", x: 200, y: 100, priority: 20, rank: 3, key: "tile-a"},
 		{text: "Riverside", x: 201, y: 100, priority: 20, rank: 3, key: "tile-b"},
 	}, testFace(), DefaultLabelPadding, bounds)
@@ -103,7 +116,7 @@ func TestPlaceLabels_TheSamePlaceTwiceIsDrawnOnce(t *testing.T) {
 		t.Errorf("the same name from two tiles was placed %d times, want 1", len(got))
 	}
 
-	apart := placeLabels([]candidate{
+	apart := placeLabelsT([]candidate{
 		{text: "Newport", x: 80, y: 40, priority: 20, rank: 3, key: "a"},
 		{text: "Newport", x: 320, y: 160, priority: 20, rank: 3, key: "b"},
 	}, testFace(), DefaultLabelPadding, bounds)
@@ -124,7 +137,7 @@ func TestPlaceLabels_TheSamePlaceTwiceIsDrawnOnce(t *testing.T) {
 // reasonable until a map comes out labelled with roads and no places.
 func TestPlaceLabels_PriorityBeatsRank(t *testing.T) {
 	bounds := image.Rect(0, 0, 400, 200)
-	got := placeLabels([]candidate{
+	got := placeLabelsT([]candidate{
 		cand("High Street", 200, 100, 10, 5000),
 		cand("Bermondsey", 200, 100, 20, 1),
 	}, testFace(), DefaultLabelPadding, bounds)
@@ -142,7 +155,7 @@ func TestPlaceLabels_PriorityBeatsRank(t *testing.T) {
 // false statement rather than an untidy one.
 func TestPlaceLabels_AnythingOffTheEdgeIsDropped(t *testing.T) {
 	bounds := image.Rect(0, 0, 400, 200)
-	got := placeLabels([]candidate{
+	got := placeLabelsT([]candidate{
 		cand("Centre", 200, 100, 20, 1),
 		cand("Edgetown", 2, 100, 20, 1),
 		cand("Topton", 200, 1, 20, 1),
@@ -244,10 +257,10 @@ func TestPlaceLabels_OncePerNameIsARulesChoiceAndNotThePassesHabit(t *testing.T)
 		}
 	}
 
-	if got := placeLabels(spread(true), testFace(), DefaultLabelPadding, bounds); len(got) != 1 {
+	if got := placeLabelsT(spread(true), testFace(), DefaultLabelPadding, bounds); len(got) != 1 {
 		t.Errorf("a rule asking for one label per name placed %d; a street crossing the view would be written repeatedly", len(got))
 	}
-	if got := placeLabels(spread(false), testFace(), DefaultLabelPadding, bounds); len(got) != 2 {
+	if got := placeLabelsT(spread(false), testFace(), DefaultLabelPadding, bounds); len(got) != 2 {
 		t.Errorf("a rule NOT asking for that placed %d; two places sharing a name must both be shown", len(got))
 	}
 }
@@ -274,5 +287,37 @@ func TestLabelRule_ReadsOnlyTheGeometryItsPlacementIsFor(t *testing.T) {
 	}
 	if !point.labels(mvt.GeomPoint) {
 		t.Error("a point rule rejects point features")
+	}
+}
+
+// TestPlaceLabels_MeasuresEachLabelInItsOwnFace is what makes the size
+// hierarchy safe.
+//
+// Once a place is set larger than a street, two labels competing for the same
+// space are different sizes, and the box that decides the collision has to be
+// measured in the face the label will actually be drawn in. Measuring both in
+// one face -- the obvious shape, and what this did before rules had sizes --
+// under-reserves space for the larger one, so a place name and a street name
+// that "do not overlap" are drawn across each other.
+func TestPlaceLabels_MeasuresEachLabelInItsOwnFace(t *testing.T) {
+	big, small := testFace(), testFace()
+	bounds := image.Rect(0, 0, 400, 200)
+
+	// Same text, same point, different faces: whichever is kept, the box it
+	// reserves must be the one its own face measures.
+	got := placeLabels([]candidate{
+		{text: "Hornsby", x: 200, y: 100, priority: 20, rank: 1, key: "a", face: big},
+		{text: "Clarke Road", x: 200, y: 100, priority: 10, rank: 1, key: "b", face: small},
+	}, DefaultLabelPadding, bounds)
+
+	if len(got) != 1 {
+		t.Fatalf("placed %d labels at one point, want 1", len(got))
+	}
+	if got[0].face == nil {
+		t.Error("the placed label carries no face; it would be drawn in whatever the caller passed last")
+	}
+	want := labelBox(candidate{text: got[0].text, x: 200, y: 100, face: got[0].face}, got[0].face, DefaultLabelPadding)
+	if got[0].box != want {
+		t.Errorf("box is %v, want %v: the reserved space must be measured in the label's OWN face", got[0].box, want)
 	}
 }
