@@ -1,0 +1,354 @@
+package locate
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"sort"
+
+	"github.com/wisborg/osmbase/mercator"
+	"github.com/wisborg/osmbase/mvt"
+)
+
+// Options configure a lookup. The zero value is usable.
+type Options struct {
+	// Language prefers a translated name where the data carries one -- "da"
+	// reads name:da and falls back to name. Empty takes name as written,
+	// which is the local spelling.
+	Language string
+
+	// MaxDistanceM caps how far a Near match may be, per level. A level with
+	// no entry uses DefaultMaxDistanceM.
+	//
+	// The cap is what stops this shipping a lie. Without it a point in the
+	// outback is "near Alice Springs" from two hundred kilometres away, which
+	// is true, useless, and indistinguishable in the output from a match forty
+	// metres off.
+	MaxDistanceM map[Level]float64
+
+	// Levels restricts the lookup. Empty asks for all of them.
+	//
+	// Worth setting: each level is read at its own zoom, so asking for fewer
+	// reads fewer tiles.
+	Levels []Level
+}
+
+// DefaultMaxDistanceM is how far a level's nearest feature may be before the
+// answer is withheld.
+//
+// Wider for the wider levels, because the features are wider: country labels
+// are hundreds of kilometres apart and a street is metres from where you stand.
+// These are the distances at which "near X" stops meaning anything useful, and
+// they are deliberately generous -- the alternative to an answer here is no
+// answer, and a caller can always tighten them or read DistanceM itself.
+var DefaultMaxDistanceM = map[Level]float64{
+	Country:       1_000_000,
+	Region:        500_000,
+	Locality:      25_000,
+	Macrohood:     5_000,
+	Neighbourhood: 3_000,
+	Street:        250,
+}
+
+// levelSpec says where in the schema a level's data lives.
+//
+// The zoom is the shallowest at which the producer publishes that level, which
+// is also the cheapest tile that can answer: one zoom-4 tile covers a continent
+// and answers "which country" for every point in it, where a zoom-14 tile
+// answers "which street" for one suburb. Reading each level at its own zoom is
+// what keeps a route of thousands of points down to a handful of tile reads.
+type levelSpec struct {
+	level Level
+	layer string
+	// kinds selects within the layer; empty takes every kind.
+	kinds []string
+	zoom  uint8
+	// line is true for a level read from line features rather than points.
+	line bool
+}
+
+var levelSpecs = []levelSpec{
+	{Country, "places", []string{"country"}, 4, false},
+	{Region, "places", []string{"region"}, 5, false},
+	{Locality, "places", []string{"locality"}, 10, false},
+	{Macrohood, "places", []string{"macrohood"}, 13, false},
+	{Neighbourhood, "places", []string{"neighbourhood"}, 14, false},
+	{Street, "roads", nil, 14, true},
+}
+
+// Coord is a point to look up.
+type Coord struct {
+	Lat float64 `json:"latitude"`
+	Lon float64 `json:"longitude"`
+}
+
+// At answers one coordinate.
+//
+// A thin wrapper over AtEach, and that is the right way round: the cost of a
+// lookup is reading and decoding a tile, so one point and a thousand points in
+// the same suburb cost nearly the same. See AtEach.
+func At(ctx context.Context, src TileSource, at Coord, opts Options) (Place, error) {
+	places, err := AtEach(ctx, src, []Coord{at}, opts)
+	if err != nil {
+		return Place{}, err
+	}
+	return places[0], nil
+}
+
+// AtEach answers many coordinates, reading each tile once.
+//
+// This is the primary entry point, not a convenience over At. A route is
+// thousands of coordinates over a handful of tiles; grouping them by tile
+// before reading anything turns thousands of reads into a handful, and the
+// single-point form is the special case.
+//
+// The result is parallel to pts: one Place per coordinate, in order, including
+// for coordinates nothing could be found for.
+func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]Place, error) {
+	out := make([]Place, len(pts))
+	for i, p := range pts {
+		out[i] = Place{Lat: p.Lat, Lon: p.Lon}
+	}
+	if len(pts) == 0 {
+		return out, nil
+	}
+
+	for _, spec := range levelSpecs {
+		if !opts.wants(spec.level) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("locate: looking up %s: %w", spec.level, err)
+		}
+		// Every point that shares a tile at this level is answered from one
+		// read. The grouping is per level because the zooms differ: points a
+		// kilometre apart share a country tile and not a street tile.
+		byTile := map[tileRef][]int{}
+		cap := opts.maxDistance(spec.level)
+		for i, p := range pts {
+			x, y, err := mercator.TileAt(spec.zoom, p.Lon, p.Lat)
+			if err != nil {
+				// Not a coordinate. Reported per point by leaving it with no
+				// matches rather than failing the whole batch: one bad fix in
+				// a track of thousands should not lose the other answers.
+				continue
+			}
+			for _, ref := range tilesNear(spec.zoom, x, y, p, cap) {
+				byTile[ref] = append(byTile[ref], i)
+			}
+		}
+
+		for ref, idx := range byTile {
+			feats, err := readLayer(src, ref, spec.layer)
+			if err != nil {
+				return nil, err
+			}
+			if len(feats) == 0 {
+				continue
+			}
+			for _, i := range idx {
+				m, ok := nearest(feats, spec, ref, pts[i], opts)
+				if !ok {
+					continue
+				}
+				// A point may be answered by several tiles once neighbours are
+				// read, and the nearest of those answers is the one that is
+				// true. Keeping the first would make the result depend on map
+				// iteration order, which is randomised.
+				if prev, had := out[i].matchAt(spec.level); !had || m.DistanceM < prev.DistanceM {
+					out[i].setMatch(m)
+				}
+			}
+		}
+	}
+
+	// Widest level first, which is the order a person reads an address in
+	// reverse and the order Deepest depends on.
+	for i := range out {
+		sort.SliceStable(out[i].Matches, func(a, b int) bool {
+			return out[i].Matches[a].Level < out[i].Matches[b].Level
+		})
+	}
+	return out, nil
+}
+
+// wants reports whether a level was asked for.
+func (o Options) wants(l Level) bool {
+	if len(o.Levels) == 0 {
+		return true
+	}
+	for _, w := range o.Levels {
+		if w == l {
+			return true
+		}
+	}
+	return false
+}
+
+// maxDistance is the cap for a level.
+func (o Options) maxDistance(l Level) float64 {
+	if d, ok := o.MaxDistanceM[l]; ok {
+		return d
+	}
+	return DefaultMaxDistanceM[l]
+}
+
+type tileRef struct {
+	z    uint8
+	x, y uint32
+}
+
+// readLayer decodes one layer of one tile.
+//
+// A tile the store does not hold is not an error: most coordinates on earth
+// have no tile in any given store, and a store fetched for one city holds
+// nothing for the next. The caller sees no match, which is the truth.
+func readLayer(src TileSource, ref tileRef, layer string) ([]mvt.Feature, error) {
+	raw, ok, err := src.Tile(ref.z, ref.x, ref.y)
+	if err != nil {
+		return nil, fmt.Errorf("locate: reading tile %d/%d/%d: %w", ref.z, ref.x, ref.y, err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	tile, err := mvt.Decode(raw)
+	if err != nil {
+		return nil, fmt.Errorf("locate: decoding tile %d/%d/%d: %w", ref.z, ref.x, ref.y, err)
+	}
+	l, ok := tile.Layer(layer)
+	if !ok {
+		return nil, nil
+	}
+	return l.Features, nil
+}
+
+// nearest finds the closest named feature of a level to a point.
+func nearest(feats []mvt.Feature, spec levelSpec, ref tileRef, at Coord, opts Options) (Match, bool) {
+	best := math.Inf(1)
+	var bestName, bestKind string
+
+	for i := range feats {
+		f := &feats[i]
+		if !kindMatches(f, spec.kinds) {
+			continue
+		}
+		name, ok := preferredName(f, opts.Language)
+		if !ok {
+			continue
+		}
+		d, ok := distanceTo(f, spec.line, at, spec.zoom, ref)
+		if !ok || d >= best {
+			continue
+		}
+		best, bestName = d, name
+		bestKind, _ = textTag(f, "kind_detail")
+	}
+
+	if bestName == "" || best > opts.maxDistance(spec.level) {
+		return Match{}, false
+	}
+	return Match{
+		Level: spec.level, Name: bestName, Kind: bestKind,
+		Source: Near, DistanceM: math.Round(best*10) / 10,
+	}, true
+}
+
+// tilesNear is the tiles that could hold a feature within cap metres of a
+// point: the one containing it, and any neighbour whose edge is closer than
+// that.
+//
+// Reading only the containing tile is the obvious implementation and it is
+// wrong at the edges. A street two hundred metres away across a tile boundary
+// is a street this is meant to find, and at zoom 14 a tile is about two and a
+// half kilometres wide, so a good fraction of every tile is within the street
+// cap of an edge. Vector tiles carry a buffer of features from their
+// neighbours, which hides this most of the time and therefore makes it worse:
+// the bug appears only for the features that fall outside the buffer, which is
+// exactly the ones nothing else will find.
+//
+// Bounded to the eight immediate neighbours. A cap wide enough to need more
+// than that -- more than a whole tile at the level's own zoom -- is asking
+// about something too far away to be an answer, and the levels' default caps
+// are chosen against their zooms so this does not bite.
+func tilesNear(z uint8, x, y uint32, at Coord, capM float64) []tileRef {
+	refs := []tileRef{{z, x, y}}
+	if capM <= 0 {
+		return refs
+	}
+	n := float64(uint32(1) << z)
+
+	// The point's position within its own tile, and how much of a tile the cap
+	// reaches. Longitude shortens toward the poles and latitude does not, so
+	// the two axes are measured separately.
+	fx := math.Mod(((at.Lon+180)/360)*n, 1)
+	worldY := mercatorY(at.Lat)
+	fy := math.Mod(worldY*n, 1)
+
+	tileLon := earthCircumferenceM * math.Cos(at.Lat*math.Pi/180) / n
+	tileLat := earthCircumferenceM / n
+	nearX, nearY := 1.0, 1.0
+	if tileLon > 0 {
+		nearX = capM / tileLon
+	}
+	if tileLat > 0 {
+		nearY = capM / tileLat
+	}
+
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			if dx < 0 && fx > nearX {
+				continue
+			}
+			if dx > 0 && 1-fx > nearX {
+				continue
+			}
+			if dy < 0 && fy > nearY {
+				continue
+			}
+			if dy > 0 && 1-fy > nearY {
+				continue
+			}
+			// Longitude wraps and latitude does not: a tile east of the last
+			// column is the first column, and there is nothing north of the
+			// top row.
+			nx := (int64(x) + int64(dx) + int64(n)) % int64(n)
+			ny := int64(y) + int64(dy)
+			if ny < 0 || ny >= int64(n) {
+				continue
+			}
+			refs = append(refs, tileRef{z, uint32(nx), uint32(ny)})
+		}
+	}
+	return refs
+}
+
+// mercatorY is the Web Mercator y of a latitude, in [0,1] from the north.
+func mercatorY(lat float64) float64 {
+	lat = math.Min(math.Max(lat, -85.05112878), 85.05112878)
+	s := math.Sin(lat * math.Pi / 180)
+	return 0.5 - math.Log((1+s)/(1-s))/(4*math.Pi)
+}
+
+// matchAt is the answer already recorded for a level, if any.
+func (p *Place) matchAt(l Level) (Match, bool) {
+	for _, m := range p.Matches {
+		if m.Level == l {
+			return m, true
+		}
+	}
+	return Match{}, false
+}
+
+// setMatch records a level's answer, replacing any already there.
+func (p *Place) setMatch(m Match) {
+	for i := range p.Matches {
+		if p.Matches[i].Level == m.Level {
+			p.Matches[i] = m
+			return
+		}
+	}
+	p.Matches = append(p.Matches, m)
+}

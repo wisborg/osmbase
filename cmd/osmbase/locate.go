@@ -1,0 +1,194 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	osmlocate "github.com/wisborg/osmbase/locate"
+	"github.com/wisborg/osmbase/slice"
+)
+
+func locateUsage(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprint(w, `usage: osmbase locate --store DIR --lat LAT --lon LON [--lat LAT --lon LON ...]
+
+Say where a coordinate is: country, region, locality, suburb, street, read from
+map data already in a store. Nothing reaches the network.
+
+Every answer says HOW it was reached. These tiles carry no named areas -- the
+boundaries layer has no names and the landuse polygons have none either -- so a
+result is the NEAREST named feature and not the one containing the point. A
+locality point is a label anchor near the middle of a town, so "near Horsens"
+is what the data supports and "in Horsens" is not. The distance is printed for
+exactly that reason.
+
+examples:
+  osmbase locate --store ~/Library/Caches/osmbase --lat 55.8623 --lon 9.8451
+      one point, as a table
+
+  osmbase locate --store DIR --lat 55.86 --lon 9.84 --lat 55.87 --lon 9.85 --format json
+      several points, as JSON
+
+`)
+	printFlags(w, fs)
+}
+
+// coordList collects repeated --lat and --lon flags, pairwise.
+//
+// Repeated flags rather than one --coords with a separator: a coordinate pair
+// typed as "55.86,9.84" is ambiguous about order in a way lat and lon named
+// separately never is, and getting them the wrong way round puts the answer in
+// the Gulf of Guinea or the Indian Ocean with no hint that anything is wrong.
+type coordList struct {
+	lats, lons []float64
+}
+
+func (c *coordList) addLat(s string) error { return appendFloat(&c.lats, s, "--lat") }
+func (c *coordList) addLon(s string) error { return appendFloat(&c.lons, s, "--lon") }
+
+func appendFloat(dst *[]float64, s, flag string) error {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return usageErrorf("%s %q is not a number", flag, s)
+	}
+	*dst = append(*dst, v)
+	return nil
+}
+
+// pairs turns the two lists into coordinates, refusing a mismatch.
+//
+// Refused rather than zipped to the shorter list: a missing --lon does not
+// mean "look up the ones I did pair", it means a coordinate was mistyped, and
+// silently answering a different question than the one asked is worse than
+// saying so.
+func (c *coordList) pairs() ([]osmlocate.Coord, error) {
+	if len(c.lats) != len(c.lons) {
+		return nil, usageErrorf("%d --lat and %d --lon: each coordinate needs one of each",
+			len(c.lats), len(c.lons))
+	}
+	if len(c.lats) == 0 {
+		return nil, usageErrorf("locate needs --lat and --lon")
+	}
+	out := make([]osmlocate.Coord, len(c.lats))
+	for i := range c.lats {
+		out[i] = osmlocate.Coord{Lat: c.lats[i], Lon: c.lons[i]}
+	}
+	return out, nil
+}
+
+func runLocate(args []string, stdout, stderr io.Writer) error {
+	var (
+		coords   coordList
+		store    string
+		archive  string
+		language string
+		format   string
+	)
+	fs := newFlagSet("locate", locateUsage)
+	fs.Func("lat", "latitude in degrees, north positive; repeat with --lon for more points", coords.addLat)
+	fs.Func("lon", "longitude in degrees, east positive", coords.addLon)
+	fs.StringVar(&store, "store", "", "directory holding the map data (default: the osmbase folder under your user cache directory)")
+	fs.StringVar(&archive, "archive", "", "which archive in the store to read, by ID or by part of its name; only needed when the store holds more than one")
+	fs.StringVar(&language, "language", "", "prefer names in this language where the data has them, as a short code such as \"da\" or \"ja\"; the default takes each name as written locally")
+	fs.StringVar(&format, "format", "text", "how to print the answer: text or json")
+
+	if _, err := parseArgs(fs, args, stdout); err != nil {
+		return err
+	}
+	pts, err := coords.pairs()
+	if err != nil {
+		return err
+	}
+	if format != "text" && format != "json" {
+		return usageErrorf("--format %q is not one this command knows; it has text and json", format)
+	}
+
+	root := store
+	if root == "" {
+		if root, err = slice.DefaultRoot(); err != nil {
+			return fmt.Errorf("finding the default store: %w; pass --store to say where the map data is", err)
+		}
+	}
+	st, err := slice.Open(root)
+	if err != nil {
+		return fmt.Errorf("opening the store at %s: %w", root, err)
+	}
+	sources, err := st.Sources()
+	if err != nil {
+		return err
+	}
+	chosen, err := chooseSource(root, sources, archive)
+	if err != nil {
+		return err
+	}
+	src, err := st.Source(chosen.ID)
+	if err != nil {
+		return err
+	}
+
+	places, err := osmlocate.AtEach(context.Background(), src, pts, osmlocate.Options{Language: language})
+	if err != nil {
+		return err
+	}
+	if format == "json" {
+		return writeLocateJSON(stdout, places)
+	}
+	writeLocateText(stdout, places)
+	return nil
+}
+
+func writeLocateJSON(w io.Writer, places []osmlocate.Place) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(places); err != nil {
+		return fmt.Errorf("writing the answer: %w", err)
+	}
+	return nil
+}
+
+// writeLocateText prints one block per coordinate.
+//
+// The distance is on every line and the word "near" is on every name, because
+// the two together are the whole honesty of this command: there is no level at
+// which the tiles can say a point is INSIDE anything, and a reader who sees
+// "Horsens" with no qualification will believe the point was in Horsens.
+func writeLocateText(w io.Writer, places []osmlocate.Place) {
+	for i, p := range places {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "%s, %s\n", formatCoord(p.Lat), formatCoord(p.Lon))
+		if len(p.Matches) == 0 {
+			fmt.Fprintf(w, "  nothing within reach -- the store holds no named feature near this point\n")
+			continue
+		}
+		for _, m := range p.Matches {
+			kind := m.Kind
+			if kind == "" {
+				kind = m.Level.String()
+			}
+			fmt.Fprintf(w, "  %-14s %s %s (%s)\n", m.Level, m.Source, m.Name, kind)
+			fmt.Fprintf(w, "  %-14s %s away\n", "", humanDistance(m.DistanceM))
+		}
+	}
+}
+
+// humanDistance prints a distance at a precision the measurement supports.
+//
+// Metres below a kilometre and kilometres above, with no decimals past ten
+// kilometres: "near Horsens, 41.8213 km" states a precision this does not have
+// and invites a reader to treat a label anchor as a surveyed point.
+func humanDistance(m float64) string {
+	switch {
+	case m < 1000:
+		return strconv.FormatFloat(m, 'f', 0, 64) + " m"
+	case m < 10_000:
+		return strings.TrimSuffix(strconv.FormatFloat(m/1000, 'f', 1, 64), ".0") + " km"
+	default:
+		return strconv.FormatFloat(m/1000, 'f', 0, 64) + " km"
+	}
+}
