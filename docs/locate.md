@@ -61,7 +61,7 @@ answer rather than a distant one.
 Behind a `BoundarySource` interface, so the second stage is an addition rather than a
 rewrite.
 
-### Stage one — Natural Earth, for country and region — **built**
+### Stage one — Natural Earth, for country, region and water — **built**
 
 [Public domain](https://www.naturalearthdata.com/about/terms-of-use/): *"No permission is
 needed to use Natural Earth. Crediting the authors is unnecessary."* No attribution
@@ -89,8 +89,28 @@ the tiles for Denmark and New South Wales. An atlas outline answers "which
 country contains this point" correctly everywhere except within about a
 kilometre of a border, which is a far better failure than the one it replaces.
 
-Stage one therefore turns two broken levels into two correct ones, for a day's work and no
-licence obligations at all.
+**Water is a level of its own**, answered from Natural Earth's marine polygons — 306 named
+oceans, seas, straits, gulfs and bays in the 10m set. It is independent of the land
+hierarchy rather than an alternative to it: a point can be inside a country's outline and
+inside a named strait at once, and a flight between mainland Australia and Tasmania is over
+Bass Strait while still being described in terms of Australia.
+
+It is what makes a flight describable at all. A trans-Pacific track has no country beneath
+it for most of its length, and containment correctly reports nothing — honest, and nearly
+useless. "South Pacific Ocean" is the answer that was wanted. There is no tile fallback for
+it: the tiles name the river beside you, which is a different question from which sea you
+are over.
+
+Two properties of the marine file differ from the admin ones and are handled rather than
+discovered later. Its lowercase `name` is the SPECIFIC form and `name_en` the generic —
+"South Pacific Ocean" against "Pacific Ocean", for 71 of 306 features — which is the
+opposite of the admin files, where the English key is the one to trust; and it shouts the
+largest features, because `INDIAN OCEAN` is how an ocean is labelled on a map and not how a
+sentence names one. Marine areas also NEST, so the smallest containing area wins: taking the
+first reported a trans-Tasman flight as being over the Pacific.
+
+Stage one therefore turns two broken levels into two correct ones, adds a third that had no
+answer at all, and carries no licence obligations.
 
 ### Stage two — OSM administrative relations, for locality and suburb — not built
 
@@ -171,6 +191,16 @@ like any others.
 `Options` carries the language preference, the per-level distance caps, and the
 `BoundarySource` — nil meaning nearest-feature only, which is a legitimate configuration and
 the one that needs no download.
+
+`Options.Levels` restricts the lookup, and the caller is the only one who can decide what is
+appropriate. A run wants every level; a flight wants country, region and water and nothing
+finer, because a street 250 m below an aircraft is a true answer to a question nobody asked.
+Fewer levels also means fewer tiles read, since each is read at its own zoom. The command
+exposes it as `--levels`.
+
+Altitude is deliberately absent. A flight track's coordinates are just coordinates, and
+whatever carries them — a FIT or GPX file — is where altitude lives; a consumer that wants
+to colour a drawn path by height reads it there. It is not this package's to know.
 
 ## What does not live here
 

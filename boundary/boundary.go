@@ -20,6 +20,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"unicode"
 )
 
 // Area is one named region with the geometry to test a point against.
@@ -60,17 +61,43 @@ func (s *Set) Len() int { return len(s.areas) }
 
 // At returns the area containing a coordinate, and whether one did.
 //
-// The first containing area wins. Natural Earth's country and state layers do
-// not overlap, so "first" and "only" are the same thing here -- and a source
-// whose areas DID overlap would be one this could not answer honestly anyway,
-// since there would be no basis for preferring one.
+// The SMALLEST containing area wins, not the first. The admin layers do not
+// overlap, so for them the two are the same thing -- but the marine layer
+// nests, and heavily: the Tasman Sea is inside the South Pacific, which is
+// inside nothing but sits earlier in the file. Taking the first reported a
+// trans-Tasman flight as being over the Pacific Ocean, which is true and is
+// not the answer anybody wanted.
+//
+// Smallest is measured by bounding-box area rather than by true area, which
+// is cheap, already computed, and enough to order things that genuinely
+// contain one another. It would be the wrong tool for ranking areas that
+// merely overlap; nothing here does.
 func (s *Set) At(lat, lon float64) (Area, bool) {
+	best := -1
+	bestSize := math.Inf(1)
 	for i := range s.areas {
-		if s.areas[i].contains(lat, lon) {
-			return s.areas[i], true
+		if !s.areas[i].contains(lat, lon) {
+			continue
+		}
+		if size := s.areas[i].boxArea(); size < bestSize {
+			best, bestSize = i, size
 		}
 	}
-	return Area{}, false
+	if best < 0 {
+		return Area{}, false
+	}
+	return s.areas[best], true
+}
+
+// boxArea is how much ground an area's parts cover, for ordering areas that
+// contain one another. Degrees squared: not a real area, and never compared
+// against anything but another of these.
+func (a *Area) boxArea() float64 {
+	var total float64
+	for _, p := range a.polygons {
+		total += (p.east - p.west) * (p.north - p.south)
+	}
+	return total
 }
 
 // contains is the point-in-polygon test, holes included.
@@ -162,16 +189,37 @@ type geoJSON struct {
 
 // nameKeys are the properties a name is read from, in order of preference.
 //
-// Natural Earth carries several at once and they differ. NAME_EN is first and
-// NAME second, which is the opposite of what this comment said when the order
-// was written: NAME is sometimes the local-script spelling, and this package
-// has no language parameter with which a caller could ask for one or the
-// other, so the English form is the one that can be relied on to render. The
-// rest are fallbacks for the records that carry neither.
-var nameKeys = []string{"NAME_EN", "NAME", "NAME_LONG", "ADMIN", "name"}
+// Natural Earth carries several at once and they differ. The admin files use
+// UPPERCASE keys and the marine file lowercase ones, so the two halves of this
+// list never compete -- which is what lets them be ordered by opposite rules.
+//
+// Admin: NAME_EN before NAME, because NAME is sometimes the local-script
+// spelling and this package has no language parameter for a caller to ask
+// with, so the English form is the one that can be relied on to render.
+//
+// Marine: name before name_en, because there the English form is the LESS
+// specific one -- name is "South Pacific Ocean" and name_en is "Pacific
+// Ocean", for 71 of 306 features. A flight wants the specific one.
+var nameKeys = []string{"NAME_EN", "NAME", "NAME_LONG", "ADMIN", "name", "name_en"}
+
+// kindKeys are the properties a feature's own kind is read from.
+//
+// The admin files carry none and take the kind passed to Read -- every
+// feature in a country file is a country. The marine file does carry one, in
+// featurecla, and its values are worth keeping: "strait" and "ocean" are
+// different enough that flattening both to "water" would throw away the part
+// a reader finds informative.
+var kindKeys = []string{"featurecla", "type_en"}
 
 // Read parses a Natural Earth GeoJSON file into a searchable set.
-func Read(r io.Reader, kind string) (*Set, error) {
+//
+// fromFeature says whether a feature's own class is worth reading. The marine
+// file's is -- "ocean", "strait", "bay" are the words a reader wants -- and
+// the admin files' is not: theirs says "Admin-0 country", which is Natural
+// Earth's internal vocabulary and reads as jargon in an answer. So the admin
+// files take the kind passed here, which is true of every feature in them
+// anyway.
+func Read(r io.Reader, kind string, fromFeature bool) (*Set, error) {
 	var doc geoJSON
 	if err := json.NewDecoder(r).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("boundary: reading the %s outlines: %w", kind, err)
@@ -192,7 +240,11 @@ func Read(r io.Reader, kind string) (*Set, error) {
 		if len(polys) == 0 {
 			continue
 		}
-		set.areas = append(set.areas, newArea(name, kind, polys))
+		k := kind
+		if fromFeature {
+			k = featureKind(f.Properties, kind)
+		}
+		set.areas = append(set.areas, newArea(name, k, polys))
 	}
 	if len(set.areas) == 0 {
 		return nil, fmt.Errorf("boundary: the %s file holds no named areas; it is not the file this expects", kind)
@@ -200,8 +252,9 @@ func Read(r io.Reader, kind string) (*Set, error) {
 	return set, nil
 }
 
-func firstName(props map[string]json.RawMessage) string {
-	for _, k := range nameKeys {
+// featureKind reads a feature's own kind, falling back to the file's.
+func featureKind(props map[string]json.RawMessage, fallback string) string {
+	for _, k := range kindKeys {
 		raw, ok := props[k]
 		if !ok {
 			continue
@@ -211,7 +264,56 @@ func firstName(props map[string]json.RawMessage) string {
 			return s
 		}
 	}
-	return ""
+	return fallback
+}
+
+// firstName reads a feature's name, preferring the first key that has one --
+// except that an ALL-CAPS name gives way to a later key that is not.
+//
+// The exception is for the marine file, where Natural Earth shouts the
+// largest features: "INDIAN OCEAN" and "SOUTHERN OCEAN" are the cartographic
+// convention for an ocean label on a map, and are not how a sentence should
+// name them. Where a cased alternative exists it says the same thing --
+// "Indian Ocean" -- so preferring it loses nothing. Where none does, the
+// shouted name is still the name and is returned rather than dropped.
+//
+// Only a name that is entirely upper case defers, so an ordinary name
+// carrying capitals is unaffected.
+func firstName(props map[string]json.RawMessage) string {
+	var shouted string
+	for _, k := range nameKeys {
+		raw, ok := props[k]
+		if !ok {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil || strings.TrimSpace(s) == "" {
+			continue
+		}
+		if isShouted(s) {
+			if shouted == "" {
+				shouted = s
+			}
+			continue
+		}
+		return s
+	}
+	return shouted
+}
+
+// isShouted reports whether a string has letters and none of them are lower
+// case.
+func isShouted(s string) bool {
+	letters := false
+	for _, r := range s {
+		if unicode.IsLower(r) {
+			return false
+		}
+		if unicode.IsLetter(r) {
+			letters = true
+		}
+	}
+	return letters
 }
 
 // readGeometry decodes the two shapes these files use into one form.

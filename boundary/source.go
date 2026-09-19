@@ -16,12 +16,32 @@ import (
 // store may hold either: a file swapped underneath a program that believed it
 // had the other would change every answer near a border with nothing to say
 // it had.
-func File(detail string, region bool) string {
-	if region {
+func File(detail string, layer Layer) string {
+	switch layer {
+	case Regions:
 		return fmt.Sprintf("ne_%s_admin_1_states_provinces.geojson", detail)
+	case Waters:
+		return fmt.Sprintf("ne_%s_geography_marine_polys.geojson", detail)
+	default:
+		return fmt.Sprintf("ne_%s_admin_0_countries.geojson", detail)
 	}
-	return fmt.Sprintf("ne_%s_admin_0_countries.geojson", detail)
 }
+
+// Layer is one of the files a boundary store holds.
+//
+// A named type rather than the bool this began as, because there are three
+// now and a second bool beside the first would be a parameter list nobody can
+// read at the call site.
+type Layer uint8
+
+const (
+	Countries Layer = iota
+	Regions
+	Waters
+)
+
+// Layers are the files a complete store holds.
+var Layers = []Layer{Countries, Regions, Waters}
 
 // Details are the resolutions this can use, coarsest first.
 var Details = []string{"110m", "50m", "10m"}
@@ -86,9 +106,9 @@ type Source struct {
 	// processing several routes at once would naturally hand them one Source.
 	// Two goroutines writing loaded is a concurrent map write, which is a
 	// crash rather than a race worth arguing about.
-	mu                 sync.Mutex
-	countries, regions *Set
-	loaded             map[string]error
+	mu     sync.Mutex
+	sets   map[Layer]*Set
+	loaded map[string]error
 }
 
 // Open prepares to read boundary files from a store, without reading any yet.
@@ -109,7 +129,10 @@ func Open(storeRoot, detail string) *Source {
 	if detail == "" {
 		detail = DefaultDetail
 	}
-	return &Source{dir: Dir(storeRoot), detail: detail, loaded: map[string]error{}}
+	return &Source{
+		dir: Dir(storeRoot), detail: detail,
+		sets: map[Layer]*Set{}, loaded: map[string]error{},
+	}
 }
 
 // Available reports whether a store holds the files for a detail.
@@ -120,8 +143,8 @@ func Available(storeRoot, detail string) bool {
 	if detail == "" {
 		detail = DefaultDetail
 	}
-	for _, region := range []bool{false, true} {
-		if _, err := os.Stat(filepath.Join(Dir(storeRoot), File(detail, region))); err != nil {
+	for _, layer := range Layers {
+		if _, err := os.Stat(filepath.Join(Dir(storeRoot), File(detail, layer))); err != nil {
 			return false
 		}
 	}
@@ -130,7 +153,7 @@ func Available(storeRoot, detail string) bool {
 
 // set loads one file, once, remembering a failure so a broken file is not
 // re-read and re-reported for every coordinate in a route.
-func (s *Source) set(region bool) *Set {
+func (s *Source) set(layer Layer) *Set {
 	if s.loaded == nil {
 		// A source Open refused. It holds no directory and answers nothing.
 		return nil
@@ -138,15 +161,11 @@ func (s *Source) set(region bool) *Set {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	name := File(s.detail, region)
-	if err, done := s.loaded[name]; done {
-		if err != nil {
-			return nil
-		}
-		if region {
-			return s.regions
-		}
-		return s.countries
+	name := File(s.detail, layer)
+	if _, done := s.loaded[name]; done {
+		// The set is nil for a file that would not load, which is the same
+		// answer as a file that held nothing -- see Contains.
+		return s.sets[layer]
 	}
 
 	f, err := os.Open(filepath.Join(s.dir, name))
@@ -156,38 +175,61 @@ func (s *Source) set(region bool) *Set {
 	}
 	defer f.Close()
 
-	kind := "country"
-	if region {
-		kind = "state"
-	}
 	// The error is remembered so a broken file is not re-read and
 	// re-reported for every coordinate in a route.
 	//
 	// Storing nil here instead would be an equivalent mutant rather than a
 	// bug, and it is worth saying so: the guard below still returns nil on
-	// this call, and a later call taking the cached-success path returns the
-	// field, which was never assigned and is also nil. No test can tell the
+	// this call, and a later call taking the cached path returns the map
+	// entry, which was never assigned and is also nil. No test can tell the
 	// two apart, so nobody should write one trying.
-	set, err := Read(f, kind)
+	set, err := Read(f, layerKind(layer), layer == Waters)
 	s.loaded[name] = err
 	if err != nil {
 		return nil
 	}
-	if region {
-		s.regions = set
-	} else {
-		s.countries = set
-	}
+	s.sets[layer] = set
 	return set
+}
+
+// layerKind is the fallback kind for features in a file that do not name
+// their own. The admin files carry no kind per feature; the marine file does.
+func layerKind(layer Layer) string {
+	switch layer {
+	case Regions:
+		return "state"
+	case Waters:
+		return "water"
+	default:
+		return "country"
+	}
 }
 
 // Covers reports whether this source can answer a level.
 //
-// Country and region, and nothing below. Natural Earth publishes no suburb
-// outlines, and reporting a locality as "contained" by the state that holds it
-// would be a true statement answering the wrong question.
+// Country, region and water, and nothing below. Natural Earth publishes no
+// suburb outlines, and reporting a locality as "contained" by the state that
+// holds it would be a true statement answering the wrong question.
+//
+// Water is independent of the other two rather than an alternative to them. A
+// point can be inside a country's outline and inside a named bay at once, and
+// both are worth saying.
 func (s *Source) Covers(l locate.Level) bool {
-	return l == locate.Country || l == locate.Region
+	_, ok := layerFor(l)
+	return ok
+}
+
+// layerFor maps a level to the file that answers it.
+func layerFor(l locate.Level) (Layer, bool) {
+	switch l {
+	case locate.Country:
+		return Countries, true
+	case locate.Region:
+		return Regions, true
+	case locate.Water:
+		return Waters, true
+	}
+	return 0, false
 }
 
 // Contains returns the area holding a coordinate.
@@ -198,10 +240,11 @@ func (s *Source) Covers(l locate.Level) bool {
 // a lookup has no business distinguishing "we do not know" from "there is
 // nothing there" when the caller can do nothing differently about either.
 func (s *Source) Contains(l locate.Level, lat, lon float64) (string, string, bool) {
-	if !s.Covers(l) {
+	layer, ok := layerFor(l)
+	if !ok {
 		return "", "", false
 	}
-	set := s.set(l == locate.Region)
+	set := s.set(layer)
 	if set == nil {
 		return "", "", false
 	}

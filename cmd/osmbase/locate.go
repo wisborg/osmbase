@@ -88,6 +88,7 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 		store    string
 		archive  string
 		language string
+		levels   string
 		detail   string
 		format   string
 	)
@@ -97,6 +98,11 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&store, "store", "", "directory holding the map data (default: the osmbase folder under your user cache directory)")
 	fs.StringVar(&archive, "archive", "", "which archive in the store to read, by ID or by part of its name; only needed when the store holds more than one")
 	fs.StringVar(&language, "language", "", "prefer names in this language where the data has them, as a short code such as \"da\" or \"ja\"; the default takes each name as written locally")
+	fs.StringVar(&levels, "levels", "",
+		"which levels to answer, comma separated, from "+levelNames()+
+			". The default asks for all of them. Worth setting: each level is read at its own zoom, so asking "+
+			"for fewer reads fewer tiles -- and a track that was not on the ground wants the fine ones left out, "+
+			"since a street 250 m below an aircraft is a true answer to a question nobody asked")
 	fs.StringVar(&detail, "detail", "",
 		"which boundary outlines to use, if the store has them: "+strings.Join(boundary.Details, ", ")+" (default: "+boundary.DefaultDetail+")")
 	fs.StringVar(&format, "format", "text", "how to print the answer: text or json")
@@ -143,7 +149,11 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	// are an optional download, a store without them is the ordinary case,
 	// and the difference is visible in the output anyway -- every answer says
 	// "near" instead of "in".
-	opts := osmlocate.Options{Language: language}
+	wanted, err := parseLevels(levels)
+	if err != nil {
+		return err
+	}
+	opts := osmlocate.Options{Language: language, Levels: wanted}
 	if boundary.Available(root, detail) {
 		opts.Boundaries = boundary.Open(root, detail)
 	}
@@ -275,4 +285,42 @@ func humanDistance(m float64) string {
 	default:
 		return strconv.FormatFloat(m/1000, 'f', 0, 64) + " km"
 	}
+}
+
+// levelNames lists the levels for the flag's help.
+func levelNames() string {
+	names := make([]string, 0, len(osmlocate.Levels))
+	for _, l := range osmlocate.Levels {
+		names = append(names, l.String())
+	}
+	return strings.Join(names, ", ")
+}
+
+// parseLevels turns the --levels flag into the levels to ask for.
+//
+// An empty flag means all of them, which is what Options.Levels already means
+// -- so the two agree without this having to enumerate anything. An unknown
+// name is refused rather than ignored: silently dropping a level the caller
+// asked for would give a shorter answer with nothing to say why, which is
+// exactly the failure this command is otherwise careful to avoid.
+func parseLevels(flag string) ([]osmlocate.Level, error) {
+	if strings.TrimSpace(flag) == "" {
+		return nil, nil
+	}
+	var out []osmlocate.Level
+	for _, name := range strings.Split(flag, ",") {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		l, ok := osmlocate.ParseLevel(name)
+		if !ok {
+			return nil, usageErrorf("--levels %q is not one this command knows; it has %s", name, levelNames())
+		}
+		out = append(out, l)
+	}
+	if len(out) == 0 {
+		return nil, usageErrorf("--levels was given nothing; leave it out to ask for all of %s", levelNames())
+	}
+	return out, nil
 }

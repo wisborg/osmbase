@@ -44,25 +44,31 @@ const maxBoundaryBytes = 128 << 20
 func boundariesUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, `usage: osmbase boundaries --store DIR [--detail 50m] [--yes]
 
-Download the country and state outlines that let "osmbase locate" say a
-coordinate is IN a country rather than near one.
+Download the country, state and sea outlines that let "osmbase locate" say a
+coordinate is IN a country rather than near one, and name the water it is over.
 
 Without them every answer is the nearest named point, which for a country is
-a label anchor that may be hundreds of kilometres away. With them, country and
-region become statements of fact and the rest stays as it was -- there are no
-suburb outlines in this data, and there is no honest way to invent them.
+a label anchor that may be hundreds of kilometres away. With them, country,
+region and water become statements of fact and the rest stays as it was --
+there are no suburb outlines in this data, and there is no honest way to
+invent them.
+
+The sea outlines are what make a flight describable. A track across an ocean
+has no country under it, and containment correctly reports nothing; "North
+Pacific Ocean" is the answer that was wanted.
 
 The data is Natural Earth, which is public domain: no attribution is required
 and nothing about using it attaches to what you do with the answers.
 
-The default is the finest set, about 54 MB, because it is the only one whose
-state outlines cover the world: the 50m set has subdivisions for nine countries
-and none for Denmark, Germany, France or the United Kingdom.
+The default is the finest set, about 56 MB, because it is the only one whose
+outlines are complete: the 50m set has state subdivisions for nine countries
+and none for Denmark, Germany, France or the United Kingdom, and its sea
+outlines are missing Bass Strait, the English Channel and the Kattegat.
 
 examples:
   osmbase boundaries --store ~/Library/Caches/osmbase
-      about 54 MB, and a coordinate can then be placed in a country and a state
-      anywhere in the world
+      about 56 MB, and a coordinate can then be placed in a country, a state
+      and a named sea anywhere in the world
 
   osmbase boundaries --store DIR --detail 50m
       about 5 MB. Countries are covered in full; states are covered for nine
@@ -101,8 +107,11 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	dir := boundary.Dir(root)
 
-	files := []string{boundary.File(detail, false), boundary.File(detail, true)}
-	fmt.Fprintf(stderr, "osmbase: this downloads two files from raw.githubusercontent.com:\n")
+	var files []string
+	for _, layer := range boundary.Layers {
+		files = append(files, boundary.File(detail, layer))
+	}
+	fmt.Fprintf(stderr, "osmbase: this downloads %d files from raw.githubusercontent.com:\n", len(files))
 	for _, f := range files {
 		fmt.Fprintf(stderr, "osmbase:   %s\n", f)
 	}

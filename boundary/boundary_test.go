@@ -37,7 +37,7 @@ func coord(lon, lat float64) string {
 // TestSet_ContainsAPointInsideAndRejectsOneOutside is the whole claim: this
 // answers containment, which the tiles cannot.
 func TestSet_ContainsAPointInsideAndRejectsOneOutside(t *testing.T) {
-	set, err := boundary.Read(strings.NewReader(squareArea("Denmark", 8, 54, 13, 58, false)), "country")
+	set, err := boundary.Read(strings.NewReader(squareArea("Denmark", 8, 54, 13, 58, false)), "country", false)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSet_ContainsAPointInsideAndRejectsOneOutside(t *testing.T) {
 // only the first ring would answer every enclave as though it were the country
 // around it -- which is precisely the kind of wrong answer that looks right.
 func TestSet_APointInAHoleIsOutside(t *testing.T) {
-	set, err := boundary.Read(strings.NewReader(squareArea("Italy", 0, 0, 9, 9, true)), "country")
+	set, err := boundary.Read(strings.NewReader(squareArea("Italy", 0, 0, 9, 9, true)), "country", false)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSet_APointInAHoleIsOutside(t *testing.T) {
 // which is indistinguishable from a point in the ocean and would be reported
 // as a missing level rather than as a broken download.
 func TestRead_RefusesAFileWithNoNamedAreas(t *testing.T) {
-	_, err := boundary.Read(strings.NewReader(`{"type":"FeatureCollection","features":[]}`), "country")
+	_, err := boundary.Read(strings.NewReader(`{"type":"FeatureCollection","features":[]}`), "country", false)
 	if err == nil {
 		t.Fatal("a file with no areas was accepted")
 	}
@@ -110,6 +110,7 @@ func TestSource_CoversOnlyWhatNaturalEarthHas(t *testing.T) {
 	}{
 		{locate.Country, true},
 		{locate.Region, true},
+		{locate.Water, true},
 		{locate.Locality, false},
 		{locate.Macrohood, false},
 		{locate.Neighbourhood, false},
@@ -154,7 +155,7 @@ func TestRead_KeepsEveryPartOfAMultiPolygon(t *testing.T) {
 		`[[[8,54],[10,54],[10,56],[8,56],[8,54]]],` +
 		`[[[12,54],[14,54],[14,56],[12,56],[12,54]]]` +
 		`]}}]}`
-	set, err := boundary.Read(strings.NewReader(doc), "country")
+	set, err := boundary.Read(strings.NewReader(doc), "country", false)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestRead_PrefersTheEnglishNameWhenSeveralAreCarried(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			set, err := boundary.Read(strings.NewReader(
-				`{"type":"FeatureCollection","features":[{"properties":`+c.props+`,`+square+`}]}`), "country")
+				`{"type":"FeatureCollection","features":[{"properties":`+c.props+`,`+square+`}]}`), "country", false)
 			if err != nil {
 				t.Fatalf("Read: %v", err)
 			}
@@ -226,7 +227,7 @@ func TestRead_IgnoresAGeometryWithNoArea(t *testing.T) {
 		`{"properties":{"NAME":"A Point"},"geometry":{"type":"Point","coordinates":[1,1]}},` +
 		`{"properties":{"NAME":"An Area"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}` +
 		`]}`
-	set, err := boundary.Read(strings.NewReader(doc), "country")
+	set, err := boundary.Read(strings.NewReader(doc), "country", false)
 	if err != nil {
 		t.Fatalf("a file carrying a point alongside an area was refused: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestRead_IgnoresAGeometryWithNoArea(t *testing.T) {
 }
 
 // writeStore puts a two-file boundary store on disk, as a real fetch would.
-func writeStore(t *testing.T, detail, countries, regions string) string {
+func writeStore(t *testing.T, detail, countries, regions, waters string) string {
 	t.Helper()
 	root := t.TempDir()
 	dir := boundary.Dir(root)
@@ -249,8 +250,9 @@ func writeStore(t *testing.T, detail, countries, regions string) string {
 	for _, f := range []struct {
 		name, body string
 	}{
-		{boundary.File(detail, false), countries},
-		{boundary.File(detail, true), regions},
+		{boundary.File(detail, boundary.Countries), countries},
+		{boundary.File(detail, boundary.Regions), regions},
+		{boundary.File(detail, boundary.Waters), waters},
 	} {
 		if f.body == "" {
 			continue
@@ -288,7 +290,8 @@ func squareDoc(name string, west, south, east, north float64) string {
 func TestSource_AnswersCountryAndRegionIndependentlyFromDisk(t *testing.T) {
 	root := writeStore(t, "50m",
 		squareDoc("Denmark", 8, 54, 13, 58),
-		squareDoc("Midtjylland", 9, 55, 11, 57))
+		squareDoc("Midtjylland", 9, 55, 11, 57),
+		squareDoc("Kattegat", 10, 56, 12, 58))
 	s := boundary.Open(root, "50m")
 
 	if !boundary.Available(root, "50m") {
@@ -324,7 +327,8 @@ func TestSource_AnswersCountryAndRegionIndependentlyFromDisk(t *testing.T) {
 // error and caching an empty set would report every coordinate on earth as
 // outside every region, which is indistinguishable from the sea.
 func TestSource_ACorruptFileLosesItsLevelAndNothingElse(t *testing.T) {
-	root := writeStore(t, "50m", squareDoc("Denmark", 8, 54, 13, 58), `{"features":[`)
+	root := writeStore(t, "50m", squareDoc("Denmark", 8, 54, 13, 58), `{"features":[`,
+		squareDoc("Kattegat", 10, 56, 12, 58))
 	s := boundary.Open(root, "50m")
 
 	if _, _, ok := s.Contains(locate.Region, 56, 10); ok {
@@ -343,13 +347,20 @@ func TestSource_ACorruptFileLosesItsLevelAndNothingElse(t *testing.T) {
 // back to the tiles -- so a user loses a level they would otherwise have had,
 // silently, from an interruption the download's own design anticipates.
 func TestAvailable_NeedsBothFiles(t *testing.T) {
-	both := writeStore(t, "50m", squareDoc("A", 0, 0, 1, 1), squareDoc("B", 0, 0, 1, 1))
-	if !boundary.Available(both, "50m") {
+	all := writeStore(t, "50m", squareDoc("A", 0, 0, 1, 1), squareDoc("B", 0, 0, 1, 1), squareDoc("C", 0, 0, 1, 1))
+	if !boundary.Available(all, "50m") {
 		t.Error("a complete store reports unavailable")
 	}
-	countryOnly := writeStore(t, "50m", squareDoc("A", 0, 0, 1, 1), "")
-	if boundary.Available(countryOnly, "50m") {
-		t.Error("a store holding only the country file reports available; an interrupted fetch would silently cost the region level")
+	for _, c := range []struct {
+		name                      string
+		countries, regions, water string
+	}{
+		{"only the country file", squareDoc("A", 0, 0, 1, 1), "", ""},
+		{"missing the water file", squareDoc("A", 0, 0, 1, 1), squareDoc("B", 0, 0, 1, 1), ""},
+	} {
+		if boundary.Available(writeStore(t, "50m", c.countries, c.regions, c.water), "50m") {
+			t.Errorf("a store %s reports available; an interrupted fetch would silently cost a level", c.name)
+		}
 	}
 }
 
@@ -407,7 +418,8 @@ func TestValidDetail_RefusesAnythingThatCouldLeaveTheStore(t *testing.T) {
 func TestSource_IsSafeToShareBetweenGoroutines(t *testing.T) {
 	root := writeStore(t, "50m",
 		squareDoc("Denmark", 8, 54, 13, 58),
-		squareDoc("Midtjylland", 9, 55, 11, 57))
+		squareDoc("Midtjylland", 9, 55, 11, 57),
+		squareDoc("Kattegat", 10, 56, 12, 58))
 	s := boundary.Open(root, "50m")
 
 	var wg sync.WaitGroup
@@ -430,5 +442,111 @@ func TestSource_IsSafeToShareBetweenGoroutines(t *testing.T) {
 	// everything into nonsense would show up too.
 	if name, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
 		t.Errorf("after concurrent use, country = (%q, %v), want Denmark, true", name, ok)
+	}
+}
+
+// TestSet_TheSmallestContainingAreaWins is what makes a marine answer useful.
+//
+// Seas nest inside oceans: the Tasman Sea is inside the South Pacific, and the
+// ocean sits earlier in Natural Earth's file. Taking the first containing area
+// reported a trans-Tasman flight as being over the Pacific Ocean -- true, and
+// not the answer anybody wanted.
+//
+// Both orders are asserted because a single order passes by luck: with the
+// small area listed first, "keep the first" and "keep the smallest" agree.
+func TestSet_TheSmallestContainingAreaWins(t *testing.T) {
+	ocean := `{"properties":{"name":"South Pacific Ocean"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[40,0],[40,40],[0,40],[0,0]]]}}`
+	sea := `{"properties":{"name":"Tasman Sea"},"geometry":{"type":"Polygon","coordinates":[[[10,10],[20,10],[20,20],[10,20],[10,10]]]}}`
+
+	for _, c := range []struct {
+		name  string
+		feats string
+	}{
+		{"the ocean listed first", ocean + `,` + sea},
+		{"the sea listed first", sea + `,` + ocean},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set, err := boundary.Read(strings.NewReader(
+				`{"type":"FeatureCollection","features":[`+c.feats+`]}`), "water", false)
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			// Inside both.
+			if a, ok := set.At(15, 15); !ok || a.Name != "Tasman Sea" {
+				t.Errorf("got %q, want Tasman Sea: the smaller of two areas that both contain the point", a.Name)
+			}
+			// Inside the ocean only.
+			if a, ok := set.At(30, 30); !ok || a.Name != "South Pacific Ocean" {
+				t.Errorf("got %q, want South Pacific Ocean", a.Name)
+			}
+		})
+	}
+}
+
+// TestRead_PrefersASpecificNameOverAShoutedOrGenericOne covers the two ways
+// Natural Earth's marine names differ from its admin ones.
+//
+// Its lowercase "name" is the SPECIFIC form and "name_en" the generic --
+// "South Pacific Ocean" against "Pacific Ocean", for 71 of 306 features --
+// which is the opposite of the admin files, where the English key is the one
+// to trust. And it shouts the largest features, because that is how an ocean
+// is labelled on a map and not how a sentence names one.
+func TestRead_PrefersASpecificNameOverAShoutedOrGenericOne(t *testing.T) {
+	square := `"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}`
+
+	for _, c := range []struct {
+		name  string
+		props string
+		want  string
+	}{
+		{"specific over generic", `{"name":"South Pacific Ocean","name_en":"Pacific Ocean"}`, "South Pacific Ocean"},
+		{"shouted gives way to cased", `{"name":"INDIAN OCEAN","name_en":"Indian Ocean"}`, "Indian Ocean"},
+		{"shouted is kept when it is all there is", `{"name":"SOUTHERN OCEAN"}`, "SOUTHERN OCEAN"},
+		{"capitals inside a name are not shouting", `{"name":"Bay of Biscay","name_en":"Generic Bay"}`, "Bay of Biscay"},
+		{"admin files still prefer the English key", `{"NAME":"Danmark","NAME_EN":"Denmark"}`, "Denmark"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set, err := boundary.Read(strings.NewReader(
+				`{"type":"FeatureCollection","features":[{"properties":`+c.props+`,`+square+`}]}`), "water", false)
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			a, ok := set.At(1, 1)
+			if !ok {
+				t.Fatal("the square did not contain its own middle")
+			}
+			if a.Name != c.want {
+				t.Errorf("Name = %q, want %q", a.Name, c.want)
+			}
+		})
+	}
+}
+
+// TestRead_TakesTheFeaturesOwnKindOnlyWhenAsked keeps Natural Earth's
+// internal vocabulary out of the answer.
+//
+// The marine file's featurecla is worth reading -- "ocean", "strait", "bay"
+// are the words a reader wants. The admin files' says "Admin-0 country",
+// which is jargon, and shipped in the output for exactly one commit.
+func TestRead_TakesTheFeaturesOwnKindOnlyWhenAsked(t *testing.T) {
+	doc := func(cla string) string {
+		return `{"type":"FeatureCollection","features":[{"properties":{"name":"X","featurecla":"` + cla +
+			`"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]}`
+	}
+
+	set, err := boundary.Read(strings.NewReader(doc("strait")), "water", true)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if a, _ := set.At(1, 1); a.Kind != "strait" {
+		t.Errorf("Kind = %q, want strait: the marine file's own class is the useful one", a.Kind)
+	}
+
+	set, err = boundary.Read(strings.NewReader(doc("Admin-0 country")), "country", false)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if a, _ := set.At(1, 1); a.Kind != "country" {
+		t.Errorf("Kind = %q, want country: an admin file's own class is Natural Earth's jargon", a.Kind)
 	}
 }

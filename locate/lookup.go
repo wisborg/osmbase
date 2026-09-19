@@ -78,6 +78,17 @@ type levelSpec struct {
 	line bool
 }
 
+// tileSpec is where a level's data lives in the tiles, and whether it is
+// there at all.
+func tileSpec(l Level) (levelSpec, bool) {
+	for _, spec := range levelSpecs {
+		if spec.level == l {
+			return spec, true
+		}
+	}
+	return levelSpec{}, false
+}
+
 var levelSpecs = []levelSpec{
 	{Country, "places", []string{"country"}, 4, false},
 	{Region, "places", []string{"region"}, 5, false},
@@ -124,8 +135,8 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		return out, nil
 	}
 
-	for _, spec := range levelSpecs {
-		if !opts.wants(spec.level) {
+	for _, level := range Levels {
+		if !opts.wants(level) {
 			continue
 		}
 		// Containment first, and exclusively: a source that covers a level
@@ -133,33 +144,49 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		// Falling back to a nearest match when containment found nothing
 		// would be wrong -- a point in the sea is outside every country, and
 		// "near Denmark, 40 km" would turn that correct answer into a guess.
-		if opts.Boundaries != nil && opts.Boundaries.Covers(spec.level) {
+		if opts.Boundaries != nil && opts.Boundaries.Covers(level) {
 			// Checked here as well as on the tile path below. Containment is
 			// local file reads rather than network, but a route of thousands
 			// of points across several levels is still long enough that a
 			// caller cancelling it should be obeyed -- and a branch that ends
 			// in continue skips the check a few lines down.
 			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("locate: looking up %s: %w", spec.level, err)
+				return nil, fmt.Errorf("locate: looking up %s: %w", level, err)
 			}
 			for i, p := range pts {
-				if name, kind, ok := opts.Boundaries.Contains(spec.level, p.Lat, p.Lon); ok {
+				if name, kind, ok := opts.Boundaries.Contains(level, p.Lat, p.Lon); ok {
 					out[i].setMatch(Match{
-						Level: spec.level, Name: name, Kind: kind,
+						Level: level, Name: name, Kind: kind,
 						Source: Contained,
 					})
 				}
 			}
 			continue
 		}
+
+		// No boundary source for this level, so the tiles answer it -- if
+		// they can. Water is the level that cannot be answered any other
+		// way: the tiles name rivers and lakes beside you, which is a
+		// different question from which sea you are over, so a water level
+		// with no boundary data has no answer rather than a misleading one.
+		// A level with no tile data at all -- Water -- has no answer here.
+		// Removing this guard is an equivalent mutant rather than a bug: the
+		// zero spec names no layer, so the loop below finds nothing and the
+		// result is the same. It costs a wasted tile read per point, and it
+		// costs a reader the knowledge that some levels are answered by
+		// boundaries or not at all.
+		spec, ok := tileSpec(level)
+		if !ok {
+			continue
+		}
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("locate: looking up %s: %w", spec.level, err)
+			return nil, fmt.Errorf("locate: looking up %s: %w", level, err)
 		}
 		// Every point that shares a tile at this level is answered from one
 		// read. The grouping is per level because the zooms differ: points a
 		// kilometre apart share a country tile and not a street tile.
 		byTile := map[tileRef][]int{}
-		cap := opts.maxDistance(spec.level)
+		cap := opts.maxDistance(level)
 		for i, p := range pts {
 			x, y, err := mercator.TileAt(spec.zoom, p.Lon, p.Lat)
 			if err != nil {
@@ -190,7 +217,7 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 				// read, and the nearest of those answers is the one that is
 				// true. Keeping the first would make the result depend on map
 				// iteration order, which is randomised.
-				if prev, had := out[i].matchAt(spec.level); !had || m.DistanceM < prev.DistanceM {
+				if prev, had := out[i].matchAt(level); !had || m.DistanceM < prev.DistanceM {
 					out[i].setMatch(m)
 				}
 			}

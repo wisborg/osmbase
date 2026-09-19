@@ -46,6 +46,21 @@ type Level uint8
 const (
 	Country Level = iota
 	Region
+
+	// Water is the named sea, ocean, strait or bay a coordinate is over.
+	//
+	// Not a rung of the land hierarchy and deliberately independent of it: a
+	// point can have both, and a flight between mainland Australia and
+	// Tasmania is over Bass Strait while still being somewhere a reader would
+	// describe in terms of Australia. It sits here because it is an area of
+	// that SIZE, not because water is a kind of region.
+	//
+	// It is the level that makes a flight describable. A trans-Pacific track
+	// has no country under it for most of its length, and containment
+	// correctly reports nothing -- which is honest and nearly useless. "North
+	// Pacific Ocean" is the answer that was wanted.
+	Water
+
 	Locality
 	Macrohood
 	Neighbourhood
@@ -65,6 +80,8 @@ func (l Level) String() string {
 		return "country"
 	case Region:
 		return "region"
+	case Water:
+		return "water"
 	case Locality:
 		return "locality"
 	case Macrohood:
@@ -161,4 +178,18 @@ func (p Place) Deepest() (Match, bool) {
 		return Match{}, false
 	}
 	return p.Matches[len(p.Matches)-1], true
+}
+
+// Levels are every level, widest first, which is also the order Matches comes
+// back in.
+var Levels = []Level{Country, Region, Water, Locality, Macrohood, Neighbourhood, Street}
+
+// ParseLevel turns a name back into a level.
+func ParseLevel(s string) (Level, bool) {
+	for _, l := range Levels {
+		if l.String() == s {
+			return l, true
+		}
+	}
+	return 0, false
 }
