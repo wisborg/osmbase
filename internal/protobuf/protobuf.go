@@ -1,48 +1,56 @@
-package mvt
+// Package protobuf is a protocol buffers wire-format reader.
+//
+// It exists because two formats this library decodes are protobuf -- Mapbox
+// Vector Tiles and OpenStreetMap PBF -- and one of them arriving second is
+// not a reason to have two readers. It is about a hundred lines because a
+// wire-format reader is small, and because this module admits no third-party
+// dependency: google.golang.org/protobuf would arrive in the go.sum and
+// NOTICE of every program that renders a map, to decode formats that have not
+// changed in a decade. See docs/architecture.md.
+//
+// What is deliberately NOT here is any notion of a message type, a descriptor
+// or a default. Each message is decoded by a function that knows its own field
+// numbers, and every unknown field number is skipped, which is what makes a
+// file carrying a field this has never heard of decode rather than fail.
+//
+// internal because it is an implementation detail of the decoders and not
+// something a consumer of this library should be offered as an API.
+package protobuf
 
 import (
 	"encoding/binary"
 	"fmt"
 )
 
-// The Mapbox Vector Tile schema is protocol buffers, so this file is a
-// protobuf wire-format reader. It is about a hundred lines because the schema
-// is six messages and uses four of the wire's field types, and because this
-// module admits no third-party dependency: google.golang.org/protobuf would
-// arrive in the go.sum and NOTICE of every program that renders a map, to
-// decode a format that has not changed since 2016. See docs/architecture.md,
-// "Zero third-party modules".
-//
-// What is deliberately NOT here is any notion of a message type, a descriptor
-// or a default. Each message is decoded by a function that knows its own field
-// numbers, and every unknown field number is skipped, which is what makes a
-// tile carrying a field this decoder has never heard of decode rather than
-// fail.
-
 // Protobuf wire types. Types 3 and 4 (start group, end group) were removed
 // from the language long before this schema was written and are not handled;
 // encountering one means the bytes are not a vector tile.
 const (
-	wireVarint     = 0
-	wireFixed64    = 1
-	wireBytes      = 2
-	wireStartGroup = 3
-	wireEndGroup   = 4
-	wireFixed32    = 5
+	WireVarint     = 0
+	WireFixed64    = 1
+	WireBytes      = 2
+	WireStartGroup = 3
+	WireEndGroup   = 4
+	WireFixed32    = 5
 )
 
-// protoReader walks a protobuf message. Every method reports where it ran out
+// Reader walks a protobuf message. Every method reports where it ran out
 // of bytes, because "unexpected EOF" alone does not distinguish a truncated
 // tile from a field length that was misread.
-type protoReader struct {
+type Reader struct {
 	b    []byte
 	i    int
 	what string // the message being read, for errors
 }
 
-func (r *protoReader) done() bool { return r.i >= len(r.b) }
+// New returns a reader over a message. what names the message in errors --
+// "a layer", "a relation" -- because "unexpected EOF" alone does not say
+// which of a file's nested messages ran out.
+func New(b []byte, what string) *Reader { return &Reader{b: b, what: what} }
 
-func (r *protoReader) uvarint(field string) (uint64, error) {
+func (r *Reader) Done() bool { return r.i >= len(r.b) }
+
+func (r *Reader) Uvarint(field string) (uint64, error) {
 	v, n := binary.Uvarint(r.b[r.i:])
 	switch {
 	case n == 0:
@@ -55,8 +63,8 @@ func (r *protoReader) uvarint(field string) (uint64, error) {
 }
 
 // tag reads a field number and wire type.
-func (r *protoReader) tag() (field int, wire int, err error) {
-	key, err := r.uvarint("a field tag")
+func (r *Reader) Tag() (field int, wire int, err error) {
+	key, err := r.Uvarint("a field tag")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -71,8 +79,8 @@ func (r *protoReader) tag() (field int, wire int, err error) {
 // bytes reads a length-delimited field's payload. The slice aliases the input,
 // which is why Decode's contract says the caller must not modify the tile
 // bytes afterwards.
-func (r *protoReader) bytes(field string) ([]byte, error) {
-	n, err := r.uvarint("the length of " + field)
+func (r *Reader) Bytes(field string) ([]byte, error) {
+	n, err := r.Uvarint("the length of " + field)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +92,7 @@ func (r *protoReader) bytes(field string) ([]byte, error) {
 	return r.b[start:r.i], nil
 }
 
-func (r *protoReader) fixed32(field string) (uint32, error) {
+func (r *Reader) Fixed32(field string) (uint32, error) {
 	if len(r.b)-r.i < 4 {
 		return 0, fmt.Errorf("mvt: %s ends part way through %s at byte %d of %d", r.what, field, r.i, len(r.b))
 	}
@@ -93,7 +101,7 @@ func (r *protoReader) fixed32(field string) (uint32, error) {
 	return v, nil
 }
 
-func (r *protoReader) fixed64(field string) (uint64, error) {
+func (r *Reader) Fixed64(field string) (uint64, error) {
 	if len(r.b)-r.i < 8 {
 		return 0, fmt.Errorf("mvt: %s ends part way through %s at byte %d of %d", r.what, field, r.i, len(r.b))
 	}
@@ -106,21 +114,21 @@ func (r *protoReader) fixed64(field string) (uint64, error) {
 // failing is what lets a tile written against a later schema -- or by a
 // producer that added something of its own -- decode with the fields we do
 // know about.
-func (r *protoReader) skip(field, wire int) error {
+func (r *Reader) Skip(field, wire int) error {
 	switch wire {
-	case wireVarint:
-		_, err := r.uvarint(fmt.Sprintf("field %d", field))
+	case WireVarint:
+		_, err := r.Uvarint(fmt.Sprintf("field %d", field))
 		return err
-	case wireFixed64:
-		_, err := r.fixed64(fmt.Sprintf("field %d", field))
+	case WireFixed64:
+		_, err := r.Fixed64(fmt.Sprintf("field %d", field))
 		return err
-	case wireBytes:
-		_, err := r.bytes(fmt.Sprintf("field %d", field))
+	case WireBytes:
+		_, err := r.Bytes(fmt.Sprintf("field %d", field))
 		return err
-	case wireFixed32:
-		_, err := r.fixed32(fmt.Sprintf("field %d", field))
+	case WireFixed32:
+		_, err := r.Fixed32(fmt.Sprintf("field %d", field))
 		return err
-	case wireStartGroup, wireEndGroup:
+	case WireStartGroup, WireEndGroup:
 		return fmt.Errorf("mvt: %s uses a protobuf group for field %d; the vector tile schema has none, so these are not vector tile bytes", r.what, field)
 	}
 	return fmt.Errorf("mvt: %s has field %d with wire type %d, which protobuf does not define", r.what, field, wire)
@@ -130,9 +138,9 @@ func (r *protoReader) skip(field, wire int) error {
 // length-delimited run or, from an older or simpler encoder, repeated one
 // varint at a time. Both are valid protobuf for the same field, so both are
 // accepted; out is appended to so the unpacked case accumulates.
-func (r *protoReader) packedUint32(out []uint32, field string, wire int) ([]uint32, error) {
-	if wire == wireVarint {
-		v, err := r.uvarint(field)
+func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, error) {
+	if wire == WireVarint {
+		v, err := r.Uvarint(field)
 		if err != nil {
 			return nil, err
 		}
@@ -141,16 +149,16 @@ func (r *protoReader) packedUint32(out []uint32, field string, wire int) ([]uint
 		}
 		return append(out, uint32(v)), nil
 	}
-	if wire != wireBytes {
+	if wire != WireBytes {
 		return nil, fmt.Errorf("mvt: %s has %s with wire type %d, and it must be a packed or repeated varint", r.what, field, wire)
 	}
-	payload, err := r.bytes(field)
+	payload, err := r.Bytes(field)
 	if err != nil {
 		return nil, err
 	}
-	inner := protoReader{b: payload, what: r.what}
-	for !inner.done() {
-		v, err := inner.uvarint(field)
+	inner := Reader{b: payload, what: r.what}
+	for !inner.Done() {
+		v, err := inner.Uvarint(field)
 		if err != nil {
 			return nil, err
 		}

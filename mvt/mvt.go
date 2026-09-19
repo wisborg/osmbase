@@ -22,6 +22,7 @@ package mvt
 
 import (
 	"fmt"
+	"github.com/wisborg/osmbase/internal/protobuf"
 	"math"
 )
 
@@ -177,22 +178,22 @@ func Decode(data []byte) (Tile, error) {
 	// to have tens of thousands -- inside the render path, where no context
 	// deadline reaches.
 	seen := map[string]struct{}{}
-	r := protoReader{b: data, what: "the tile"}
-	for !r.done() {
-		field, wire, err := r.tag()
+	r := *protobuf.New(data, "the tile")
+	for !r.Done() {
+		field, wire, err := r.Tag()
 		if err != nil {
 			return Tile{}, err
 		}
 		if field != tileLayers {
-			if err := r.skip(field, wire); err != nil {
+			if err := r.Skip(field, wire); err != nil {
 				return Tile{}, err
 			}
 			continue
 		}
-		if wire != wireBytes {
+		if wire != protobuf.WireBytes {
 			return Tile{}, fmt.Errorf("mvt: the tile has a layer with wire type %d, and a layer is a length-delimited message", wire)
 		}
-		payload, err := r.bytes("a layer")
+		payload, err := r.Bytes("a layer")
 		if err != nil {
 			return Tile{}, err
 		}
@@ -223,21 +224,21 @@ func decodeLayer(data []byte) (Layer, error) {
 		features      [][]byte
 		sawVersion    bool
 	)
-	r := protoReader{b: data, what: "a layer"}
-	for !r.done() {
-		field, wire, err := r.tag()
+	r := *protobuf.New(data, "a layer")
+	for !r.Done() {
+		field, wire, err := r.Tag()
 		if err != nil {
 			return Layer{}, err
 		}
 		switch {
-		case field == layerName && wire == wireBytes:
-			b, err := r.bytes("the layer name")
+		case field == layerName && wire == protobuf.WireBytes:
+			b, err := r.Bytes("the layer name")
 			if err != nil {
 				return Layer{}, err
 			}
 			layer.Name = string(b)
-		case field == layerFeatures && wire == wireBytes:
-			b, err := r.bytes("a feature")
+		case field == layerFeatures && wire == protobuf.WireBytes:
+			b, err := r.Bytes("a feature")
 			if err != nil {
 				return Layer{}, err
 			}
@@ -245,20 +246,20 @@ func decodeLayer(data []byte) (Layer, error) {
 			// known: the schema does not require the tables to precede the
 			// features that index into them.
 			features = append(features, b)
-		case field == layerKeys && wire == wireBytes:
-			b, err := r.bytes("a key")
+		case field == layerKeys && wire == protobuf.WireBytes:
+			b, err := r.Bytes("a key")
 			if err != nil {
 				return Layer{}, err
 			}
 			keys = append(keys, string(b))
-		case field == layerValues && wire == wireBytes:
-			b, err := r.bytes("a value")
+		case field == layerValues && wire == protobuf.WireBytes:
+			b, err := r.Bytes("a value")
 			if err != nil {
 				return Layer{}, err
 			}
 			valuePayloads = append(valuePayloads, b)
-		case field == layerExtent && wire == wireVarint:
-			v, err := r.uvarint("the extent")
+		case field == layerExtent && wire == protobuf.WireVarint:
+			v, err := r.Uvarint("the extent")
 			if err != nil {
 				return Layer{}, err
 			}
@@ -266,8 +267,8 @@ func decodeLayer(data []byte) (Layer, error) {
 				return Layer{}, fmt.Errorf("mvt: a layer declares an extent of %d, and a tile has to be at least one unit across", v)
 			}
 			layer.Extent = uint32(v)
-		case field == layerVersion && wire == wireVarint:
-			v, err := r.uvarint("the version")
+		case field == layerVersion && wire == protobuf.WireVarint:
+			v, err := r.Uvarint("the version")
 			if err != nil {
 				return Layer{}, err
 			}
@@ -277,7 +278,7 @@ func decodeLayer(data []byte) (Layer, error) {
 			layer.Version = uint32(v)
 			sawVersion = true
 		default:
-			if err := r.skip(field, wire); err != nil {
+			if err := r.Skip(field, wire); err != nil {
 				return Layer{}, err
 			}
 		}
@@ -319,26 +320,26 @@ func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (F
 		geom    []uint32
 		sawType bool
 	)
-	r := protoReader{b: data, what: "a feature"}
-	for !r.done() {
-		field, wire, err := r.tag()
+	r := *protobuf.New(data, "a feature")
+	for !r.Done() {
+		field, wire, err := r.Tag()
 		if err != nil {
 			return Feature{}, err
 		}
 		switch {
-		case field == featureID && wire == wireVarint:
-			v, err := r.uvarint("the feature id")
+		case field == featureID && wire == protobuf.WireVarint:
+			v, err := r.Uvarint("the feature id")
 			if err != nil {
 				return Feature{}, err
 			}
 			f.ID, f.HasID = v, true
 		case field == featureTags:
-			tags, err = r.packedUint32(tags, "the tags", wire)
+			tags, err = r.PackedUint32(tags, "the tags", wire)
 			if err != nil {
 				return Feature{}, err
 			}
-		case field == featureType && wire == wireVarint:
-			v, err := r.uvarint("the geometry type")
+		case field == featureType && wire == protobuf.WireVarint:
+			v, err := r.Uvarint("the geometry type")
 			if err != nil {
 				return Feature{}, err
 			}
@@ -347,12 +348,12 @@ func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (F
 			}
 			f.Type, sawType = GeomType(v), true
 		case field == featureGeometry:
-			geom, err = r.packedUint32(geom, "the geometry", wire)
+			geom, err = r.PackedUint32(geom, "the geometry", wire)
 			if err != nil {
 				return Feature{}, err
 			}
 		default:
-			if err := r.skip(field, wire); err != nil {
+			if err := r.Skip(field, wire); err != nil {
 				return Feature{}, err
 			}
 		}
@@ -391,57 +392,57 @@ func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (F
 
 func decodeValue(data []byte) (Value, error) {
 	var v Value
-	r := protoReader{b: data, what: "a value"}
-	for !r.done() {
-		field, wire, err := r.tag()
+	r := *protobuf.New(data, "a value")
+	for !r.Done() {
+		field, wire, err := r.Tag()
 		if err != nil {
 			return Value{}, err
 		}
 		switch {
-		case field == valueString && wire == wireBytes:
-			b, err := r.bytes("a string value")
+		case field == valueString && wire == protobuf.WireBytes:
+			b, err := r.Bytes("a string value")
 			if err != nil {
 				return Value{}, err
 			}
 			v = StringValue(string(b))
-		case field == valueFloat && wire == wireFixed32:
-			u, err := r.fixed32("a float value")
+		case field == valueFloat && wire == protobuf.WireFixed32:
+			u, err := r.Fixed32("a float value")
 			if err != nil {
 				return Value{}, err
 			}
 			v = FloatValue(math.Float32frombits(u))
-		case field == valueDouble && wire == wireFixed64:
-			u, err := r.fixed64("a double value")
+		case field == valueDouble && wire == protobuf.WireFixed64:
+			u, err := r.Fixed64("a double value")
 			if err != nil {
 				return Value{}, err
 			}
 			v = DoubleValue(math.Float64frombits(u))
-		case field == valueInt && wire == wireVarint:
-			u, err := r.uvarint("an int value")
+		case field == valueInt && wire == protobuf.WireVarint:
+			u, err := r.Uvarint("an int value")
 			if err != nil {
 				return Value{}, err
 			}
 			v = IntValue(int64(u))
-		case field == valueUint && wire == wireVarint:
-			u, err := r.uvarint("a uint value")
+		case field == valueUint && wire == protobuf.WireVarint:
+			u, err := r.Uvarint("a uint value")
 			if err != nil {
 				return Value{}, err
 			}
 			v = UintValue(u)
-		case field == valueSint && wire == wireVarint:
-			u, err := r.uvarint("an sint value")
+		case field == valueSint && wire == protobuf.WireVarint:
+			u, err := r.Uvarint("an sint value")
 			if err != nil {
 				return Value{}, err
 			}
 			v = SintValue(unzigzag64(u))
-		case field == valueBool && wire == wireVarint:
-			u, err := r.uvarint("a bool value")
+		case field == valueBool && wire == protobuf.WireVarint:
+			u, err := r.Uvarint("a bool value")
 			if err != nil {
 				return Value{}, err
 			}
 			v = BoolValue(u != 0)
 		default:
-			if err := r.skip(field, wire); err != nil {
+			if err := r.Skip(field, wire); err != nil {
 				return Value{}, err
 			}
 		}
