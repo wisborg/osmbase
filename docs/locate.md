@@ -112,23 +112,76 @@ first reported a trans-Tasman flight as being over the Pacific.
 Stage one therefore turns two broken levels into two correct ones, adds a third that had no
 answer at all, and carries no licence obligations.
 
-### Stage two — OSM administrative relations, for locality and suburb — not built
+### Stage two — OSM administrative relations, for locality and suburb — **not built**
 
-This is the one that reaches the granularity the feature exists for. `boundary=administrative`
-relations carry an `admin_level` and a name, levels 8 to 10 are suburb, and no other
-available dataset reaches them (see the rejected alternatives below).
-
-The architecture already specifies the pipeline: three streaming passes over a country
-extract, because PBF is ordered nodes, then ways, then relations, and containment cannot be
-decided before the geometry exists. Collect the wanted relations and their member way IDs;
-collect those ways' node IDs; resolve coordinates, assemble and close the rings, simplify,
-and write a compact derived file. The extract is transient and deleted afterwards.
+This is the one that reaches the granularity the feature exists for.
+`boundary=administrative` relations carry an `admin_level` and a name, levels 8 to 10 are
+suburb, and no other available dataset reaches them (see the rejected alternatives below).
 
 ODbL, which is the licence regime this project already lives in. The distinction that
 matters is the one `NOTICE` already draws: returning a place name is a **Produced Work** and
 needs attribution only, while the derived boundary file is a **Derivative Database** and
 share-alike attaches to it. That is an obligation on the data and not on the Apache-2.0
-code, and it is acceptable — but it is a real difference from stage one, which has none.
+code, and it is acceptable — but it is a real difference from stage one, which has none, and
+it has to be recorded in `NOTICE` and surfaced by the command that builds the file.
+
+#### The pipeline, and why it is three passes
+
+A PBF file is ordered nodes, then ways, then relations, and containment cannot be decided
+before the geometry exists. So the file is read three times:
+
+1. **Relations** → keep those with `boundary=administrative`, a wanted `admin_level` and a
+   name. Record each one's member way IDs and roles (`outer`/`inner`).
+2. **Ways** → for the IDs pass 1 wanted, record their node ID lists.
+3. **Nodes** → for the IDs pass 2 wanted, record coordinates.
+
+Then, in memory: assemble each relation's ways into closed rings, orient outers and inners,
+simplify, and write the derived file.
+
+#### The memory question, which is the part to get right
+
+Peak resident size is dominated by the node-to-coordinate map, and the naive version — every
+node in the extract — is hundreds of megabytes for a country and does not scale to a large
+one.
+
+**It does not need to be every node.** Pass 2 yields exactly the node IDs that boundary ways
+reference, and administrative boundaries are a tiny fraction of an extract: the overwhelming
+majority of nodes are buildings, roads and addresses that no boundary way touches. Pass 3
+therefore keeps only those, which turns "every node in Denmark" into "the nodes on Denmark's
+admin boundaries".
+
+Two consequences to design around rather than discover:
+
+- The wanted-ID sets must themselves be compact. A `map[int64]struct{}` costs about 50 bytes
+  an entry; a **sorted slice of int64 with a binary search** costs 8 and is built once and
+  never mutated, which is exactly the access pattern. Worth measuring before choosing.
+- Pass 2 must record way→nodes for wanted ways only, and pass 3 coordinates for wanted nodes
+  only. Neither pass may accumulate anything proportional to the file.
+
+The number to check early, on a real Denmark extract: how many distinct nodes the admin
+boundaries reference. If it is a few million the sorted-slice approach is a few tens of
+megabytes and the design holds. **If it is far larger, stop and reconsider** — an
+on-disk intermediate would be the next option, and it is much more work.
+
+#### Sub-parts, in order, each reviewable on its own
+
+Each lands as its own commit with its own tests, and is reviewed before the next begins.
+None of them requires the one after it to be useful.
+
+| # | Part | Done when |
+|---|---|---|
+| 1 | **Shared protobuf reader** | ✅ committed — `internal/protobuf`, extracted from `mvt` |
+| 2 | **PBF block reader** | Blob/BlobHeader framing, zlib inflation, and `PrimitiveBlock` string tables decode from a synthetic fixture. No OSM semantics yet. |
+| 3 | **Element decoding** | Dense nodes (delta-encoded), ways, and relations come back as Go structs, with tags resolved against the string table. Fuzzed, as `mvt` is. |
+| 4 | **The three passes** | Given a reader, produce relation → rings of coordinates. This is where the memory question is answered, with the measurement recorded. |
+| 5 | **Ring assembly** | Ways joined end to end into closed rings, outers and inners oriented, unclosed rings reported rather than silently dropped. |
+| 6 | **The derived file** | A compact format `boundary` can read, plus the writer. Versioned, because it is on somebody's disk. |
+| 7 | **`osmbase boundaries --osm`** | Fetch an extract through `acquire`, run the pipeline, delete the extract, record the ODbL obligation. |
+| 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. |
+
+Parts 2 and 3 need no network and no real extract: synthetic fixtures in the style of
+`osmbasetest` are enough, and are better, because a real file cannot express a malformed one.
+Part 4 is the first that wants a real Denmark extract, and is where to stop and measure.
 
 ### Rejected
 
@@ -220,3 +273,18 @@ previous row. A four-hour activity becomes a handful of rows naming the places i
 through. Because lookups here are local and cheap, the aggressive point-thinning a metered
 geocoding API forces is unnecessary — the filter can be generous and the change detection
 does the work.
+
+## Where this got to
+
+Stage one is **built and merged**: country, region and water answered by containment from
+Natural Earth, everything below by nearest-feature from the tiles, with `Place.Source` and
+`Match.DistanceM` saying which and how far.
+
+Stage two is **not started** beyond its first sub-part. The table above is the plan; part 1
+is committed and the rest is untouched.
+
+To resume: read this file, then the "Place names" section of `architecture.md`, then start
+at part 2 of the table. The three reviews that shaped stage one are worth repeating per
+sub-part — they found a path traversal, an architectural violation, a concurrency crash and
+seven provably-deletable decisions between them, none of which was visible from the code
+reading correctly.
