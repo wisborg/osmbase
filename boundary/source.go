@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 
 	"github.com/wisborg/osmbase/locate"
 )
@@ -43,6 +45,22 @@ var Details = []string{"110m", "50m", "10m"}
 // covers fully at a fifth of the size.
 const DefaultDetail = "10m"
 
+// ValidDetail reports whether a string is one of the resolutions this knows.
+//
+// Exported and checked in Open and Available rather than left to each caller,
+// because the first version left it to the caller and one of two callers
+// forgot. The boundaries command validated its flag; the locate command
+// passed the same flag straight through, and since File interpolates it into
+// a name that is then joined to a path, a value containing ".." escaped the
+// store's boundary directory entirely -- reproduced, reading a planted file
+// from outside the store and printing its contents as a country name.
+//
+// A check every caller has to remember is a check that will be forgotten
+// again. This one is where the value is used.
+func ValidDetail(detail string) bool {
+	return detail == "" || slices.Contains(Details, detail)
+}
+
 // Dir is where a store keeps its boundary files.
 //
 // A sibling of the tile sources rather than one of them. A boundary file has
@@ -60,6 +78,15 @@ type Source struct {
 	dir    string
 	detail string
 
+	// mu guards everything below it.
+	//
+	// The type is built to be loaded once and reused -- that is the point of
+	// it -- which is exactly the shape a consumer shares between goroutines.
+	// locate.AtEach exists for routes of thousands of points, and a caller
+	// processing several routes at once would naturally hand them one Source.
+	// Two goroutines writing loaded is a concurrent map write, which is a
+	// crash rather than a race worth arguing about.
+	mu                 sync.Mutex
 	countries, regions *Set
 	loaded             map[string]error
 }
@@ -69,7 +96,16 @@ type Source struct {
 // It does not verify the files exist. A store with no boundaries is the
 // ordinary case -- they are an optional download -- and the honest place to
 // report that is where a level is asked for, not here.
+// A detail this does not know yields a source that answers nothing, rather
+// than one that reads a file somewhere unexpected. Refusing loudly would be
+// the other reasonable choice and is what the command does before it gets
+// here; at this level a caller has already decided to fall back to
+// nearest-feature when boundaries are unavailable, and an unknown detail is
+// a kind of unavailable.
 func Open(storeRoot, detail string) *Source {
+	if !ValidDetail(detail) {
+		return &Source{}
+	}
 	if detail == "" {
 		detail = DefaultDetail
 	}
@@ -78,6 +114,9 @@ func Open(storeRoot, detail string) *Source {
 
 // Available reports whether a store holds the files for a detail.
 func Available(storeRoot, detail string) bool {
+	if !ValidDetail(detail) {
+		return false
+	}
 	if detail == "" {
 		detail = DefaultDetail
 	}
@@ -92,6 +131,13 @@ func Available(storeRoot, detail string) bool {
 // set loads one file, once, remembering a failure so a broken file is not
 // re-read and re-reported for every coordinate in a route.
 func (s *Source) set(region bool) *Set {
+	if s.loaded == nil {
+		// A source Open refused. It holds no directory and answers nothing.
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	name := File(s.detail, region)
 	if err, done := s.loaded[name]; done {
 		if err != nil {
@@ -114,6 +160,14 @@ func (s *Source) set(region bool) *Set {
 	if region {
 		kind = "state"
 	}
+	// The error is remembered so a broken file is not re-read and
+	// re-reported for every coordinate in a route.
+	//
+	// Storing nil here instead would be an equivalent mutant rather than a
+	// bug, and it is worth saying so: the guard below still returns nil on
+	// this call, and a later call taking the cached-success path returns the
+	// field, which was never assigned and is also nil. No test can tell the
+	// two apart, so nobody should write one trying.
 	set, err := Read(f, kind)
 	s.loaded[name] = err
 	if err != nil {

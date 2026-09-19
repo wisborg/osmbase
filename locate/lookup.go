@@ -134,6 +134,14 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		// would be wrong -- a point in the sea is outside every country, and
 		// "near Denmark, 40 km" would turn that correct answer into a guess.
 		if opts.Boundaries != nil && opts.Boundaries.Covers(spec.level) {
+			// Checked here as well as on the tile path below. Containment is
+			// local file reads rather than network, but a route of thousands
+			// of points across several levels is still long enough that a
+			// caller cancelling it should be obeyed -- and a branch that ends
+			// in continue skips the check a few lines down.
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("locate: looking up %s: %w", spec.level, err)
+			}
 			for i, p := range pts {
 				if name, kind, ok := opts.Boundaries.Contains(spec.level, p.Lat, p.Lon); ok {
 					out[i].setMatch(Match{

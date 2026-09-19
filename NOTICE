@@ -67,7 +67,17 @@ Protomaps                  The public planet builds this library takes tiles
                            from are themselves a Produced Work over OpenStreet-
                            Map data.  https://protomaps.com
 
-Natural Earth              Public domain.  Used by the Protomaps builds for the
-                           lowest zoom levels.  No attribution is required;
-                           crediting it is courteous.
+Natural Earth              Public domain.  Used two ways: by the Protomaps
+                           builds for the lowest zoom levels, and DIRECTLY by
+                           "osmbase boundaries", which downloads the country and
+                           state outlines that let "osmbase locate" say a
+                           coordinate is IN a country rather than near one.
+                           No attribution is required -- "No permission is
+                           needed to use Natural Earth.  Crediting the authors
+                           is unnecessary" -- and nothing about using it
+                           attaches to what a consumer does with the answers.
+                           It is written here anyway, because this file is
+                           where a reader looks to find out what went into the
+                           output, and an entry that named only the indirect
+                           use would have understated it.
                            https://www.naturalearthdata.com

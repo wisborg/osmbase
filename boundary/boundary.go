@@ -29,14 +29,22 @@ type Area struct {
 	// through rather than normalised.
 	Kind string
 
-	// polygons are the rings in GeoJSON order: the first is the outline and
-	// any that follow are holes.
-	polygons [][][]point
+	// polygons are the parts of the area, each with its own box.
+	polygons []polygon
+}
 
-	// west, south, east, north bound every polygon, so a point outside them
-	// is rejected without walking a single ring. Most of the work of a lookup
-	// is NOT doing the point-in-polygon test: a coordinate is outside all but
-	// one of two hundred countries.
+// polygon is one part of an area: the rings in GeoJSON order -- the first is
+// the outline and any that follow are holes -- with the box that bounds it.
+//
+// A box PER PART rather than one for the whole area, and the reason is the
+// antimeridian. Natural Earth splits a country that crosses it into separate
+// parts either side, so Russia, Fiji and Antarctica each have parts at both
+// -180 and +180 and an area-wide box spans the entire world. That box rejects
+// nothing, so every lookup anywhere on earth walked all 214 of Russia's
+// polygons. Per part, each box is small and the prefilter works for exactly
+// the countries it previously gave up on.
+type polygon struct {
+	rings                    [][]point
 	west, south, east, north float64
 }
 
@@ -58,12 +66,8 @@ func (s *Set) Len() int { return len(s.areas) }
 // since there would be no basis for preferring one.
 func (s *Set) At(lat, lon float64) (Area, bool) {
 	for i := range s.areas {
-		a := &s.areas[i]
-		if lon < a.west || lon > a.east || lat < a.south || lat > a.north {
-			continue
-		}
-		if a.contains(lat, lon) {
-			return *a, true
+		if s.areas[i].contains(lat, lon) {
+			return s.areas[i], true
 		}
 	}
 	return Area{}, false
@@ -76,11 +80,17 @@ func (s *Set) At(lat, lon float64) (Area, bool) {
 // area, which is what the inner loop subtracts.
 func (a *Area) contains(lat, lon float64) bool {
 	for _, poly := range a.polygons {
-		if len(poly) == 0 || !inRing(poly[0], lat, lon) {
+		// The box first: most of the work of a lookup is NOT doing the
+		// point-in-polygon test, because a coordinate is outside all but one
+		// of two hundred countries.
+		if lon < poly.west || lon > poly.east || lat < poly.south || lat > poly.north {
+			continue
+		}
+		if len(poly.rings) == 0 || !inRing(poly.rings[0], lat, lon) {
 			continue
 		}
 		inHole := false
-		for _, hole := range poly[1:] {
+		for _, hole := range poly.rings[1:] {
 			if inRing(hole, lat, lon) {
 				inHole = true
 				break
@@ -95,12 +105,28 @@ func (a *Area) contains(lat, lon float64) bool {
 
 // inRing reports whether a point is inside a closed ring.
 //
-// The half-open comparison on latitude -- one end inclusive, the other not --
-// is what stops a vertex being counted twice when the ray passes exactly
-// through it. Without it a point due east of a vertex is reported inside or
-// outside depending on which way the two adjoining edges happen to run, which
-// is a coin toss that lands differently for different points along the same
-// border.
+// Ray casting eastward: a point is inside when the ray crosses the ring an odd
+// number of times.
+//
+// # Longitude is treated as linear, and that is a dependency on the data
+//
+// There is no antimeridian handling here, and there does not need to be for
+// Natural Earth: it splits a country crossing the seam into separate parts
+// either side. Measured on the real 10m country file, the largest longitude
+// step between consecutive vertices is 0.49 degrees for Russia and 0.10 for
+// Fiji -- no ring crosses ±180. A source that did NOT pre-split would need
+// unwrapping here, and would be wrong in a way this cannot detect, so a new
+// BoundarySource has to be checked for it.
+//
+// # Two things that look like bugs and are not
+//
+// The half-open latitude comparison and the direction of the longitude test
+// are both conventions rather than correctness conditions: reversing either
+// gives identical answers for every point, because ray-crossing parity is
+// direction-independent for a closed ring, and a vertex exactly on the query
+// latitude resolves to the same crossing longitude whichever of its two edges
+// is credited with it. Both were checked over a dense grid on a non-convex
+// ring. Neither is worth a test, because no test can distinguish them.
 func inRing(ring []point, lat, lon float64) bool {
 	in := false
 	for i, j := 0, len(ring)-1; i < len(ring); j, i = i, i+1 {
@@ -136,9 +162,12 @@ type geoJSON struct {
 
 // nameKeys are the properties a name is read from, in order of preference.
 //
-// Natural Earth carries several. NAME is the common short form -- "Denmark",
-// "New South Wales" -- and is what a reader wants; the others are fallbacks
-// for the handful of records that lack it.
+// Natural Earth carries several at once and they differ. NAME_EN is first and
+// NAME second, which is the opposite of what this comment said when the order
+// was written: NAME is sometimes the local-script spelling, and this package
+// has no language parameter with which a caller could ask for one or the
+// other, so the English form is the one that can be relied on to render. The
+// rest are fallbacks for the records that carry neither.
 var nameKeys = []string{"NAME_EN", "NAME", "NAME_LONG", "ADMIN", "name"}
 
 // Read parses a Natural Earth GeoJSON file into a searchable set.
@@ -227,18 +256,20 @@ func toRings(rings [][][2]float64) [][]point {
 // newArea computes the bounding box once, at load, because it is what makes a
 // lookup cheap and it never changes.
 func newArea(name, kind string, polys [][][]point) Area {
-	a := Area{
-		Name: name, Kind: kind, polygons: polys,
-		west: math.Inf(1), south: math.Inf(1),
-		east: math.Inf(-1), north: math.Inf(-1),
-	}
-	for _, poly := range polys {
-		for _, ring := range poly {
-			for _, p := range ring {
-				a.west, a.east = math.Min(a.west, p.lon), math.Max(a.east, p.lon)
-				a.south, a.north = math.Min(a.south, p.lat), math.Max(a.north, p.lat)
+	a := Area{Name: name, Kind: kind}
+	for _, rings := range polys {
+		p := polygon{
+			rings: rings,
+			west:  math.Inf(1), south: math.Inf(1),
+			east: math.Inf(-1), north: math.Inf(-1),
+		}
+		for _, ring := range rings {
+			for _, pt := range ring {
+				p.west, p.east = math.Min(p.west, pt.lon), math.Max(p.east, pt.lon)
+				p.south, p.north = math.Min(p.south, pt.lat), math.Max(p.north, pt.lat)
 			}
 		}
+		a.polygons = append(a.polygons, p)
 	}
 	return a
 }

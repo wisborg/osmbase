@@ -4,13 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
+	"github.com/wisborg/osmbase/acquire"
 	"github.com/wisborg/osmbase/boundary"
 	"github.com/wisborg/osmbase/slice"
 )
@@ -27,7 +26,20 @@ import (
 // Public domain, so there is nothing to record in NOTICE and nothing that
 // propagates to what a consumer does with the answers. That is the whole
 // reason this is the first boundary source: see docs/locate.md.
-const boundarySourceURL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/"
+// The ref is a released TAG and not master, which the first version used.
+// An unpinned branch makes the confirmation prompt's own claim -- that the
+// files are the same for everybody -- untrue the moment upstream changes,
+// and it means two runs of this command a week apart can disagree with
+// nothing to say they did.
+const boundarySourceURL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/"
+
+// maxBoundaryBytes caps a single boundary download.
+//
+// The largest file this asks for is the 10m state outlines at about 41 MB, so
+// 128 is generous room for upstream growth and still refuses a response that
+// has stopped being a GeoJSON file and started being a way to fill somebody's
+// disk. See acquire.Download.
+const maxBoundaryBytes = 128 << 20
 
 func boundariesUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, `usage: osmbase boundaries --store DIR [--detail 50m] [--yes]
@@ -124,35 +136,45 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// downloadBoundary writes one file, through a temporary name.
+// downloadBoundary fetches one file into dir.
 //
-// Through a temporary name and then renamed, so that an interrupted download
-// leaves nothing rather than a truncated file. A half-written GeoJSON would
-// fail to parse on the next lookup, and the failure would be reported against
-// the lookup rather than against the fetch that caused it.
+// The transfer goes through acquire, which is the only package in this library
+// that opens a socket -- a property the architecture states as something a
+// reader can verify from the import list. The first version of this did its
+// own http.Get from here, which worked and quietly gave up everything acquire
+// centralises: the User-Agent that says who is calling, the redirect policy
+// that refuses a host change or a scheme downgrade, and any bound at all on
+// what a response may write to the disk.
 func downloadBoundary(dir, name string) (int64, error) {
-	client := &http.Client{Timeout: 10 * time.Minute}
-	resp, err := client.Get(boundarySourceURL + name)
-	if err != nil {
-		return 0, fmt.Errorf("fetching %s: %w", name, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("fetching %s: the host answered %s", name, resp.Status)
-	}
+	return saveThroughTemp(dir, name, func(w io.Writer) (int64, error) {
+		return acquire.Download(boundarySourceURL+name, w, maxBoundaryBytes)
+	})
+}
 
+// saveThroughTemp writes under a temporary name and renames into place.
+//
+// So that an interrupted or refused download leaves NOTHING rather than a
+// truncated file. A half-written GeoJSON survives the existence check that
+// decides whether a store has boundaries at all, and then fails to parse on
+// the next lookup -- reported against that lookup, with nothing to connect it
+// to the fetch that caused it.
+//
+// Separated from the fetching so it can be tested without a network: the
+// caller hands in whatever writes the bytes, including something that fails
+// part way through.
+func saveThroughTemp(dir, name string, write func(io.Writer) (int64, error)) (int64, error) {
 	tmp, err := os.CreateTemp(dir, name+".*")
 	if err != nil {
 		return 0, fmt.Errorf("creating a temporary file in %s: %w", dir, err)
 	}
 	defer os.Remove(tmp.Name())
 
-	n, err := io.Copy(tmp, resp.Body)
+	n, err := write(tmp)
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		return 0, fmt.Errorf("writing %s: %w", name, err)
+		return 0, err
 	}
 	if err := os.Rename(tmp.Name(), filepath.Join(dir, name)); err != nil {
 		return 0, fmt.Errorf("putting %s in place: %w", name, err)

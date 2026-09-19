@@ -108,6 +108,10 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if !boundary.ValidDetail(detail) {
+		return usageErrorf("--detail %q is not one this command knows; it has %s",
+			detail, strings.Join(boundary.Details, ", "))
+	}
 	if format != "text" && format != "json" {
 		return usageErrorf("--format %q is not one this command knows; it has text and json", format)
 	}
@@ -150,11 +154,18 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	}
 
 	// The credit travels with the answer, for the same reason the render
-	// command draws it into the picture rather than printing it beside one:
-	// these names are OpenStreetMap's, a returned place name is a Produced
-	// Work under the ODbL, and the obligation attaches to the thing that gets
-	// sent to somebody else. A JSON document pasted into a report carries
-	// whatever is inside it and nothing that was on the terminal around it.
+	// command draws it into the picture rather than printing it beside one: a
+	// returned place name is a Produced Work under the ODbL, and the
+	// obligation attaches to the thing that gets sent to somebody else. A
+	// JSON document pasted into a report carries whatever is inside it and
+	// nothing that was on the terminal around it.
+	//
+	// It names OpenStreetMap only, and an answer can now mix two sources: a
+	// Contained match comes from Natural Earth, which is public domain and
+	// requires no credit at all. Crediting OSM for the whole answer is not a
+	// licence problem -- nothing is owed to Natural Earth -- but it is
+	// imprecise, so the line says which levels it covers rather than implying
+	// every name came from there.
 	//
 	// Read from the manifest, never written down here -- see the same argument
 	// in the render command. A store refilled from a different archive must
@@ -175,14 +186,23 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 // nothing about whose data named them, and the one place that can carry the
 // obligation is the document itself.
 type locateReport struct {
-	Credit string            `json:"credit,omitempty"`
-	Places []osmlocate.Place `json:"places"`
+	// Credit covers the names taken from the tiles. A contained answer comes
+	// from Natural Earth, which is public domain and requires none -- said in
+	// its own field rather than folded into the first, so a consumer reading
+	// this document can tell which obligation applies to which names.
+	Credit          string            `json:"credit,omitempty"`
+	ContainedCredit string            `json:"contained_credit,omitempty"`
+	Places          []osmlocate.Place `json:"places"`
 }
 
 func writeLocateJSON(w io.Writer, places []osmlocate.Place, credit string) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(locateReport{Credit: credit, Places: places}); err != nil {
+	report := locateReport{Credit: credit, Places: places}
+	if anyContained(places) {
+		report.ContainedCredit = "Natural Earth (public domain)"
+	}
+	if err := enc.Encode(report); err != nil {
 		return fmt.Errorf("writing the answer: %w", err)
 	}
 	return nil
@@ -221,7 +241,24 @@ func writeLocateText(w io.Writer, places []osmlocate.Place, credit string) {
 	}
 	if credit != "" {
 		fmt.Fprintf(w, "\n%s\n", credit)
+		if anyContained(places) {
+			fmt.Fprintf(w, "Contained answers are from Natural Earth, which is public domain.\n")
+		}
 	}
+}
+
+// anyContained reports whether any answer came from boundary data rather than
+// from the tiles, which is what decides whether the second credit line means
+// anything.
+func anyContained(places []osmlocate.Place) bool {
+	for _, p := range places {
+		for _, m := range p.Matches {
+			if m.Source == osmlocate.Contained {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // humanDistance prints a distance at a precision the measurement supports.

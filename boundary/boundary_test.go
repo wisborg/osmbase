@@ -1,8 +1,11 @@
 package boundary_test
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wisborg/osmbase/boundary"
@@ -132,5 +135,300 @@ func TestSource_AMissingFileIsNoAnswerRatherThanAFailure(t *testing.T) {
 	s := boundary.Open(dir, "")
 	if _, _, ok := s.Contains(locate.Country, 56, 10); ok {
 		t.Error("a store with no boundary files answered a containment question")
+	}
+}
+
+// TestRead_KeepsEveryPartOfAMultiPolygon is about whole countries, not edge
+// cases.
+//
+// Natural Earth represents an archipelago or a country with offshore parts --
+// Denmark, Indonesia, the Philippines, the United States with Alaska and
+// Hawaii -- as a MultiPolygon. Keeping only the first part answers containment
+// correctly for one piece and reports "not contained" for every other, which
+// for Denmark means the mainland or the islands but not both. Mutation
+// testing found the whole MultiPolygon path deletable with the suite green.
+func TestRead_KeepsEveryPartOfAMultiPolygon(t *testing.T) {
+	// Two separated squares under one name, as a country in two pieces.
+	doc := `{"type":"FeatureCollection","features":[{"properties":{"NAME":"Denmark"},` +
+		`"geometry":{"type":"MultiPolygon","coordinates":[` +
+		`[[[8,54],[10,54],[10,56],[8,56],[8,54]]],` +
+		`[[[12,54],[14,54],[14,56],[12,56],[12,54]]]` +
+		`]}}]}`
+	set, err := boundary.Read(strings.NewReader(doc), "country")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	for _, c := range []struct {
+		name     string
+		lat, lon float64
+	}{
+		{"the first part", 55, 9},
+		{"the second part", 55, 13},
+	} {
+		if a, ok := set.At(c.lat, c.lon); !ok || a.Name != "Denmark" {
+			t.Errorf("%s: got (%q, %v), want Denmark, true", c.name, a.Name, ok)
+		}
+	}
+	// And the gap between them is not inside either.
+	if _, ok := set.At(55, 11); ok {
+		t.Error("a point between the two parts was reported inside")
+	}
+}
+
+// TestRead_PrefersTheEnglishNameWhenSeveralAreCarried pins the order in
+// nameKeys.
+//
+// Natural Earth carries NAME, NAME_EN, NAME_LONG and ADMIN at once and they
+// differ for a good many countries. NAME is sometimes the local-script
+// spelling, and this package has no language parameter for a caller to ask
+// with, so the English form is the one that can be relied on to render. A
+// reorder in either direction changes the displayed name for real countries,
+// and mutation testing found the order completely unexercised.
+func TestRead_PrefersTheEnglishNameWhenSeveralAreCarried(t *testing.T) {
+	square := `"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}`
+
+	for _, c := range []struct {
+		name  string
+		props string
+		want  string
+	}{
+		{"all of them", `{"NAME_EN":"English","NAME":"Local","NAME_LONG":"Long","ADMIN":"Admin"}`, "English"},
+		{"no English form", `{"NAME":"Local","NAME_LONG":"Long"}`, "Local"},
+		{"only a late fallback", `{"ADMIN":"Admin"}`, "Admin"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set, err := boundary.Read(strings.NewReader(
+				`{"type":"FeatureCollection","features":[{"properties":`+c.props+`,`+square+`}]}`), "country")
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			a, ok := set.At(1, 1)
+			if !ok {
+				t.Fatal("the square did not contain its own middle")
+			}
+			if a.Name != c.want {
+				t.Errorf("Name = %q, want %q", a.Name, c.want)
+			}
+		})
+	}
+}
+
+// TestRead_IgnoresAGeometryWithNoArea covers the documented "not an error"
+// path.
+//
+// A file may carry a point or a line for something with no area. This package
+// has nothing to say about those, which is different from being unable to read
+// the file -- and the difference decides whether one odd record makes the
+// whole download useless.
+func TestRead_IgnoresAGeometryWithNoArea(t *testing.T) {
+	doc := `{"type":"FeatureCollection","features":[` +
+		`{"properties":{"NAME":"A Point"},"geometry":{"type":"Point","coordinates":[1,1]}},` +
+		`{"properties":{"NAME":"An Area"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}` +
+		`]}`
+	set, err := boundary.Read(strings.NewReader(doc), "country")
+	if err != nil {
+		t.Fatalf("a file carrying a point alongside an area was refused: %v", err)
+	}
+	if set.Len() != 1 {
+		t.Errorf("Len = %d, want 1: the point should be skipped and the area kept", set.Len())
+	}
+	if a, _ := set.At(1, 1); a.Name != "An Area" {
+		t.Errorf("At returned %q, want An Area", a.Name)
+	}
+}
+
+// writeStore puts a two-file boundary store on disk, as a real fetch would.
+func writeStore(t *testing.T, detail, countries, regions string) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := boundary.Dir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	for _, f := range []struct {
+		name, body string
+	}{
+		{boundary.File(detail, false), countries},
+		{boundary.File(detail, true), regions},
+	} {
+		if f.body == "" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, f.name), []byte(f.body), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", f.name, err)
+		}
+	}
+	return root
+}
+
+func squareDoc(name string, west, south, east, north float64) string {
+	f := func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+	return `{"type":"FeatureCollection","features":[{"properties":{"NAME":"` + name +
+		`"},"geometry":{"type":"Polygon","coordinates":[[` +
+		`[` + f(west) + `,` + f(south) + `],[` + f(east) + `,` + f(south) + `],` +
+		`[` + f(east) + `,` + f(north) + `],[` + f(west) + `,` + f(north) + `],` +
+		`[` + f(west) + `,` + f(south) + `]]]}}]}`
+}
+
+// TestSource_AnswersCountryAndRegionIndEPENDENTLYFromDisk is the path the CLI
+// actually runs, and it had no coverage at all.
+//
+// Every other test here calls Read directly or points Source at an empty
+// directory, so the load-and-cache path -- the one a real "osmbase locate"
+// depends on -- could be gutted to "return nil" with the whole suite green.
+// Mutation testing also found that a cache hit returning the wrong set would
+// pass: the two files are cached under one map, and swapping which field is
+// returned makes a country lookup answer with the region set from the SECOND
+// call onward. locate asks for both levels on every invocation, so that path
+// fires on the very first real use.
+//
+// The two areas are given deliberately different names and different squares,
+// so an answer from the wrong file is visible rather than coincidental.
+func TestSource_AnswersCountryAndRegionIndependentlyFromDisk(t *testing.T) {
+	root := writeStore(t, "50m",
+		squareDoc("Denmark", 8, 54, 13, 58),
+		squareDoc("Midtjylland", 9, 55, 11, 57))
+	s := boundary.Open(root, "50m")
+
+	if !boundary.Available(root, "50m") {
+		t.Fatal("a store with both files reports no boundaries available")
+	}
+
+	// Twice each, and interleaved, so the cached path is exercised as well as
+	// the first load -- the cache-key bug above only appears on the second.
+	for round := range 2 {
+		if name, kind, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" || kind != "country" {
+			t.Errorf("round %d: country = (%q, %q, %v), want Denmark, country, true", round, name, kind, ok)
+		}
+		if name, kind, ok := s.Contains(locate.Region, 56, 10); !ok || name != "Midtjylland" || kind != "state" {
+			t.Errorf("round %d: region = (%q, %q, %v), want Midtjylland, state, true", round, name, kind, ok)
+		}
+		// Inside the country and outside the region, which no single file can
+		// answer correctly if the two are being confused.
+		if _, _, ok := s.Contains(locate.Region, 54.5, 12.5); ok {
+			t.Errorf("round %d: a point outside the region was reported inside it", round)
+		}
+		if _, _, ok := s.Contains(locate.Country, 54.5, 12.5); !ok {
+			t.Errorf("round %d: a point inside the country was reported outside it", round)
+		}
+	}
+}
+
+// TestSource_ACorruptFileLosesItsLevelAndNothingElse covers the failure the
+// temp-file-and-rename exists to prevent, for when it happens anyway.
+//
+// A file that survives the existence check and then fails to parse must cost
+// its own level and no other. Reporting it as a hard error would lose a
+// perfectly good country answer to a damaged region file; ignoring the parse
+// error and caching an empty set would report every coordinate on earth as
+// outside every region, which is indistinguishable from the sea.
+func TestSource_ACorruptFileLosesItsLevelAndNothingElse(t *testing.T) {
+	root := writeStore(t, "50m", squareDoc("Denmark", 8, 54, 13, 58), `{"features":[`)
+	s := boundary.Open(root, "50m")
+
+	if _, _, ok := s.Contains(locate.Region, 56, 10); ok {
+		t.Error("a truncated region file answered a containment question")
+	}
+	if name, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
+		t.Errorf("country = (%q, %v) with a broken region file alongside; one damaged file must not cost the other", name, ok)
+	}
+}
+
+// TestAvailable_NeedsBothFiles covers the half-finished download.
+//
+// The two files are fetched as separate requests, so an interruption between
+// them leaves one. Reporting that store as having boundaries wires them in,
+// and the precedence rule then WITHHOLDS the region answer rather than falling
+// back to the tiles -- so a user loses a level they would otherwise have had,
+// silently, from an interruption the download's own design anticipates.
+func TestAvailable_NeedsBothFiles(t *testing.T) {
+	both := writeStore(t, "50m", squareDoc("A", 0, 0, 1, 1), squareDoc("B", 0, 0, 1, 1))
+	if !boundary.Available(both, "50m") {
+		t.Error("a complete store reports unavailable")
+	}
+	countryOnly := writeStore(t, "50m", squareDoc("A", 0, 0, 1, 1), "")
+	if boundary.Available(countryOnly, "50m") {
+		t.Error("a store holding only the country file reports available; an interrupted fetch would silently cost the region level")
+	}
+}
+
+// TestValidDetail_RefusesAnythingThatCouldLeaveTheStore is the check that
+// closes a path traversal.
+//
+// The detail is interpolated into a filename and then joined to the store's
+// boundary directory, so a value carrying ".." escapes it. That was
+// reproduced: with the store's own boundaries directory EMPTY, a crafted
+// --detail made locate read a planted file from outside the store and print
+// its contents as a country name. The boundaries command validated its flag
+// and the locate command did not, which is why the check now lives here
+// instead of in a caller that has to remember it.
+func TestValidDetail_RefusesAnythingThatCouldLeaveTheStore(t *testing.T) {
+	for _, ok := range boundary.Details {
+		if !boundary.ValidDetail(ok) {
+			t.Errorf("ValidDetail(%q) = false, want true", ok)
+		}
+	}
+	if !boundary.ValidDetail("") {
+		t.Error(`ValidDetail("") = false; empty means "the default"`)
+	}
+	for _, bad := range []string{
+		"10m/../../outside/x",
+		"../..",
+		"/etc/passwd",
+		"10",
+		"10M",
+	} {
+		if boundary.ValidDetail(bad) {
+			t.Errorf("ValidDetail(%q) = true", bad)
+		}
+	}
+
+	// And a refused detail yields a source that answers nothing rather than
+	// one pointed somewhere unexpected.
+	s := boundary.Open(t.TempDir(), "../..")
+	if _, _, ok := s.Contains(locate.Country, 0, 0); ok {
+		t.Error("a source opened with an invalid detail answered a containment question")
+	}
+}
+
+// TestSource_IsSafeToShareBetweenGoroutines covers the shape this type is
+// built to have.
+//
+// Open's whole point is that a source is loaded once and reused, which is the
+// shape a consumer shares: locate.AtEach exists for routes of thousands of
+// points, and a caller processing several routes at once would naturally hand
+// them one Source. Before the lock, two goroutines reaching the lazy load
+// wrote the same map concurrently -- which Go turns into a crash, not a race
+// to argue about.
+//
+// Only meaningful under -race, which "make race" runs; without it this is a
+// smoke test that nothing deadlocks.
+func TestSource_IsSafeToShareBetweenGoroutines(t *testing.T) {
+	root := writeStore(t, "50m",
+		squareDoc("Denmark", 8, 54, 13, 58),
+		squareDoc("Midtjylland", 9, 55, 11, 57))
+	s := boundary.Open(root, "50m")
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			level := locate.Country
+			if i%2 == 1 {
+				level = locate.Region
+			}
+			for range 20 {
+				s.Contains(level, 56, 10)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// And it still answers correctly afterwards, so a lock that serialised
+	// everything into nonsense would show up too.
+	if name, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
+		t.Errorf("after concurrent use, country = (%q, %v), want Denmark, true", name, ok)
 	}
 }
