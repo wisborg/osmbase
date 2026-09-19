@@ -38,15 +38,25 @@ const (
 // of bytes, because "unexpected EOF" alone does not distinguish a truncated
 // tile from a field length that was misread.
 type Reader struct {
-	b    []byte
-	i    int
-	what string // the message being read, for errors
+	b      []byte
+	i      int
+	format string // the file format being read, for errors
+	what   string // the message being read, for errors
 }
 
-// New returns a reader over a message. what names the message in errors --
-// "a layer", "a relation" -- because "unexpected EOF" alone does not say
-// which of a file's nested messages ran out.
-func New(b []byte, what string) *Reader { return &Reader{b: b, what: what} }
+// New returns a reader over a message. format names the file format --
+// "mvt", "osmpbf" -- and what names the message within it -- "a layer", "a
+// relation" -- because "unexpected EOF" alone says neither which file was
+// being read nor which of its nested messages ran out.
+//
+// format is a parameter rather than a constant because this reader is shared
+// between the formats. It was extracted from the vector tile decoder, where
+// the prefix was hardcoded to "mvt"; left that way, a malformed OSM extract
+// would report itself as a broken vector tile and send the reader looking in
+// the wrong file.
+func New(b []byte, format, what string) *Reader {
+	return &Reader{b: b, format: format, what: what}
+}
 
 func (r *Reader) Done() bool { return r.i >= len(r.b) }
 
@@ -54,9 +64,9 @@ func (r *Reader) Uvarint(field string) (uint64, error) {
 	v, n := binary.Uvarint(r.b[r.i:])
 	switch {
 	case n == 0:
-		return 0, fmt.Errorf("mvt: %s ends part way through %s at byte %d of %d", r.what, field, r.i, len(r.b))
+		return 0, fmt.Errorf("%s: %s ends part way through %s at byte %d of %d", r.format, r.what, field, r.i, len(r.b))
 	case n < 0:
-		return 0, fmt.Errorf("mvt: %s has a %s at byte %d that does not fit in 64 bits", r.what, field, r.i)
+		return 0, fmt.Errorf("%s: %s has a %s at byte %d that does not fit in 64 bits", r.format, r.what, field, r.i)
 	}
 	r.i += n
 	return v, nil
@@ -71,7 +81,7 @@ func (r *Reader) Tag() (field int, wire int, err error) {
 	field = int(key >> 3)
 	wire = int(key & 7)
 	if field == 0 {
-		return 0, 0, fmt.Errorf("mvt: %s has field number 0 at byte %d, which protobuf does not allow", r.what, r.i)
+		return 0, 0, fmt.Errorf("%s: %s has field number 0 at byte %d, which protobuf does not allow", r.format, r.what, r.i)
 	}
 	return field, wire, nil
 }
@@ -85,7 +95,7 @@ func (r *Reader) Bytes(field string) ([]byte, error) {
 		return nil, err
 	}
 	if n > uint64(len(r.b)-r.i) {
-		return nil, fmt.Errorf("mvt: %s says %s is %d bytes but only %d remain", r.what, field, n, len(r.b)-r.i)
+		return nil, fmt.Errorf("%s: %s says %s is %d bytes but only %d remain", r.format, r.what, field, n, len(r.b)-r.i)
 	}
 	start := r.i
 	r.i += int(n)
@@ -94,7 +104,7 @@ func (r *Reader) Bytes(field string) ([]byte, error) {
 
 func (r *Reader) Fixed32(field string) (uint32, error) {
 	if len(r.b)-r.i < 4 {
-		return 0, fmt.Errorf("mvt: %s ends part way through %s at byte %d of %d", r.what, field, r.i, len(r.b))
+		return 0, fmt.Errorf("%s: %s ends part way through %s at byte %d of %d", r.format, r.what, field, r.i, len(r.b))
 	}
 	v := binary.LittleEndian.Uint32(r.b[r.i:])
 	r.i += 4
@@ -103,7 +113,7 @@ func (r *Reader) Fixed32(field string) (uint32, error) {
 
 func (r *Reader) Fixed64(field string) (uint64, error) {
 	if len(r.b)-r.i < 8 {
-		return 0, fmt.Errorf("mvt: %s ends part way through %s at byte %d of %d", r.what, field, r.i, len(r.b))
+		return 0, fmt.Errorf("%s: %s ends part way through %s at byte %d of %d", r.format, r.what, field, r.i, len(r.b))
 	}
 	v := binary.LittleEndian.Uint64(r.b[r.i:])
 	r.i += 8
@@ -129,9 +139,9 @@ func (r *Reader) Skip(field, wire int) error {
 		_, err := r.Fixed32(fmt.Sprintf("field %d", field))
 		return err
 	case WireStartGroup, WireEndGroup:
-		return fmt.Errorf("mvt: %s uses a protobuf group for field %d; the vector tile schema has none, so these are not vector tile bytes", r.what, field)
+		return fmt.Errorf("%s: %s uses a protobuf group for field %d; the vector tile schema has none, so these are not vector tile bytes", r.format, r.what, field)
 	}
-	return fmt.Errorf("mvt: %s has field %d with wire type %d, which protobuf does not define", r.what, field, wire)
+	return fmt.Errorf("%s: %s has field %d with wire type %d, which protobuf does not define", r.format, r.what, field, wire)
 }
 
 // packedUint32 reads a repeated uint32 field that may be packed into one
@@ -145,12 +155,12 @@ func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, e
 			return nil, err
 		}
 		if v > 0xffffffff {
-			return nil, fmt.Errorf("mvt: %s has a value in %s that does not fit in 32 bits", r.what, field)
+			return nil, fmt.Errorf("%s: %s has a value in %s that does not fit in 32 bits", r.format, r.what, field)
 		}
 		return append(out, uint32(v)), nil
 	}
 	if wire != WireBytes {
-		return nil, fmt.Errorf("mvt: %s has %s with wire type %d, and it must be a packed or repeated varint", r.what, field, wire)
+		return nil, fmt.Errorf("%s: %s has %s with wire type %d, and it must be a packed or repeated varint", r.format, r.what, field, wire)
 	}
 	payload, err := r.Bytes(field)
 	if err != nil {
@@ -163,7 +173,7 @@ func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, e
 			return nil, err
 		}
 		if v > 0xffffffff {
-			return nil, fmt.Errorf("mvt: %s has a value in %s that does not fit in 32 bits", r.what, field)
+			return nil, fmt.Errorf("%s: %s has a value in %s that does not fit in 32 bits", r.format, r.what, field)
 		}
 		out = append(out, uint32(v))
 	}

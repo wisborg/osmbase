@@ -178,7 +178,7 @@ func Decode(data []byte) (Tile, error) {
 	// to have tens of thousands -- inside the render path, where no context
 	// deadline reaches.
 	seen := map[string]struct{}{}
-	r := *protobuf.New(data, "the tile")
+	r := *protobuf.New(data, "mvt", "the tile")
 	for !r.Done() {
 		field, wire, err := r.Tag()
 		if err != nil {
@@ -224,7 +224,7 @@ func decodeLayer(data []byte) (Layer, error) {
 		features      [][]byte
 		sawVersion    bool
 	)
-	r := *protobuf.New(data, "a layer")
+	r := *protobuf.New(data, "mvt", "a layer")
 	for !r.Done() {
 		field, wire, err := r.Tag()
 		if err != nil {
@@ -320,7 +320,7 @@ func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (F
 		geom    []uint32
 		sawType bool
 	)
-	r := *protobuf.New(data, "a feature")
+	r := *protobuf.New(data, "mvt", "a feature")
 	for !r.Done() {
 		field, wire, err := r.Tag()
 		if err != nil {
@@ -392,7 +392,7 @@ func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (F
 
 func decodeValue(data []byte) (Value, error) {
 	var v Value
-	r := *protobuf.New(data, "a value")
+	r := *protobuf.New(data, "mvt", "a value")
 	for !r.Done() {
 		field, wire, err := r.Tag()
 		if err != nil {
