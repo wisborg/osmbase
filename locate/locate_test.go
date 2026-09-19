@@ -649,3 +649,91 @@ func placesWithRaw(t *testing.T, zoom uint8, lat, lon float64, raw osmbasetest.F
 	}
 	return tiles{{uint32(zoom), x, y}: data}
 }
+
+// fakeBoundaries answers containment for the levels it is told to, so the
+// precedence rule can be tested without a boundary file.
+type fakeBoundaries struct {
+	covers map[locate.Level]bool
+	name   string
+	inside bool
+}
+
+func (f fakeBoundaries) Covers(l locate.Level) bool { return f.covers[l] }
+
+func (f fakeBoundaries) Contains(l locate.Level, lat, lon float64) (string, string, bool) {
+	if !f.covers[l] || !f.inside {
+		return "", "", false
+	}
+	return f.name, "country", true
+}
+
+// TestAt_ContainmentAnswersALevelInsteadOfTheTilesAndNotAsWell is the
+// precedence rule, and the second half is the one that matters.
+//
+// A source that covers a level answers it EXCLUSIVELY: the tiles are not
+// consulted, and a level the source covers but finds nothing for reports
+// nothing. Falling back to the nearest label would turn a correct answer into
+// a guess -- a point in the North Sea is outside every country, and "near
+// Denmark, 40 km" would be the program inventing a country for it.
+func TestAt_ContainmentAnswersALevelInsteadOfTheTilesAndNotAsWell(t *testing.T) {
+	const lat, lon = 55.8623, 9.8451
+	// A country point in the tiles, so there IS a nearest answer to fall back
+	// to if anything wrongly did.
+	src := withPlaces(t, 4, place{lat: lat + 0.3, lon: lon, kind: "country", name: "Tiles Say Denmark"})
+
+	t.Run("containment wins where it answers", func(t *testing.T) {
+		got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon}, locate.Options{
+			Boundaries: fakeBoundaries{
+				covers: map[locate.Level]bool{locate.Country: true},
+				name:   "Denmark", inside: true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("At: %v", err)
+		}
+		m, ok := got.Match(locate.Country)
+		if !ok {
+			t.Fatal("no country found")
+		}
+		if m.Name != "Denmark" {
+			t.Errorf("Name = %q, want the contained Denmark rather than the tiles' nearest label", m.Name)
+		}
+		if m.Source != locate.Contained {
+			t.Errorf("Source = %v, want Contained", m.Source)
+		}
+		if m.DistanceM != 0 {
+			t.Errorf("DistanceM = %v, want 0: a contained match is not at a distance", m.DistanceM)
+		}
+	})
+
+	t.Run("no fallback when containment finds nothing", func(t *testing.T) {
+		got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon}, locate.Options{
+			Boundaries: fakeBoundaries{
+				covers: map[locate.Level]bool{locate.Country: true},
+				inside: false,
+			},
+		})
+		if err != nil {
+			t.Fatalf("At: %v", err)
+		}
+		if m, ok := got.Match(locate.Country); ok {
+			t.Errorf("a point outside every country was given %q from the tiles; containment answering nothing must mean nothing, not a nearest guess", m.Name)
+		}
+	})
+
+	t.Run("a level the source does not cover is left to the tiles", func(t *testing.T) {
+		got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon}, locate.Options{
+			Boundaries: fakeBoundaries{covers: map[locate.Level]bool{locate.Region: true}},
+		})
+		if err != nil {
+			t.Fatalf("At: %v", err)
+		}
+		m, ok := got.Match(locate.Country)
+		if !ok {
+			t.Fatal("a level the source declined was not answered from the tiles either")
+		}
+		if m.Source != locate.Near {
+			t.Errorf("Source = %v, want Near for a tile answer", m.Source)
+		}
+	})
+}

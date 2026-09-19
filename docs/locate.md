@@ -61,7 +61,7 @@ answer rather than a distant one.
 Behind a `BoundarySource` interface, so the second stage is an addition rather than a
 rewrite.
 
-### Stage one — Natural Earth, for country and region
+### Stage one — Natural Earth, for country and region — **built**
 
 [Public domain](https://www.naturalearthdata.com/about/terms-of-use/): *"No permission is
 needed to use Natural Earth. Crediting the authors is unnecessary."* No attribution
@@ -69,17 +69,30 @@ obligation, no share-alike, no restriction on redistribution, and therefore no `
 entry and nothing propagating to a consumer's output. It is the only candidate with zero
 obligations.
 
-It is coarse, around 1:10m, and that is the right trade for these two levels. Country and
-region are exactly where nearest-point is worst — a country label anchor can be hundreds of
-kilometres away, and region is missing outright for Denmark and New South Wales — while a
-coarse outline answers "which country contains this point" correctly everywhere except
-within about a kilometre of a border. It is also small enough that fetching it is barely an
-event.
+**On which resolution.** The default is the finest set, 1:10m, and that was
+not the first choice. 50m was picked on the grounds that the 10m state file is
+forty megabytes of JSON and would be slow — a guess about size standing in for
+a look at the contents. The 50m state file carries 294 subdivisions across
+NINE countries and none at all for Denmark, Germany, France, Norway or the
+United Kingdom; a region level that answers for nine countries is not a region
+level. The 10m file carries 4,596 across 253. The cost it was rejected for did
+not survive measurement either: both files parse in about 1.1 seconds, once per
+process, and only for the levels actually asked about. 50m remains available
+and is a fair choice for country alone, which it covers in full at a fifth of
+the size.
+
+Even at its finest the data is coarse next to OpenStreetMap — 1:10 million is a
+world atlas, not a survey — and that is the right trade for these two levels.
+Country and region are exactly where nearest-point is worst: a country label
+anchor can be hundreds of kilometres away, and region is missing outright from
+the tiles for Denmark and New South Wales. An atlas outline answers "which
+country contains this point" correctly everywhere except within about a
+kilometre of a border, which is a far better failure than the one it replaces.
 
 Stage one therefore turns two broken levels into two correct ones, for a day's work and no
 licence obligations at all.
 
-### Stage two — OSM administrative relations, for locality and suburb
+### Stage two — OSM administrative relations, for locality and suburb — not built
 
 This is the one that reaches the granularity the feature exists for. `boundary=administrative`
 relations carry an `admin_level` and a name, levels 8 to 10 are suburb, and no other

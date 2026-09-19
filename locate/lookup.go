@@ -26,6 +26,17 @@ type Options struct {
 	// metres off.
 	MaxDistanceM map[Level]float64
 
+	// Boundaries answers a level by CONTAINMENT rather than by nearest
+	// feature, for the levels it covers.
+	//
+	// nil is a legitimate configuration and the one that needs no download:
+	// every answer is then Near, which is what the tiles alone can support.
+	// A source that covers a level takes precedence over the tiles for that
+	// level, because a statement of fact beats an inference -- and the tiles
+	// are not consulted for it at all, which also saves reading the shallow
+	// zooms a country lookup would otherwise need.
+	Boundaries BoundarySource
+
 	// Levels restricts the lookup. Empty asks for all of them.
 	//
 	// Worth setting: each level is read at its own zoom, so asking for fewer
@@ -117,6 +128,22 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		if !opts.wants(spec.level) {
 			continue
 		}
+		// Containment first, and exclusively: a source that covers a level
+		// answers it, and the tiles are not consulted for that level at all.
+		// Falling back to a nearest match when containment found nothing
+		// would be wrong -- a point in the sea is outside every country, and
+		// "near Denmark, 40 km" would turn that correct answer into a guess.
+		if opts.Boundaries != nil && opts.Boundaries.Covers(spec.level) {
+			for i, p := range pts {
+				if name, kind, ok := opts.Boundaries.Contains(spec.level, p.Lat, p.Lon); ok {
+					out[i].setMatch(Match{
+						Level: spec.level, Name: name, Kind: kind,
+						Source: Contained,
+					})
+				}
+			}
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("locate: looking up %s: %w", spec.level, err)
 		}
@@ -191,6 +218,25 @@ func (o Options) maxDistance(l Level) float64 {
 		return d
 	}
 	return DefaultMaxDistanceM[l]
+}
+
+// BoundarySource answers which named area contains a coordinate.
+//
+// An interface rather than a concrete type because the first implementation is
+// not the last one. Natural Earth is public domain and reaches country and
+// region; suburb needs OpenStreetMap's administrative relations, which is a
+// different licence regime, a different acquisition story and a much larger
+// pipeline. Both answer this one question.
+type BoundarySource interface {
+	// Covers reports whether this source can answer a level at all. A source
+	// that says no leaves the level to the tiles rather than reporting it
+	// unknown.
+	Covers(Level) bool
+
+	// Contains returns the name and kind of the area holding the coordinate.
+	// The boolean is false when no area does, which over the sea is the
+	// truth rather than a failure.
+	Contains(l Level, lat, lon float64) (name, kind string, ok bool)
 }
 
 type tileRef struct {

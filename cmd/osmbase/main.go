@@ -56,6 +56,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = fetchCommand(args[1:], stdout, stderr)
 	case "locate":
 		err = runLocate(args[1:], stdout, stderr)
+	case "boundaries":
+		err = boundariesCommand(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "osmbase: there is no %q command\n\n", args[0])
 		usage(stderr)
@@ -97,6 +99,7 @@ commands:
   geojson   one tile as GeoJSON on stdout, to paste into geojson.io
   fetch     copy an area onto this machine, so rendering needs no network
   locate    say where a coordinate is, from data already on this machine
+  boundaries download country and state outlines, so locate can say IN and not NEAR
 
 Run "osmbase <command> -h" for that command's flags and a worked example.
 

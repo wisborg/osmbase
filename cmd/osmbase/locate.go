@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wisborg/osmbase/boundary"
 	osmlocate "github.com/wisborg/osmbase/locate"
 	"github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
@@ -87,6 +88,7 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 		store    string
 		archive  string
 		language string
+		detail   string
 		format   string
 	)
 	fs := newFlagSet("locate", locateUsage)
@@ -95,6 +97,8 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&store, "store", "", "directory holding the map data (default: the osmbase folder under your user cache directory)")
 	fs.StringVar(&archive, "archive", "", "which archive in the store to read, by ID or by part of its name; only needed when the store holds more than one")
 	fs.StringVar(&language, "language", "", "prefer names in this language where the data has them, as a short code such as \"da\" or \"ja\"; the default takes each name as written locally")
+	fs.StringVar(&detail, "detail", "",
+		"which boundary outlines to use, if the store has them: "+strings.Join(boundary.Details, ", ")+" (default: "+boundary.DefaultDetail+")")
 	fs.StringVar(&format, "format", "text", "how to print the answer: text or json")
 
 	if _, err := parseArgs(fs, args, stdout); err != nil {
@@ -131,7 +135,16 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	places, err := osmlocate.AtEach(context.Background(), src, pts, osmlocate.Options{Language: language})
+	// Boundaries if the store has them, and silently not if it does not: they
+	// are an optional download, a store without them is the ordinary case,
+	// and the difference is visible in the output anyway -- every answer says
+	// "near" instead of "in".
+	opts := osmlocate.Options{Language: language}
+	if boundary.Available(root, detail) {
+		opts.Boundaries = boundary.Open(root, detail)
+	}
+
+	places, err := osmlocate.AtEach(context.Background(), src, pts, opts)
 	if err != nil {
 		return err
 	}
@@ -197,7 +210,13 @@ func writeLocateText(w io.Writer, places []osmlocate.Place, credit string) {
 				kind = m.Level.String()
 			}
 			fmt.Fprintf(w, "  %-14s %s %s (%s)\n", m.Level, m.Source, m.Name, kind)
-			fmt.Fprintf(w, "  %-14s %s away\n", "", humanDistance(m.DistanceM))
+			// No distance for a contained match. It is always zero, and
+			// printing "0 m away" invites a reader to think a measurement was
+			// taken and came back as nothing, when in fact the question does
+			// not apply: the point is inside the area, not near it.
+			if m.Source != osmlocate.Contained {
+				fmt.Fprintf(w, "  %-14s %s away\n", "", humanDistance(m.DistanceM))
+			}
 		}
 	}
 	if credit != "" {
