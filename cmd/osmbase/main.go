@@ -93,13 +93,13 @@ usage:
   osmbase <command> [flags] [SOURCE]
 
 commands:
-  render    the map around a coordinate, as a PNG
-  inspect   the archive's header, sections and root directory
-  tile      what one tile holds: layers, feature counts, geometry types, tags
-  geojson   one tile as GeoJSON on stdout, to paste into geojson.io
-  fetch     copy an area onto this machine, so rendering needs no network
-  locate    say where a coordinate is, from data already on this machine
-  boundaries download country and state outlines, so locate can say IN and not NEAR
+  render      the map around a coordinate, as a PNG
+  inspect     the archive's header, sections and root directory
+  tile        what one tile holds: layers, feature counts, geometry types, tags
+  geojson     one tile as GeoJSON on stdout, to paste into geojson.io
+  fetch       copy an area onto this machine, so rendering needs no network
+  locate      say where a coordinate is, from data already on this machine
+  boundaries  country and state outlines, so locate can say IN rather than NEAR
 
 Run "osmbase <command> -h" for that command's flags and a worked example.
 
