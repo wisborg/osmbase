@@ -278,21 +278,30 @@ func tilesNear(z uint8, x, y uint32, at Coord, capM float64) []tileRef {
 	n := float64(uint32(1) << z)
 
 	// The point's position within its own tile, and how much of a tile the cap
-	// reaches. Longitude shortens toward the poles and latitude does not, so
-	// the two axes are measured separately.
-	fx := math.Mod(((at.Lon+180)/360)*n, 1)
-	worldY := mercatorY(at.Lat)
-	fy := math.Mod(worldY*n, 1)
+	// reaches.
+	//
+	// Both axes use the SAME ground size, and that is the correction this
+	// comment used to get wrong. It said longitude shortens toward the poles
+	// and latitude does not, which is true of equirectangular degrees and
+	// false of what is being measured here: Web Mercator is conformal, so a
+	// tile's ground HEIGHT shrinks with the cosine of the latitude in exact
+	// lockstep with its width. Measured against TileBounds at zoom 14, a tile
+	// is 2443 m square at the equator and 1370 m square at Horsens -- not
+	// 1370 by 2446. Treating the height as constant made the north and south
+	// thresholds about half what they should be at Danish latitudes, so a
+	// street within the cap of a tile's north or south edge was missed about
+	// twice as often as intended -- which is the bug this function exists to
+	// prevent, reintroduced on one axis.
+	px, py := mercator.Project(at.Lon, at.Lat)
+	fx := math.Mod(px*n, 1)
+	fy := math.Mod(py*n, 1)
 
-	tileLon := earthCircumferenceM * math.Cos(at.Lat*math.Pi/180) / n
-	tileLat := earthCircumferenceM / n
-	nearX, nearY := 1.0, 1.0
-	if tileLon > 0 {
-		nearX = capM / tileLon
+	tileM := earthCircumferenceM * math.Cos(at.Lat*math.Pi/180) / n
+	near := 1.0
+	if tileM > 0 {
+		near = capM / tileM
 	}
-	if tileLat > 0 {
-		nearY = capM / tileLat
-	}
+	nearX, nearY := near, near
 
 	for dx := -1; dx <= 1; dx++ {
 		for dy := -1; dy <= 1; dy++ {
@@ -323,13 +332,6 @@ func tilesNear(z uint8, x, y uint32, at Coord, capM float64) []tileRef {
 		}
 	}
 	return refs
-}
-
-// mercatorY is the Web Mercator y of a latitude, in [0,1] from the north.
-func mercatorY(lat float64) float64 {
-	lat = math.Min(math.Max(lat, -85.05112878), 85.05112878)
-	s := math.Sin(lat * math.Pi / 180)
-	return 0.5 - math.Log((1+s)/(1-s))/(4*math.Pi)
 }
 
 // matchAt is the answer already recorded for a level, if any.

@@ -292,3 +292,360 @@ func TestMatch_DistanceIsRoundedToWhatTheMeasurementSupports(t *testing.T) {
 		t.Errorf("DistanceM = %v, which is finer than a tenth of a metre", m.DistanceM)
 	}
 }
+
+// road is a named line to put in a fixture tile, given as real coordinates.
+type road struct {
+	name string
+	kind string
+	// from and to are the ends, in degrees.
+	fromLat, fromLon, toLat, toLon float64
+}
+
+// withRoad builds a source holding the tile the road's MIDPOINT falls in, and
+// only that tile.
+//
+// Only that one, deliberately. A test for the neighbour-reading path has to be
+// able to put a feature somewhere the query point's own tile is not, and a
+// helper that scattered the geometry across every tile it touched would make
+// that impossible to express.
+func withRoad(t *testing.T, zoom uint8, r road) (tiles, uint32, uint32) {
+	t.Helper()
+	midLat, midLon := (r.fromLat+r.toLat)/2, (r.fromLon+r.toLon)/2
+	x, y, err := mercator.TileAt(zoom, midLon, midLat)
+	if err != nil {
+		t.Fatalf("TileAt: %v", err)
+	}
+	tr, err := mercator.NewTileTransform(zoom, x, y, mvt.DefaultExtent)
+	if err != nil {
+		t.Fatalf("NewTileTransform: %v", err)
+	}
+	ax, ay := tileXY(t, tr, r.fromLon, r.fromLat)
+	bx, by := tileXY(t, tr, r.toLon, r.toLat)
+
+	data, err := osmbasetest.BuildTile(osmbasetest.TileSpec{Layers: []osmbasetest.LayerSpec{{
+		Name: "roads",
+		Features: []osmbasetest.FeatureSpec{{
+			Type: mvt.GeomLineString,
+			Tags: []osmbasetest.Tag{
+				{Key: "name", Value: mvt.StringValue(r.name)},
+				{Key: "kind", Value: mvt.StringValue(r.kind)},
+			},
+			Geometry: mvt.Geometry{Lines: [][]mvt.Point{{{X: ax, Y: ay}, {X: bx, Y: by}}}},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("BuildTile: %v", err)
+	}
+	return tiles{{uint32(zoom), x, y}: data}, x, y
+}
+
+// TestAt_FindsAStreetInTheNeighbouringTile is the one the rest of the suite
+// could not see, and the distances in it are chosen rather than convenient.
+//
+// Reading only the tile containing the point is the obvious implementation and
+// it is wrong at the edges: at zoom 14 a tile is well under two kilometres
+// across at this latitude, so a wide band of every tile is within the 250 m
+// street cap of a boundary. Vector tiles carry a buffer of their neighbours'
+// features, which hides this in production most of the time and therefore
+// makes it worse -- the failure shows up only for features outside the buffer,
+// which is exactly the ones nothing else will find.
+//
+// # Why both axes, and why 180 m
+//
+// The threshold is a fraction of a tile, so a query point a few metres from an
+// edge is inside it however badly the tile's ground size is computed. The bug
+// this test was written after got the NORTH-SOUTH size wrong by a factor of
+// about 1.8 at Danish latitudes -- Web Mercator is conformal, so a tile's
+// ground height shrinks with the cosine of the latitude exactly as its width
+// does, which the code did not do. A point 180 m outside the edge falls
+// between the correct threshold and the broken one: found with the right
+// arithmetic, missed with the wrong. Twenty-five metres would pass either way
+// and prove only that neighbours are read at all.
+//
+// Both axes, because the bug was on one of them and a future reader splitting
+// them apart again should hear about it.
+func TestAt_FindsAStreetInTheNeighbouringTile(t *testing.T) {
+	const zoom = 14
+	const mPerLat = 111_320
+	mPerLon := mPerLat * math.Cos(55.8623*math.Pi/180)
+
+	x, y, err := mercator.TileAt(zoom, 9.8451, 55.8623)
+	if err != nil {
+		t.Fatalf("TileAt: %v", err)
+	}
+	west, south, east, north, err := mercator.TileBounds(zoom, x, y)
+	if err != nil {
+		t.Fatalf("TileBounds: %v", err)
+	}
+	midLat, midLon := (south+north)/2, (west+east)/2
+
+	// 180 m outside the edge for the query and 30 m inside it for the road:
+	// 210 m apart, within the 250 m street cap, and outside the threshold a
+	// wrongly sized tile computes.
+	const outM, inM = 180.0, 30.0
+
+	for _, c := range []struct {
+		name       string
+		axis       string
+		qLat, qLon float64
+		rLat, rLon float64
+	}{
+		{
+			name: "across the western edge", axis: "x",
+			qLat: midLat, qLon: west - outM/mPerLon,
+			rLat: midLat, rLon: west + inM/mPerLon,
+		},
+		{
+			name: "across the southern edge", axis: "y",
+			qLat: south - outM/mPerLat, qLon: midLon,
+			rLat: south + inM/mPerLat, rLon: midLon,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src, rx, ry := withRoad(t, zoom, road{
+				name: "Hestedamsgade", kind: "minor_road",
+				fromLat: c.rLat - 0.0008, fromLon: c.rLon - 0.0008,
+				toLat: c.rLat + 0.0008, toLon: c.rLon + 0.0008,
+			})
+			if rx != x || ry != y {
+				t.Fatalf("precondition: the road landed in tile %d/%d, not the %d/%d this test is about", rx, ry, x, y)
+			}
+
+			at := locate.Coord{Lat: c.qLat, Lon: c.qLon}
+			qx, qy, err := mercator.TileAt(zoom, at.Lon, at.Lat)
+			if err != nil {
+				t.Fatalf("TileAt: %v", err)
+			}
+			if qx == x && qy == y {
+				t.Fatal("precondition: the query point is in the road's own tile, so this proves nothing about neighbours")
+			}
+
+			got, err := locate.At(context.Background(), src, at, locate.Options{})
+			if err != nil {
+				t.Fatalf("At: %v", err)
+			}
+			m, ok := got.Match(locate.Street)
+			if !ok {
+				t.Fatalf("the street one tile away was not found: the neighbour on the %s axis is not being read, so a road just across a boundary is invisible", c.axis)
+			}
+			if m.Name != "Hestedamsgade" {
+				t.Errorf("Name = %q, want Hestedamsgade", m.Name)
+			}
+			if m.DistanceM > 250 {
+				t.Errorf("DistanceM = %v, past the street cap: the fixture is not measuring what it means to", m.DistanceM)
+			}
+		})
+	}
+}
+
+// TestAt_KeepsTheNEARESTCandidateWhicheverOrderTheDataArrivesIn is the
+// assertion the original suite could not make.
+//
+// Every earlier fixture put its candidates in different, far-apart tiles, so
+// nearest() was only ever handed a one-feature list -- and a list of one cannot
+// tell "closest" from "first" from "farthest". Mutation testing confirmed it:
+// keeping the first match, and keeping the farthest, both passed the whole
+// suite.
+//
+// Two candidates in ONE tile, at different distances, in both fixture orders.
+// The order matters as much as the distance: with only one order, "keep the
+// first" passes by luck half the time, which is how the original Horsens and
+// Vejle test passed while proving nothing.
+func TestAt_KeepsTheNearestCandidateWhicheverOrderTheDataArrivesIn(t *testing.T) {
+	const lat, lon = 55.8623, 9.8451
+	near := place{lat: lat + 0.002, lon: lon, kind: "locality", name: "Near", detail: "town"}
+	far := place{lat: lat + 0.05, lon: lon, kind: "locality", name: "Far", detail: "town"}
+
+	for _, c := range []struct {
+		name string
+		ps   []place
+	}{
+		{"nearest listed first", []place{near, far}},
+		{"nearest listed last", []place{far, near}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := withPlaces(t, 10, c.ps...)
+			got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon}, locate.Options{})
+			if err != nil {
+				t.Fatalf("At: %v", err)
+			}
+			m, ok := got.Match(locate.Locality)
+			if !ok {
+				t.Fatal("no locality found")
+			}
+			if m.Name != "Near" {
+				t.Errorf("Name = %q, want Near: the closer of two candidates in the same tile", m.Name)
+			}
+		})
+	}
+}
+
+// TestAt_ALevelAnswersOnlyFromItsOwnKind stops one level's features answering
+// another's question.
+//
+// kindMatches is what keeps a region label out of a locality lookup, and
+// mutation testing found it deletable -- replacing it with "true" passed every
+// test, because no fixture had ever put two kinds in one tile. The wrong-kind
+// feature here is deliberately the CLOSER of the two, so a version that
+// ignores kind picks it and fails.
+func TestAt_ALevelAnswersOnlyFromItsOwnKind(t *testing.T) {
+	const lat, lon = 55.8623, 9.8451
+	src := withPlaces(t, 10,
+		place{lat: lat + 0.001, lon: lon, kind: "region", name: "Midtjylland", detail: "state"},
+		place{lat: lat + 0.02, lon: lon, kind: "locality", name: "Horsens", detail: "city"},
+	)
+
+	got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon},
+		locate.Options{Levels: []locate.Level{locate.Locality}})
+	if err != nil {
+		t.Fatalf("At: %v", err)
+	}
+	m, ok := got.Match(locate.Locality)
+	if !ok {
+		t.Fatal("no locality found; the region should have been skipped, not the locality")
+	}
+	if m.Name != "Horsens" {
+		t.Errorf("a locality lookup answered %q, which is a region: kind is not being filtered", m.Name)
+	}
+}
+
+// TestAt_SkipsAFeatureWithNoUsableName covers the two guards that decide
+// whether a feature has a name at all.
+//
+// Both were deletable with the suite green. They matter for the same reason:
+// a feature that wins a nearest-match contest and then has nothing to say
+// produces a place called "" or called "42", and either is worse than the real
+// name a little further away.
+//
+// The assertion is paired -- the farther, properly named feature must WIN, not
+// merely "no match". A test that only checked for absence would also pass if
+// the whole layer were being dropped.
+func TestAt_SkipsAFeatureWithNoUsableName(t *testing.T) {
+	const lat, lon = 55.8623, 9.8451
+
+	t.Run("an empty name", func(t *testing.T) {
+		src := withPlaces(t, 10,
+			place{lat: lat + 0.001, lon: lon, kind: "locality", name: ""},
+			place{lat: lat + 0.02, lon: lon, kind: "locality", name: "Horsens", detail: "city"},
+		)
+		got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon}, locate.Options{})
+		if err != nil {
+			t.Fatalf("At: %v", err)
+		}
+		m, ok := got.Match(locate.Locality)
+		if !ok {
+			t.Fatal("no locality found; the named one further away should have answered")
+		}
+		if m.Name != "Horsens" {
+			t.Errorf("Name = %q, want Horsens: a feature named \"\" won on distance", m.Name)
+		}
+	})
+
+	t.Run("a name that is not a string", func(t *testing.T) {
+		numbered := osmbasetest.FeatureSpec{
+			Type: mvt.GeomPoint,
+			Tags: []osmbasetest.Tag{
+				{Key: "name", Value: mvt.SintValue(42)},
+				{Key: "kind", Value: mvt.StringValue("locality")},
+			},
+		}
+		src := placesWithRaw(t, 10, lat, lon, numbered,
+			place{lat: lat + 0.02, lon: lon, kind: "locality", name: "Horsens", detail: "city"})
+
+		got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon}, locate.Options{})
+		if err != nil {
+			t.Fatalf("At: %v", err)
+		}
+		m, ok := got.Match(locate.Locality)
+		if !ok {
+			t.Fatal("no locality found")
+		}
+		if m.Name != "Horsens" {
+			t.Errorf("Name = %q, want Horsens: a numeric name was stringified into a label", m.Name)
+		}
+	})
+}
+
+// TestDefaultMaxDistanceM_HoldsTheDocumentedNumbers pins the caps themselves.
+//
+// The cap MECHANISM was tested through an explicit override, which left the
+// shipped defaults decorative: mutation testing collapsed five of the six to
+// one metre with the suite still green. The numbers are the product decision --
+// how far "near" may stretch at each level -- and they widen with the level
+// because the features do.
+func TestDefaultMaxDistanceM_HoldsTheDocumentedNumbers(t *testing.T) {
+	want := map[locate.Level]float64{
+		locate.Country:       1_000_000,
+		locate.Region:        500_000,
+		locate.Locality:      25_000,
+		locate.Macrohood:     5_000,
+		locate.Neighbourhood: 3_000,
+		locate.Street:        250,
+	}
+	if len(locate.DefaultMaxDistanceM) != len(want) {
+		t.Errorf("there are %d default caps and %d levels: a level with no cap falls back to zero and can never answer",
+			len(locate.DefaultMaxDistanceM), len(want))
+	}
+	for level, w := range want {
+		if got := locate.DefaultMaxDistanceM[level]; got != w {
+			t.Errorf("%s cap is %v, want %v", level, got, w)
+		}
+	}
+	// And the ordering is the property behind the numbers: a country label may
+	// be far away and a street may not.
+	for _, pair := range [][2]locate.Level{
+		{locate.Country, locate.Region},
+		{locate.Region, locate.Locality},
+		{locate.Locality, locate.Macrohood},
+		{locate.Macrohood, locate.Neighbourhood},
+		{locate.Neighbourhood, locate.Street},
+	} {
+		if locate.DefaultMaxDistanceM[pair[0]] <= locate.DefaultMaxDistanceM[pair[1]] {
+			t.Errorf("the %s cap is not wider than the %s cap", pair[0], pair[1])
+		}
+	}
+}
+
+// placesWithRaw builds a source holding one tile with ordinary places plus a
+// feature spelled out by hand, for the cases the place struct cannot express --
+// a tag of the wrong TYPE, which is a thing the schema should never contain
+// and which this package has to survive anyway.
+//
+// The raw feature is placed at the query coordinate, so it is the nearest
+// candidate and a version that accepted it would demonstrably win.
+func placesWithRaw(t *testing.T, zoom uint8, lat, lon float64, raw osmbasetest.FeatureSpec, ps ...place) tiles {
+	t.Helper()
+	x, y, err := mercator.TileAt(zoom, lon, lat)
+	if err != nil {
+		t.Fatalf("TileAt: %v", err)
+	}
+	tr, err := mercator.NewTileTransform(zoom, x, y, mvt.DefaultExtent)
+	if err != nil {
+		t.Fatalf("NewTileTransform: %v", err)
+	}
+	rx, ry := tileXY(t, tr, lon, lat)
+	raw.Geometry = mvt.Geometry{Points: []mvt.Point{{X: rx, Y: ry}}}
+
+	feats := []osmbasetest.FeatureSpec{raw}
+	for _, p := range ps {
+		px, py := tileXY(t, tr, p.lon, p.lat)
+		tags := []osmbasetest.Tag{
+			{Key: "name", Value: mvt.StringValue(p.name)},
+			{Key: "kind", Value: mvt.StringValue(p.kind)},
+		}
+		if p.detail != "" {
+			tags = append(tags, osmbasetest.Tag{Key: "kind_detail", Value: mvt.StringValue(p.detail)})
+		}
+		feats = append(feats, osmbasetest.FeatureSpec{
+			Type: mvt.GeomPoint, Tags: tags,
+			Geometry: mvt.Geometry{Points: []mvt.Point{{X: px, Y: py}}},
+		})
+	}
+	data, err := osmbasetest.BuildTile(osmbasetest.TileSpec{
+		Layers: []osmbasetest.LayerSpec{{Name: "places", Features: feats}},
+	})
+	if err != nil {
+		t.Fatalf("BuildTile: %v", err)
+	}
+	return tiles{{uint32(zoom), x, y}: data}
+}

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	osmlocate "github.com/wisborg/osmbase/locate"
+	"github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
 )
 
@@ -134,17 +135,41 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+
+	// The credit travels with the answer, for the same reason the render
+	// command draws it into the picture rather than printing it beside one:
+	// these names are OpenStreetMap's, a returned place name is a Produced
+	// Work under the ODbL, and the obligation attaches to the thing that gets
+	// sent to somebody else. A JSON document pasted into a report carries
+	// whatever is inside it and nothing that was on the terminal around it.
+	//
+	// Read from the manifest, never written down here -- see the same argument
+	// in the render command. A store refilled from a different archive must
+	// change this line without anybody remembering to.
+	credit := render.PlainCredit(chosen.Attribution)
+
 	if format == "json" {
-		return writeLocateJSON(stdout, places)
+		return writeLocateJSON(stdout, places, credit)
 	}
-	writeLocateText(stdout, places)
+	writeLocateText(stdout, places, credit)
 	return nil
 }
 
-func writeLocateJSON(w io.Writer, places []osmlocate.Place) error {
+// locateReport is what --format json writes.
+//
+// An object wrapping the array rather than the bare array it used to be,
+// because the credit has to be IN the document. A JSON array of places says
+// nothing about whose data named them, and the one place that can carry the
+// obligation is the document itself.
+type locateReport struct {
+	Credit string            `json:"credit,omitempty"`
+	Places []osmlocate.Place `json:"places"`
+}
+
+func writeLocateJSON(w io.Writer, places []osmlocate.Place, credit string) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(places); err != nil {
+	if err := enc.Encode(locateReport{Credit: credit, Places: places}); err != nil {
 		return fmt.Errorf("writing the answer: %w", err)
 	}
 	return nil
@@ -156,7 +181,7 @@ func writeLocateJSON(w io.Writer, places []osmlocate.Place) error {
 // the two together are the whole honesty of this command: there is no level at
 // which the tiles can say a point is INSIDE anything, and a reader who sees
 // "Horsens" with no qualification will believe the point was in Horsens.
-func writeLocateText(w io.Writer, places []osmlocate.Place) {
+func writeLocateText(w io.Writer, places []osmlocate.Place, credit string) {
 	for i, p := range places {
 		if i > 0 {
 			fmt.Fprintln(w)
@@ -174,6 +199,9 @@ func writeLocateText(w io.Writer, places []osmlocate.Place) {
 			fmt.Fprintf(w, "  %-14s %s %s (%s)\n", m.Level, m.Source, m.Name, kind)
 			fmt.Fprintf(w, "  %-14s %s away\n", "", humanDistance(m.DistanceM))
 		}
+	}
+	if credit != "" {
+		fmt.Fprintf(w, "\n%s\n", credit)
 	}
 }
 

@@ -12,6 +12,13 @@ import (
 const earthCircumferenceM = 40_075_016.686
 
 // earthRadiusM is the mean radius, for the great-circle distance below.
+//
+// Two Earth models in one file on purpose, and not an inconsistency to tidy
+// away. The equatorial circumference above is the width of the Web Mercator
+// square, which is a fact about the PROJECTION and would be wrong as anything
+// else; the mean radius here is what a great-circle distance is defined
+// against. Replacing either with the other would make one of the two
+// calculations quietly wrong.
 const earthRadiusM = 6_371_008.8
 
 // textTag reads a string attribute, reporting whether it was there AND was a
@@ -21,7 +28,10 @@ const earthRadiusM = 6_371_008.8
 // schema encoding a name as a number is a schema this was not written for, and
 // papering over it would produce labels like "42".
 func textTag(f *mvt.Feature, key string) (string, bool) {
-	v, ok := f.Tags[key]
+	// Through the accessor mvt documents rather than the map directly: Tags'
+	// own doc comment says to ask with the two-result form, and a second
+	// spelling of the same lookup is a second thing to keep in step.
+	v, ok := f.Tag(key)
 	if !ok {
 		return "", false
 	}
