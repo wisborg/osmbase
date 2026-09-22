@@ -313,6 +313,15 @@ func decodeLayer(data []byte) (Layer, error) {
 	return layer, nil
 }
 
+// maxFeatureValues bounds a feature's tag and geometry runs.
+//
+// A vector tile is already bounded by the bytes it occupies, so this is not
+// the memory guard it is on the OSM side -- it is the same bound stated where
+// the reader can act on it, before the run is decoded rather than after. The
+// number is far above any real feature: a tile carrying a coastline runs to
+// tens of thousands of geometry integers, not millions.
+const maxFeatureValues = 1 << 22
+
 func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (Feature, error) {
 	var (
 		f       Feature
@@ -334,7 +343,7 @@ func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (F
 			}
 			f.ID, f.HasID = v, true
 		case field == featureTags:
-			tags, err = r.PackedUint32(tags, "the tags", wire)
+			tags, err = r.PackedUint32(tags, "the tags", wire, maxFeatureValues)
 			if err != nil {
 				return Feature{}, err
 			}
@@ -348,7 +357,7 @@ func decodeFeature(data []byte, keys []string, values []Value, extent uint32) (F
 			}
 			f.Type, sawType = GeomType(v), true
 		case field == featureGeometry:
-			geom, err = r.PackedUint32(geom, "the geometry", wire)
+			geom, err = r.PackedUint32(geom, "the geometry", wire, maxFeatureValues)
 			if err != nil {
 				return Feature{}, err
 			}

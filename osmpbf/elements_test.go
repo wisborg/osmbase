@@ -1,6 +1,7 @@
 package osmpbf
 
 import (
+	"encoding/binary"
 	"errors"
 	"slices"
 	"strings"
@@ -272,16 +273,41 @@ func TestRelationMembersCarryRoleAndType(t *testing.T) {
 	}
 }
 
+// Every direction of the disagreement, because the check is two comparisons
+// and one of them can be dropped with the other still catching the case
+// above it. A relation with fewer ROLES than members is the one that bites:
+// the member loop indexes the role run by the member's position, so a check
+// that only compared the types would read past the end of it.
 func TestRelationRunsOfDifferentLengthsAreRefused(t *testing.T) {
-	data := pbVarint(1, 7)
-	data = append(data, packedInt(8, 1, 1)...)      // two roles
-	data = append(data, packedSint(9, 100, 101)...) // two ids
-	data = append(data, packedInt(10, 1)...)        // one type
-	b := blockWith(t, []string{"", "outer"}, pbBytes(4, data))
+	const sOuter = 1
+	for _, tc := range []struct {
+		name   string
+		roles  []int32
+		memids []int64
+		types  []int32
+	}{
+		{"fewer roles", []int32{sOuter}, []int64{100, 101}, []int32{1, 1}},
+		{"more roles", []int32{sOuter, sOuter, sOuter}, []int64{100, 101}, []int32{1, 1}},
+		{"fewer types", []int32{sOuter, sOuter}, []int64{100, 101}, []int32{1}},
+		{"more types", []int32{sOuter, sOuter}, []int64{100, 101}, []int32{1, 1, 1}},
+		{"fewer member ids", []int32{sOuter, sOuter}, []int64{100}, []int32{1, 1}},
+		{"roles and types but no ids at all", []int32{sOuter}, nil, []int32{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := pbVarint(1, 7)
+			data = append(data, packedInt(8, tc.roles...)...)
+			data = append(data, packedSint(9, tc.memids...)...)
+			data = append(data, packedInt(10, tc.types...)...)
+			b := blockWith(t, []string{"", "outer"}, pbBytes(4, data))
 
-	err := b.EachRelation(func(Relation) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "must agree") {
-		t.Fatalf("EachRelation: %v, want a refusal; a member would take its type from another member", err)
+			err := b.EachRelation(func(Relation) error { return nil })
+			if err == nil {
+				t.Fatal("runs of different lengths were accepted; a member would take its role or type from another member")
+			}
+			if !strings.Contains(err.Error(), "must agree") {
+				t.Errorf("EachRelation: %v, want an error saying the runs disagree", err)
+			}
+		})
 	}
 }
 
@@ -468,17 +494,36 @@ func TestTagKeysAndValuesOfDifferentLengthsAreRefused(t *testing.T) {
 		{"more values than keys", []int32{1}, []int32{2, 4}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			data := pbVarint(1, 1)
-			data = append(data, packedInt(2, tc.keys...)...)
-			data = append(data, packedInt(3, tc.vals...)...)
-			b := blockWith(t, []string{"", "a", "b", "c", "d"}, pbBytes(3, data))
+			// All three element kinds that carry two parallel lists, because
+			// each builds them through a reset of its own and only reaches
+			// the shared check afterwards.
+			for _, kind := range []struct {
+				name  string
+				field int
+				body  []byte
+				walk  func(*PrimitiveBlock) error
+			}{
+				{"a way", 3, pbVarint(1, 1),
+					func(b *PrimitiveBlock) error { return b.EachWay(func(Way) error { return nil }) }},
+				{"a plain node", 1, append(pbTag(1, protobufWireVarint), binary.AppendUvarint(nil, zigzag(1))...),
+					func(b *PrimitiveBlock) error { return b.EachNode(func(Node) error { return nil }) }},
+				{"a relation", 4, append(pbVarint(1, 1), append(append(packedInt(8, 1), packedSint(9, 5)...), packedInt(10, 1)...)...),
+					func(b *PrimitiveBlock) error { return b.EachRelation(func(Relation) error { return nil }) }},
+			} {
+				t.Run(kind.name, func(t *testing.T) {
+					data := append([]byte(nil), kind.body...)
+					data = append(data, packedInt(2, tc.keys...)...)
+					data = append(data, packedInt(3, tc.vals...)...)
+					b := blockWith(t, []string{"", "a", "b", "c", "d"}, pbBytes(kind.field, data))
 
-			err := b.EachWay(func(Way) error { return nil })
-			if err == nil {
-				t.Fatal("mismatched key and value runs were accepted")
-			}
-			if !strings.Contains(err.Error(), "must agree") {
-				t.Errorf("EachWay: %v, want an error saying the runs disagree", err)
+					err := kind.walk(b)
+					if err == nil {
+						t.Fatal("mismatched key and value runs were accepted")
+					}
+					if !strings.Contains(err.Error(), "must agree") {
+						t.Errorf("%v, want an error saying the runs disagree", err)
+					}
+				})
 			}
 		})
 	}
@@ -515,5 +560,73 @@ func TestReferencesAreAbsoluteNotDeltas(t *testing.T) {
 	// fails on the second rather than passing by coincidence.
 	if !slices.Equal(got, refs) {
 		t.Errorf("refs = %v, want %v; these look like ids either way, which is the point", got, refs)
+	}
+}
+
+// A struct copy of Tags is not a copy: the index slices point into buffers
+// the next element overwrites, so two Tags kept from two elements end up
+// viewing the same data and the earlier one silently acquires the later
+// one's tags. Clone is the copy, and this is why it has to exist.
+func TestTagsMustBeClonedToOutliveTheCallback(t *testing.T) {
+	b := blockWith(t, []string{"", "name", "Alpha", "Beta"},
+		denseNodes([]int64{1, 2}, []int64{0, 0}, []int64{0, 0},
+			tagRun([][]int32{{1, 2}, {1, 3}})))
+
+	var shallow, cloned []Tags
+	var duringPass []string
+	err := b.EachNode(func(n Node) error {
+		v, _ := n.Tags.Get("name")
+		duringPass = append(duringPass, v)
+		shallow = append(shallow, n.Tags)
+		cloned = append(cloned, n.Tags.Clone())
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("EachNode: %v", err)
+	}
+
+	if len(duringPass) != 2 || duringPass[0] != "Alpha" || duringPass[1] != "Beta" {
+		t.Fatalf("during the pass the nodes reported %v, want Alpha then Beta", duringPass)
+	}
+	for i, want := range []string{"Alpha", "Beta"} {
+		if got, _ := cloned[i].Get("name"); got != want {
+			t.Errorf("the cloned tags of node %d give %q, want %q", i, got, want)
+		}
+	}
+	// The shallow copies are expected to have gone wrong. Asserted, rather
+	// than left implicit, because if they ever stop aliasing then Clone is
+	// no longer load-bearing and this whole contract can be simplified.
+	if got, _ := shallow[0].Get("name"); got == "Alpha" {
+		t.Skip("a struct copy of Tags no longer aliases; Clone and its documentation can go")
+	}
+}
+
+func TestCloningTheZeroTagsIsSafe(t *testing.T) {
+	var zero Tags
+	c := zero.Clone()
+	if c.Len() != 0 {
+		t.Errorf("the zero Tags cloned to %d pairs", c.Len())
+	}
+	if _, ok := c.Get("name"); ok {
+		t.Error("the zero Tags reported a tag")
+	}
+}
+
+// ErrStop is the common spelling of "end this pass", and it must come back
+// from Each* unchanged so a caller can tell it from a decoding failure.
+func TestErrStopEndsAPassAndComesBackRecognisable(t *testing.T) {
+	b := blockWith(t, []string{""},
+		denseNodes([]int64{1, 2, 3}, []int64{0, 0, 0}, []int64{0, 0, 0}, nil))
+
+	var seen int
+	err := b.EachNode(func(Node) error {
+		seen++
+		return ErrStop
+	})
+	if !errors.Is(err, ErrStop) {
+		t.Errorf("EachNode returned %v, want ErrStop", err)
+	}
+	if seen != 1 {
+		t.Errorf("the callback ran %d times, want 1", seen)
 	}
 }

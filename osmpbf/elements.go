@@ -2,7 +2,9 @@ package osmpbf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/wisborg/osmbase/internal/protobuf"
 )
@@ -17,9 +19,37 @@ import (
 // file that exceeds them was not produced by editing the map.
 const (
 	MaxWayRefs         = 1 << 17
-	MaxRelationMembers = 1 << 20
-	MaxDenseNodes      = 1 << 21
+	MaxRelationMembers = 1 << 18
+	MaxDenseNodes      = 1 << 18
 	MaxTags            = 1 << 16
+
+	// MaxDenseTagEntries bounds the flat keys_vals run, which holds two
+	// entries per tag plus a terminator per node. Generous enough for a full
+	// dense run carrying a couple of tags each, and it is a bound on the run
+	// as a whole -- the per-element MaxTags still applies inside it.
+	MaxDenseTagEntries = 1 << 20
+)
+
+// ErrStop is the error a callback returns to end a pass early without it
+// being a failure.
+//
+// Defined here rather than left to each caller because the three passes over
+// an extract all want it, and three private sentinels would be three
+// spellings of one rule -- each with its own errors.Is at the call site. Each*
+// returns a callback's error unchanged, so a caller may use its own instead;
+// this exists so that the common case has one name.
+var ErrStop = errors.New("osmpbf: stop")
+
+// The coordinate system's extent, in nanodegrees. A node outside it is not
+// on Earth, and the format has no way to mean one.
+//
+// Checked rather than tolerated because the scaled coordinate is multiplied
+// by the block's granularity in int64, where Go wraps silently: an
+// unconstrained coordinate does not fail, it produces a confident position
+// somewhere else entirely. Bounding the input is what makes Degrees total.
+const (
+	maxLatUnits = 90_000_000_000
+	maxLonUnits = 180_000_000_000
 )
 
 // MemberType says what kind of element a relation member refers to.
@@ -55,6 +85,29 @@ func (t MemberType) String() string {
 type Tags struct {
 	block      *PrimitiveBlock
 	keys, vals []int32
+}
+
+// The indices are int32 although the schema types an element's keys and vals
+// as uint32, because a dense block's keys_vals is genuinely int32 and Tags
+// holds both. Nothing is lost: the string table is capped well inside 31
+// bits, so a value that would not fit is one the table could not hold
+// anyway, and a negative index resolves to the empty string through the same
+// guard as an out-of-range one.
+
+// Clone returns a copy that outlives the callback it came from.
+//
+// Necessary because a plain struct copy is not one: the index slices point
+// into buffers the next element overwrites, so two copies of a Tags taken
+// from two elements end up viewing the same data, and the earlier one
+// silently acquires the later one's tags. That is a name landing on the wrong
+// place, which is the failure this whole decoder is written against, arriving
+// from the caller's side. The string table is not copied -- it belongs to the
+// block, which outlives the pass.
+func (t Tags) Clone() Tags {
+	if t.block == nil {
+		return Tags{}
+	}
+	return Tags{block: t.block, keys: slices.Clone(t.keys), vals: slices.Clone(t.vals)}
 }
 
 // Len is the number of pairs.
@@ -127,7 +180,10 @@ type Node struct {
 
 // Way is one way: an ordered list of node ids, with its tags.
 //
-// Refs are absolute ids, with the file's delta encoding already undone.
+// Refs are absolute ids, with the file's delta encoding already undone. They
+// point into a buffer the next way overwrites: pass 2's whole job is to keep
+// them, so it must clone them. A slice field reads as ownership and this one
+// is not, which is why it is said here and not only on EachWay.
 type Way struct {
 	ID   int64
 	Refs []int64
@@ -135,6 +191,12 @@ type Way struct {
 }
 
 // Member is one entry in a relation.
+//
+// Role is resolved to a string rather than left as an index, unlike a tag.
+// The asymmetry is deliberate: a relation has one role per member where an
+// element has a handful of tags, the passes compare the role of every member
+// they keep, and Member is already a value the caller copies out. Tags exist
+// to answer a question and be discarded; members exist to be kept.
 type Member struct {
 	Type MemberType
 	ID   int64
@@ -160,9 +222,19 @@ type Relation struct {
 //
 // Stopping early is what returning an error from f is for; the error comes
 // back unchanged.
+// The callback must not call another Each method on the same block: they all
+// decode through one set of reused buffers, so re-entering clobbers the
+// element being walked. That is a tempting thing to write -- the ways a
+// relation names are often in the same block -- so it is worth saying rather
+// than leaving to be discovered.
 func (b *PrimitiveBlock) EachNode(f func(Node) error) error {
+	return b.each(func(g []byte) error { return b.nodesIn(g, f) })
+}
+
+// each walks every group in the block.
+func (b *PrimitiveBlock) each(walk func([]byte) error) error {
 	for _, g := range b.Groups {
-		if err := b.eachInGroup(g, 1, 2, f, nil, nil); err != nil {
+		if err := walk(g); err != nil {
 			return err
 		}
 	}
@@ -172,43 +244,52 @@ func (b *PrimitiveBlock) EachNode(f func(Node) error) error {
 // EachWay calls f for every way in the block. The same aliasing rules as
 // EachNode apply.
 func (b *PrimitiveBlock) EachWay(f func(Way) error) error {
-	for _, g := range b.Groups {
-		if err := b.eachInGroup(g, 3, 0, nil, f, nil); err != nil {
-			return err
-		}
-	}
-	return nil
+	return b.each(func(g []byte) error {
+		return b.elementsIn(g, 3, func(payload []byte) error { return b.decodeWay(payload, f) })
+	})
 }
 
 // EachRelation calls f for every relation in the block. The same aliasing
 // rules as EachNode apply.
 func (b *PrimitiveBlock) EachRelation(f func(Relation) error) error {
-	for _, g := range b.Groups {
-		if err := b.eachInGroup(g, 4, 0, nil, nil, f); err != nil {
-			return err
-		}
-	}
-	return nil
+	return b.each(func(g []byte) error {
+		return b.elementsIn(g, 4, func(payload []byte) error { return b.decodeRelation(payload, f) })
+	})
 }
 
-// eachInGroup walks one PrimitiveGroup, decoding only the field the caller
-// asked for and skipping the rest.
+// nodesIn walks a group's nodes, which arrive in either of two encodings.
+func (b *PrimitiveBlock) nodesIn(group []byte, f func(Node) error) error {
+	return b.fieldsIn(group, func(field int, payload []byte) error {
+		switch field {
+		case 1:
+			return b.decodePlainNode(payload, f)
+		case 2:
+			return b.eachDenseNode(payload, f)
+		}
+		return nil
+	}, 1, 2)
+}
+
+// elementsIn walks a group's elements of one field number.
+func (b *PrimitiveBlock) elementsIn(group []byte, want int, decode func([]byte) error) error {
+	return b.fieldsIn(group, func(_ int, payload []byte) error { return decode(payload) }, want)
+}
+
+// fieldsIn walks a PrimitiveGroup, handing decode the payload of every field
+// the caller named and skipping the rest.
 //
 // Skipping rather than decoding everything is the point: the boundary
 // pipeline reads the file three times and wants a different element kind each
 // time, so decoding all of them on every pass would do three times the work
 // to discard most of it.
-func (b *PrimitiveBlock) eachInGroup(
-	group []byte, want, dense int,
-	onNode func(Node) error, onWay func(Way) error, onRelation func(Relation) error,
-) error {
+func (b *PrimitiveBlock) fieldsIn(group []byte, decode func(field int, payload []byte) error, want ...int) error {
 	r := protobuf.New(group, "osmpbf", "a primitive group")
 	for !r.Done() {
 		field, wire, err := r.Tag()
 		if err != nil {
 			return err
 		}
-		if wire != protobuf.WireBytes || (field != want && field != dense) {
+		if wire != protobuf.WireBytes || !slices.Contains(want, field) {
 			if err := r.Skip(field, wire); err != nil {
 				return err
 			}
@@ -218,17 +299,7 @@ func (b *PrimitiveBlock) eachInGroup(
 		if err != nil {
 			return err
 		}
-		switch field {
-		case dense:
-			err = b.eachDenseNode(payload, onNode)
-		case 1:
-			err = b.eachPlainNode(payload, onNode)
-		case 3:
-			err = b.decodeWay(payload, onWay)
-		case 4:
-			err = b.decodeRelation(payload, onRelation)
-		}
-		if err != nil {
+		if err := decode(field, payload); err != nil {
 			return err
 		}
 	}
@@ -245,9 +316,6 @@ func (b *PrimitiveBlock) eachInGroup(
 // are all of the silent kind -- a delta accumulated into the wrong variable,
 // a tag run that drifts one node out of step.
 func (b *PrimitiveBlock) eachDenseNode(data []byte, f func(Node) error) error {
-	if f == nil {
-		return nil
-	}
 	s := &b.scratch
 	s.ids, s.lats, s.lons, s.keysVals = s.ids[:0], s.lats[:0], s.lons[:0], s.keysVals[:0]
 
@@ -259,21 +327,18 @@ func (b *PrimitiveBlock) eachDenseNode(data []byte, f func(Node) error) error {
 		}
 		switch field {
 		case 1: // id, delta coded
-			s.ids, err = r.PackedSint64(s.ids, "the node ids", wire)
+			s.ids, err = r.PackedSint64(s.ids, "the node ids", wire, MaxDenseNodes)
 		case 8: // lat, delta coded
-			s.lats, err = r.PackedSint64(s.lats, "the latitudes", wire)
+			s.lats, err = r.PackedSint64(s.lats, "the latitudes", wire, MaxDenseNodes)
 		case 9: // lon, delta coded
-			s.lons, err = r.PackedSint64(s.lons, "the longitudes", wire)
+			s.lons, err = r.PackedSint64(s.lons, "the longitudes", wire, MaxDenseNodes)
 		case 10: // keys_vals, a flat run with zero terminators
-			s.keysVals, err = r.PackedInt32(s.keysVals, "the tags", wire)
+			s.keysVals, err = r.PackedInt32(s.keysVals, "the tags", wire, MaxDenseTagEntries)
 		default:
 			err = r.Skip(field, wire)
 		}
 		if err != nil {
 			return err
-		}
-		if len(s.ids) > MaxDenseNodes {
-			return fmt.Errorf("osmpbf: a dense run holds more than %d nodes", MaxDenseNodes)
 		}
 	}
 
@@ -285,14 +350,19 @@ func (b *PrimitiveBlock) eachDenseNode(data []byte, f func(Node) error) error {
 			len(s.ids), len(s.lats), len(s.lons))
 	}
 
-	var id, lat, lon int64
+	// One spelling of the delta rule, rather than three accumulators advanced
+	// together in the loop below -- which is exactly where "a delta
+	// accumulated into the wrong variable" happens.
+	undelta(s.ids)
+	undelta(s.lats)
+	undelta(s.lons)
+
 	var kv int
 	for i := range s.ids {
-		id += s.ids[i]
-		lat += s.lats[i]
-		lon += s.lons[i]
-
-		node := Node{ID: id, Lat: lat, Lon: lon}
+		if err := b.onEarth(s.lats[i], s.lons[i]); err != nil {
+			return err
+		}
+		node := Node{ID: s.ids[i], Lat: s.lats[i], Lon: s.lons[i]}
 		if len(s.keysVals) > 0 {
 			var err error
 			if node.Tags, kv, err = b.denseTags(kv); err != nil {
@@ -302,6 +372,33 @@ func (b *PrimitiveBlock) eachDenseNode(data []byte, f func(Node) error) error {
 		if err := f(node); err != nil {
 			return err
 		}
+	}
+
+	// Entries left over mean the tag column was longer than the id column,
+	// which is the same "the rows do not line up" evidence the three
+	// coordinate runs are checked for -- and the shape a producer drifting
+	// one node out of step also leaves behind.
+	if kv != len(s.keysVals) {
+		return fmt.Errorf("osmpbf: a dense run has %d tag entries left over after its %d nodes",
+			len(s.keysVals)-kv, len(s.ids))
+	}
+	return nil
+}
+
+// onEarth refuses a coordinate the format cannot mean.
+//
+// The bound is on the value AFTER the block's granularity is applied, which
+// is why it is a method: a coordinate is in units of a nanodegree scaled by
+// the granularity, so what counts as 90 degrees depends on the block. The
+// multiply happens in int64, where Go wraps silently, so an unbounded
+// coordinate does not fail -- it produces a confident position somewhere
+// else. Dividing the limit by the granularity rather than multiplying the
+// coordinate is what keeps this check itself from overflowing.
+func (b *PrimitiveBlock) onEarth(lat, lon int64) error {
+	g := int64(b.Granularity)
+	if lat < -maxLatUnits/g || lat > maxLatUnits/g || lon < -maxLonUnits/g || lon > maxLonUnits/g {
+		return fmt.Errorf("osmpbf: a node is at %d,%d in units of %d nanodegrees, which is off the Earth",
+			lat, lon, g)
 	}
 	return nil
 }
@@ -342,10 +439,7 @@ func (b *PrimitiveBlock) denseTags(at int) (Tags, int, error) {
 // extracts use only for nodes a dense run cannot hold. Decoded anyway,
 // because the format permits it and a file that used it would otherwise come
 // back with those nodes silently missing.
-func (b *PrimitiveBlock) eachPlainNode(data []byte, f func(Node) error) error {
-	if f == nil {
-		return nil
-	}
+func (b *PrimitiveBlock) decodePlainNode(data []byte, f func(Node) error) error {
 	s := &b.scratch
 	s.keys, s.vals = s.keys[:0], s.vals[:0]
 
@@ -360,9 +454,9 @@ func (b *PrimitiveBlock) eachPlainNode(data []byte, f func(Node) error) error {
 		case 1: // id
 			node.ID, err = r.Sint64("a node id")
 		case 2: // keys
-			s.keys, err = r.PackedInt32(s.keys, "the tag keys", wire)
+			s.keys, err = r.PackedInt32(s.keys, "the tag keys", wire, MaxTags)
 		case 3: // vals
-			s.vals, err = r.PackedInt32(s.vals, "the tag values", wire)
+			s.vals, err = r.PackedInt32(s.vals, "the tag values", wire, MaxTags)
 		case 8: // lat
 			node.Lat, err = r.Sint64("a latitude")
 		case 9: // lon
@@ -374,6 +468,9 @@ func (b *PrimitiveBlock) eachPlainNode(data []byte, f func(Node) error) error {
 			return err
 		}
 	}
+	if err := b.onEarth(node.Lat, node.Lon); err != nil {
+		return err
+	}
 	tags, err := b.pairedTags()
 	if err != nil {
 		return err
@@ -384,9 +481,6 @@ func (b *PrimitiveBlock) eachPlainNode(data []byte, f func(Node) error) error {
 
 // decodeWay decodes a Way message.
 func (b *PrimitiveBlock) decodeWay(data []byte, f func(Way) error) error {
-	if f == nil {
-		return nil
-	}
 	s := &b.scratch
 	s.keys, s.vals, s.refs = s.keys[:0], s.vals[:0], s.refs[:0]
 
@@ -401,14 +495,11 @@ func (b *PrimitiveBlock) decodeWay(data []byte, f func(Way) error) error {
 		case 1: // id, NOT zigzag -- a way's id is a plain int64
 			way.ID, err = r.Int64("a way id")
 		case 2:
-			s.keys, err = r.PackedInt32(s.keys, "the tag keys", wire)
+			s.keys, err = r.PackedInt32(s.keys, "the tag keys", wire, MaxTags)
 		case 3:
-			s.vals, err = r.PackedInt32(s.vals, "the tag values", wire)
+			s.vals, err = r.PackedInt32(s.vals, "the tag values", wire, MaxTags)
 		case 8: // refs, delta coded
-			s.refs, err = r.PackedSint64(s.refs, "the node references", wire)
-			if err == nil && len(s.refs) > MaxWayRefs {
-				err = fmt.Errorf("osmpbf: a way holds more than %d node references", MaxWayRefs)
-			}
+			s.refs, err = r.PackedSint64(s.refs, "the node references", wire, MaxWayRefs)
 		default:
 			err = r.Skip(field, wire)
 		}
@@ -429,9 +520,6 @@ func (b *PrimitiveBlock) decodeWay(data []byte, f func(Way) error) error {
 
 // decodeRelation decodes a Relation message.
 func (b *PrimitiveBlock) decodeRelation(data []byte, f func(Relation) error) error {
-	if f == nil {
-		return nil
-	}
 	s := &b.scratch
 	s.keys, s.vals = s.keys[:0], s.vals[:0]
 	s.roles, s.types, s.refs, s.members = s.roles[:0], s.types[:0], s.refs[:0], s.members[:0]
@@ -447,23 +535,20 @@ func (b *PrimitiveBlock) decodeRelation(data []byte, f func(Relation) error) err
 		case 1: // id, a plain int64
 			rel.ID, err = r.Int64("a relation id")
 		case 2:
-			s.keys, err = r.PackedInt32(s.keys, "the tag keys", wire)
+			s.keys, err = r.PackedInt32(s.keys, "the tag keys", wire, MaxTags)
 		case 3:
-			s.vals, err = r.PackedInt32(s.vals, "the tag values", wire)
+			s.vals, err = r.PackedInt32(s.vals, "the tag values", wire, MaxTags)
 		case 8: // roles_sid
-			s.roles, err = r.PackedInt32(s.roles, "the member roles", wire)
+			s.roles, err = r.PackedInt32(s.roles, "the member roles", wire, MaxRelationMembers)
 		case 9: // memids, delta coded
-			s.refs, err = r.PackedSint64(s.refs, "the member ids", wire)
+			s.refs, err = r.PackedSint64(s.refs, "the member ids", wire, MaxRelationMembers)
 		case 10: // types
-			s.types, err = r.PackedInt32(s.types, "the member types", wire)
+			s.types, err = r.PackedInt32(s.types, "the member types", wire, MaxRelationMembers)
 		default:
 			err = r.Skip(field, wire)
 		}
 		if err != nil {
 			return err
-		}
-		if len(s.refs) > MaxRelationMembers {
-			return fmt.Errorf("osmpbf: a relation holds more than %d members", MaxRelationMembers)
 		}
 	}
 

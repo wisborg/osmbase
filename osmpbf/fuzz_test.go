@@ -77,13 +77,13 @@ func FuzzReader(f *testing.F) {
 			// expected and fine; a panic or a runaway is not.
 			_ = pb.EachNode(func(n Node) error {
 				pb.Degrees(n.Lat, n.Lon)
-				return tagsAreConsistent(t, n.Tags)
+				return tagsAreConsistent(t, &pb, n.Tags)
 			})
 			_ = pb.EachWay(func(w Way) error {
 				if len(w.Refs) > MaxWayRefs {
 					t.Fatalf("a way came back with %d references, past the %d cap", len(w.Refs), MaxWayRefs)
 				}
-				return tagsAreConsistent(t, w.Tags)
+				return tagsAreConsistent(t, &pb, w.Tags)
 			})
 			_ = pb.EachRelation(func(r Relation) error {
 				for _, m := range r.Members {
@@ -91,7 +91,7 @@ func FuzzReader(f *testing.F) {
 						t.Fatalf("a member came back with type %d", int(m.Type))
 					}
 				}
-				return tagsAreConsistent(t, r.Tags)
+				return tagsAreConsistent(t, &pb, r.Tags)
 			})
 
 			lat, lon := pb.Degrees(1<<40, -(1 << 40))
@@ -103,16 +103,36 @@ func FuzzReader(f *testing.F) {
 	})
 }
 
-// tagsAreConsistent checks what Tags must hold whatever the file said: a pair
-// count within the cap, and every key resolvable and findable again.
-func tagsAreConsistent(t *testing.T, tags Tags) error {
+// tagsAreConsistent checks what Tags must hold whatever the file said.
+//
+// Not "At gives a key that Has finds": both resolve through the same index
+// and the same BytesAt, so that can never fail for any input. What can fail
+// is the relationship between Tags and the block it points into -- a pair
+// count past the cap, or an index that resolved to a string the table does
+// not hold.
+func tagsAreConsistent(t *testing.T, b *PrimitiveBlock, tags Tags) error {
 	if tags.Len() > MaxTags {
 		t.Fatalf("an element came back with %d tags, past the %d cap", tags.Len(), MaxTags)
 	}
-	for i := 0; i < tags.Len(); i++ {
-		if k, _ := tags.At(i); k != "" && !tags.Has(k) {
-			t.Fatalf("tag %d has key %q, which Has does not find", i, k)
+	for i := 0; i < tags.Len() && i < 64; i++ {
+		k, v := tags.At(i)
+		if !inTable(b, k) || !inTable(b, v) {
+			t.Fatalf("tag %d resolved to %q=%q, which the string table does not hold", i, k, v)
 		}
 	}
 	return nil
+}
+
+// inTable reports whether s is the empty string -- which every out-of-range
+// index resolves to -- or an entry the block actually carries.
+func inTable(b *PrimitiveBlock, s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, e := range b.Strings {
+		if string(e) == s {
+			return true
+		}
+	}
+	return false
 }

@@ -196,8 +196,25 @@ func (r *Reader) Sint64(field string) (int64, error) {
 // on methods, and one generic rather than a loop per width because the loop
 // is the part that is easy to get subtly wrong -- the packed case has to
 // consume the whole payload and stop exactly at its end.
-func Packed[T any](r *Reader, out []T, field string, wire int, decode func(uint64) (T, error)) ([]T, error) {
+//
+// max bounds how many values the caller will accept, and it is enforced
+// BEFORE each append rather than after the run. That distinction is the whole
+// point of the parameter. A packed varint costs as little as one byte on the
+// wire and becomes eight in memory, so a caller that read the whole run and
+// then complained about its length would already have spent the memory it was
+// refusing -- a file of a few kilobytes turning into most of a gigabyte.
+//
+// The check is per value rather than a guess from the payload's length.
+// len(payload) does bound the count, since every varint is at least one byte,
+// and refusing on it would stop an oversized run without decoding any of it
+// -- but it would also refuse a legitimate run whose values are wide, where
+// the byte count exceeds the cap and the value count does not. Stopping at
+// the cap costs a bounded amount of decoding and cannot be wrong.
+func Packed[T any](r *Reader, out []T, field string, wire, max int, decode func(uint64) (T, error)) ([]T, error) {
 	read := func(from *Reader) error {
+		if len(out) >= max {
+			return fmt.Errorf("%s: %s has more than %d values in %s", r.format, r.what, max, field)
+		}
 		v, err := from.Uvarint(field)
 		if err != nil {
 			return err
@@ -211,19 +228,26 @@ func Packed[T any](r *Reader, out []T, field string, wire int, decode func(uint6
 	}
 
 	if wire == WireVarint {
-		return out, read(r)
+		// Spelled out rather than "return out, read(r)": read appends to the
+		// captured out, and the Go specification does not fix the order of a
+		// plain operand read against a call in the same return statement. On
+		// today's compiler the call happens first and it works; if it ever
+		// did not, every value on this path would be dropped silently, which
+		// is the failure this loop is written once to prevent.
+		err := read(r)
+		return out, err
 	}
 	if wire != WireBytes {
-		return nil, fmt.Errorf("%s: %s has %s with wire type %d, and it must be a packed or repeated varint", r.format, r.what, field, wire)
+		return out, fmt.Errorf("%s: %s has %s with wire type %d, and it must be a packed or repeated varint", r.format, r.what, field, wire)
 	}
 	payload, err := r.Bytes(field)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	inner := New(payload, r.format, r.what)
 	for !inner.Done() {
 		if err := read(inner); err != nil {
-			return nil, err
+			return out, err
 		}
 	}
 	return out, nil
@@ -232,16 +256,16 @@ func Packed[T any](r *Reader, out []T, field string, wire int, decode func(uint6
 // PackedUint32, PackedInt32 and PackedSint64 are Packed at the widths the two
 // formats use: vector tile tag indices, OSM tag and role indices, and OSM
 // deltas respectively.
-func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, error) {
-	return Packed(r, out, field, wire, toUint32)
+func (r *Reader) PackedUint32(out []uint32, field string, wire, max int) ([]uint32, error) {
+	return Packed(r, out, field, wire, max, toUint32)
 }
 
-func (r *Reader) PackedInt32(out []int32, field string, wire int) ([]int32, error) {
-	return Packed(r, out, field, wire, toInt32)
+func (r *Reader) PackedInt32(out []int32, field string, wire, max int) ([]int32, error) {
+	return Packed(r, out, field, wire, max, toInt32)
 }
 
-func (r *Reader) PackedSint64(out []int64, field string, wire int) ([]int64, error) {
-	return Packed(r, out, field, wire, toSint64)
+func (r *Reader) PackedSint64(out []int64, field string, wire, max int) ([]int64, error) {
+	return Packed(r, out, field, wire, max, toSint64)
 }
 
 func toUint32(v uint64) (uint32, error) {

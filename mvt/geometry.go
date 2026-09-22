@@ -2,9 +2,10 @@ package mvt
 
 import (
 	"fmt"
-	"github.com/wisborg/osmbase/internal/protobuf"
 	"math"
 	"math/bits"
+
+	"github.com/wisborg/osmbase/internal/protobuf"
 )
 
 // Geometry commands. A geometry is a flat list of uint32: a command integer

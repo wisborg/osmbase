@@ -2,6 +2,7 @@ package osmpbf
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/wisborg/osmbase/internal/protobuf"
 )
@@ -100,7 +101,7 @@ type scratch struct {
 // tag key or value, where a missing string means the tag does not match, and
 // an index out of range in a downloaded extract should not stop a pass over
 // several million elements.
-func (b PrimitiveBlock) StringAt(i int) string {
+func (b *PrimitiveBlock) StringAt(i int) string {
 	// Index 0 is "" by decree, not by hope. The format reserves it to mean
 	// "no string", but nothing stops a file from putting a real string there,
 	// and a caller resolving an unset tag key would then pick up whatever the
@@ -121,7 +122,7 @@ func (b PrimitiveBlock) StringAt(i int) string {
 //
 // The result points into a buffer the reader reuses, so compare it and move
 // on, or take StringAt's copy for one worth keeping.
-func (b PrimitiveBlock) BytesAt(i int) []byte {
+func (b *PrimitiveBlock) BytesAt(i int) []byte {
 	if i <= 0 || i >= len(b.Strings) {
 		return nil
 	}
@@ -135,7 +136,15 @@ func (b PrimitiveBlock) BytesAt(i int) []byte {
 // at the end rather than scaling each term keeps the arithmetic in int64
 // until the last step, where a float64 still holds nine decimal places of a
 // degree exactly.
-func (b PrimitiveBlock) Degrees(lat, lon int64) (float64, float64) {
+//
+// It is total for coordinates this package hands out, and only for those: the
+// element decoding refuses a node whose scaled position is off the Earth, and
+// DecodePrimitiveBlock bounds both the granularity and the origin, so the
+// multiply and the addition here cannot overflow. Called with an arbitrary
+// pair it will wrap like any other int64 arithmetic -- bounding the
+// granularity alone does not make it safe, which an earlier version of this
+// comment claimed.
+func (b *PrimitiveBlock) Degrees(lat, lon int64) (float64, float64) {
 	g := int64(b.Granularity)
 	return float64(b.LatOffset+g*lat) / 1e9, float64(b.LonOffset+g*lon) / 1e9
 }
@@ -177,25 +186,36 @@ func DecodePrimitiveBlock(data []byte) (PrimitiveBlock, error) {
 			if err != nil {
 				return PrimitiveBlock{}, err
 			}
+			// Bounded as a uint64 before it is narrowed, which is the rule
+			// the blob functions state twice and this one did not follow.
+			// int32(v) first turns a declared 4294967396 into 100: the block
+			// is then given a scale it did not ask for, silently, which is
+			// the very failure the check at the end of this function exists
+			// to prevent.
+			if v > MaxGranularity {
+				return PrimitiveBlock{}, fmt.Errorf(
+					"osmpbf: a primitive block declares a granularity of %d, and this reads at most %d",
+					v, MaxGranularity)
+			}
 			b.Granularity = int32(v)
 		case field == 18 && wire == protobuf.WireVarint: // date_granularity
 			v, err := r.Uvarint("a date granularity")
 			if err != nil {
 				return PrimitiveBlock{}, err
 			}
+			if v > math.MaxInt32 {
+				return PrimitiveBlock{}, fmt.Errorf(
+					"osmpbf: a primitive block declares a date granularity of %d, which does not fit in the field", v)
+			}
 			b.DateGranularity = int32(v)
 		case field == 19 && wire == protobuf.WireVarint: // lat_offset
-			v, err := r.Uvarint("a latitude offset")
-			if err != nil {
+			if b.LatOffset, err = offset(r, "a latitude offset"); err != nil {
 				return PrimitiveBlock{}, err
 			}
-			b.LatOffset = int64(v)
 		case field == 20 && wire == protobuf.WireVarint: // lon_offset
-			v, err := r.Uvarint("a longitude offset")
-			if err != nil {
+			if b.LonOffset, err = offset(r, "a longitude offset"); err != nil {
 				return PrimitiveBlock{}, err
 			}
-			b.LonOffset = int64(v)
 		default:
 			if err := r.Skip(field, wire); err != nil {
 				return PrimitiveBlock{}, err
@@ -213,6 +233,25 @@ func DecodePrimitiveBlock(data []byte) (PrimitiveBlock, error) {
 			"osmpbf: a primitive block declares a granularity of %d, and coordinates are scaled by it", b.Granularity)
 	}
 	return b, nil
+}
+
+// offset reads a block's coordinate origin, bounded to the coordinate system.
+//
+// A whole turn of the Earth either way, which is more slack than any real
+// file uses -- they almost all write zero. The bound is here so that the
+// origin plus a bounded coordinate cannot overflow the int64 the two are
+// added in, which would put the block somewhere else with no error.
+func offset(r *protobuf.Reader, what string) (int64, error) {
+	v, err := r.Uvarint(what)
+	if err != nil {
+		return 0, err
+	}
+	o := int64(v)
+	if o < -maxLonUnits || o > maxLonUnits {
+		return 0, fmt.Errorf("osmpbf: a primitive block declares %s of %d, past the %d nanodegrees the coordinate system has",
+			what, o, int64(maxLonUnits))
+	}
+	return o, nil
 }
 
 // decodeStringTable reads the repeated bytes of a StringTable.

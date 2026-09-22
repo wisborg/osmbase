@@ -280,45 +280,51 @@ Stage one is **built and merged**: country, region and water answered by contain
 Natural Earth, everything below by nearest-feature from the tiles, with `Place.Source` and
 `Match.DistanceM` saying which and how far.
 
-Stage two is **through part 2**. Parts 1 and 2 are committed on `read-pbf-blocks`:
-the protobuf reader is shared between the formats, and `osmpbf` reads the file framing,
-the blob decompression, the header's feature declarations and a primitive block's string
-table. Parts 3 to 8 are untouched.
+Stage two is **through part 3**. Parts 1 to 3 are committed on `decode-osm-elements`:
+the protobuf reader is shared between the formats and knows the signed encodings,
+`osmpbf` reads the file framing, blob decompression, header features and primitive
+blocks, and nodes, ways and relations come back as Go structs with their tags
+resolved. Parts 4 to 8 are untouched.
 
 To resume: read this file, then the "Place names" section of `architecture.md`, then start
-at part 3 of the table. The three reviews that shaped stage one are worth repeating per
-sub-part — on stage one they found a path traversal, an architectural violation, a
-concurrency crash and seven provably-deletable decisions; on part 2 they found a 90,000×
-memory amplification and a required-features check nobody owned. None of it was visible
-from the code reading correctly.
+at part 4 of the table. The three reviews are worth repeating per sub-part — on stage one
+they found a path traversal, an architectural violation, a concurrency crash and seven
+provably-deletable decisions; on part 2 a 90,000× memory amplification and a
+required-features check nobody owned; on part 3 the same amplification class one layer in,
+a granularity narrowed before it was bounded, and an aliasing trap with no way for a caller
+to escape it. None of it was visible from the code reading correctly.
 
-### Carried into part 3
+### The rule the reviews keep finding
 
-Three things the part 2 reviews raised that were deliberately not done there, because they
-are part 3's shape rather than part 2's:
+Three times now the same defect has appeared in a new place: **a limit that bounds what a
+decoder returns instead of what it allocates**. The string table in part 2, then every
+packed element run in part 3. The fix each time is the same — check the count *before* the
+append, in the loop doing the appending, not after the run — and it now lives in
+`protobuf.Packed`, which every repeated numeric field goes through.
 
-- **`internal/protobuf` has no signed accessors.** Part 3 is almost entirely signed: dense
-  node ids, latitudes and longitudes are zigzag `sint64` deltas, way refs and relation
-  `memids` are packed `sint64`, `keys_vals` and `roles_sid` are packed `int32`. The only
-  packed accessor today is `PackedUint32`, and its `> 0xffffffff` check is a vector tile
-  rule, not a general one. Add `Int32`/`Int64`/`Sint64` and the packed forms there rather
-  than hand-rolling a varint loop inside `osmpbf` — a second wire-format reader is exactly
-  what part 1 consolidated away. The signed-varint reasoning currently lives only in a test
-  comment; it belongs next to the code that does the conversion.
+Two things follow for part 4, which builds the first structure whose size is not bounded by
+one block:
 
-- **The decompression-bomb guard now exists in three places** — `pmtiles.decompress`,
-  `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and a near-identical
-  paragraph of reasoning in each. It has already diverged once: the two older copies take
-  the limit as a parameter and cannot mis-report it, and the newest derived it internally
-  and did, until part 2 fixed that. It is the only thing between this library and a zip bomb
-  from a third-party download, so it should be one function taking a decompressor
-  constructor, an optional reusable buffer and a package name. Not done in part 2 because it
-  touches two working packages and part 2's job was the reader.
+- The node-to-coordinate map is the obvious next instance. It is sized by the *file*, and
+  the memory analysis above assumes only boundary-referenced nodes are kept. Whatever
+  enforces that has to refuse before it allocates, not report afterwards.
+- A test that asserts an error came back does not test this. It passes before and after the
+  fix; `TestACraftedRunCannotAllocateInProportionToItself` measures the allocation instead,
+  and is the shape to copy.
 
-- **`DecodeHeader` is wired into `Reader.Next`, but nothing yet consumes `Reader.Header()`.**
-  The refusal runs on every file read, which is the part that matters. The optional features
-  — particularly the sort order — are worth reading in part 3, because a file sorted by type
-  then id allows the three passes to stop early rather than read to the end.
+### Carried into part 4
+
+- **The decompression-bomb guard is still in three places** — `pmtiles.decompress`,
+  `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and three copies
+  of the reasoning. Carried from part 3, where it was deferred again because it touches two
+  working packages. It has already diverged once. It should be one function taking a
+  decompressor constructor, an optional reusable buffer and a package name.
+- **The header's sort order is still unread.** `Header.OptionalFeatures` has no consumer,
+  and a file marked sorted type-then-id lets the three passes stop early rather than read to
+  the end. Part 4 is where that pays off.
+- **`Header` does not carry the bounding box.** Readable now that signed varints exist; it
+  would let a caller reject an extract that does not cover the area before reading an
+  element.
 
 One gap is knowingly left open: `unzlib` grows its buffer to the declared size only when one
 was declared, and that decision is invisible in the output, so no test pins it. A

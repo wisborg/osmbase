@@ -16,9 +16,12 @@ var supportedFeatures = []string{"OsmSchema-V0.6", "DenseNodes"}
 
 // Header is an OSMHeader block's feature declarations.
 //
-// The bounding box, writing program and replication fields are skipped: the
-// bounding box is a sint64 quadruple, and signed varints are part of the
-// element decoding that has not landed yet.
+// The bounding box, writing program and replication fields are skipped
+// because nothing asks for them yet, not because they cannot be read -- the
+// shared reader gained signed varints with the element decoding. The box is
+// the one worth adding when something wants it: it would let a caller reject
+// an extract that does not cover the area being asked about, before reading
+// a single element.
 type Header struct {
 	// RequiredFeatures names what a reader must implement to read the rest of
 	// the file correctly. The format is explicit that a reader encountering
