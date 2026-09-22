@@ -14,6 +14,33 @@ const (
 	DefaultDateGranularity = 1000
 )
 
+// Caps on how many entries a block may hold.
+//
+// Every other limit in this package bounds BYTES, and that is not enough on
+// its own: the cheapest string table entry on the wire is two bytes, so a
+// block of exactly MaxBlockBytes -- which passes every blob check there is --
+// can declare sixteen million of them, and the slice headers alone are then
+// hundreds of megabytes. zlib delivers those 32 MiB from about 32 KiB on
+// disk, so the amplification from the file as downloaded is five orders of
+// magnitude. Bounding the count is what closes that.
+//
+// The headroom is large. The format's own convention is at most 8000 elements
+// to a block and normally exactly one group, and a real string table runs to
+// tens of thousands of entries.
+const (
+	MaxStrings = 1 << 20
+	MaxGroups  = 1 << 16
+)
+
+// MaxGranularity is the largest coordinate scaling this accepts.
+//
+// Granularity is nanodegrees per unit, so 1e9 is one whole degree per unit and
+// anything above it describes a step larger than the coordinate system. The
+// bound is not pedantry: Degrees multiplies the granularity by a coordinate in
+// int64, and Go wraps silently, so an unbounded granularity turns a crafted
+// block into confident coordinates in the wrong ocean rather than an error.
+const MaxGranularity = 1_000_000_000
+
 // PrimitiveBlock is one OSMData block, decoded as far as its string table.
 //
 // The elements themselves are left as undecoded Groups. A boundary pipeline
@@ -41,8 +68,10 @@ type PrimitiveBlock struct {
 	DateGranularity int32
 }
 
-// String returns a copy of string table entry i, or "" for an index outside
+// StringAt returns a copy of string table entry i, or "" for an index outside
 // the table.
+//
+// Index 0 is the empty string by decree; see BytesAt.
 //
 // Index 0 is the empty string by convention -- the format uses 0 to mean "no
 // string" -- so a caller that resolves a key of 0 gets "" rather than an
@@ -52,11 +81,32 @@ type PrimitiveBlock struct {
 // tag key or value, where a missing string means the tag does not match, and
 // an index out of range in a downloaded extract should not stop a pass over
 // several million elements.
-func (b PrimitiveBlock) String(i int) string {
-	if i < 0 || i >= len(b.Strings) {
-		return ""
+func (b PrimitiveBlock) StringAt(i int) string {
+	// Index 0 is "" by decree, not by hope. The format reserves it to mean
+	// "no string", but nothing stops a file from putting a real string there,
+	// and a caller resolving an unset tag key would then pick up whatever the
+	// file chose. Returning "" here is what every caller resolving a tag
+	// wants, and it is what this comment used to claim without the code
+	// doing it.
+	return string(b.BytesAt(i))
+}
+
+// BytesAt is StringAt without the copy: the same guard, returning the entry as
+// it sits in the reader's buffer.
+//
+// It exists because the passes over an extract resolve a tag key or value for
+// every element in the file and discard almost all of them -- the question is
+// nearly always whether the string is "boundary" or "name", not what it says.
+// StringAt on that path would allocate a Go string per tag across millions of
+// elements; indexing Strings directly would answer it without the guard.
+//
+// The result points into a buffer the reader reuses, so compare it and move
+// on, or take StringAt's copy for one worth keeping.
+func (b PrimitiveBlock) BytesAt(i int) []byte {
+	if i <= 0 || i >= len(b.Strings) {
+		return nil
 	}
-	return string(b.Strings[i])
+	return b.Strings[i]
 }
 
 // Degrees converts a block-relative coordinate pair into degrees.
@@ -98,6 +148,10 @@ func DecodePrimitiveBlock(data []byte) (PrimitiveBlock, error) {
 			if err != nil {
 				return PrimitiveBlock{}, err
 			}
+			if len(b.Groups) >= MaxGroups {
+				return PrimitiveBlock{}, fmt.Errorf(
+					"osmpbf: a primitive block holds more than %d groups, and a real one holds about one", MaxGroups)
+			}
 			b.Groups = append(b.Groups, v)
 		case field == 17 && wire == protobuf.WireVarint: // granularity
 			v, err := r.Uvarint("a granularity")
@@ -135,7 +189,7 @@ func DecodePrimitiveBlock(data []byte) (PrimitiveBlock, error) {
 	// stacks every node in the block on the block's origin, and the pipeline
 	// downstream would report a boundary as a single point rather than an
 	// error. A negative one is not a value the format has.
-	if b.Granularity <= 0 {
+	if b.Granularity <= 0 || b.Granularity > MaxGranularity {
 		return PrimitiveBlock{}, fmt.Errorf(
 			"osmpbf: a primitive block declares a granularity of %d, and coordinates are scaled by it", b.Granularity)
 	}
@@ -155,6 +209,10 @@ func decodeStringTable(data []byte) ([][]byte, error) {
 			v, err := r.Bytes("a string")
 			if err != nil {
 				return nil, err
+			}
+			if len(out) >= MaxStrings {
+				return nil, fmt.Errorf(
+					"osmpbf: a string table holds more than %d entries, and the block's own size cannot account for that many", MaxStrings)
 			}
 			out = append(out, v)
 			continue

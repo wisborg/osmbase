@@ -30,7 +30,7 @@ func readAll(t *testing.T, file []byte) []Block {
 
 func TestReaderWalksEveryBlock(t *testing.T) {
 	file := append(
-		frame(TypeHeader, rawBlob([]byte("header payload"))),
+		frame(TypeHeader, rawBlob(header([]string{"OsmSchema-V0.6"}, nil))),
 		frame(TypeData, zlibBlob([]byte("data payload")))...,
 	)
 	file = append(file, frame(TypeData, rawBlob([]byte("second data")))...)
@@ -38,7 +38,7 @@ func TestReaderWalksEveryBlock(t *testing.T) {
 	blocks := readAll(t, file)
 
 	want := []Block{
-		{TypeHeader, []byte("header payload")},
+		{TypeHeader, header([]string{"OsmSchema-V0.6"}, nil)},
 		{TypeData, []byte("data payload")},
 		{TypeData, []byte("second data")},
 	}
@@ -137,7 +137,7 @@ func TestDeclaredSizesAreRefusedAtTheLimit(t *testing.T) {
 		file := binary.BigEndian.AppendUint32(nil, MaxHeaderBytes+1)
 		d := NewReader(bytes.NewReader(file))
 		_, err := d.Next()
-		if err == nil || !strings.Contains(err.Error(), "at most") {
+		if err == nil || !strings.Contains(err.Error(), "fewer than") {
 			t.Fatalf("Next: %v, want a refusal naming the limit", err)
 		}
 	})
@@ -148,7 +148,7 @@ func TestDeclaredSizesAreRefusedAtTheLimit(t *testing.T) {
 		file = append(file, header...)
 		d := NewReader(bytes.NewReader(file))
 		_, err := d.Next()
-		if err == nil || !strings.Contains(err.Error(), "at most") {
+		if err == nil || !strings.Contains(err.Error(), "fewer than") {
 			t.Fatalf("Next: %v, want a refusal naming the limit", err)
 		}
 	})
@@ -157,7 +157,7 @@ func TestDeclaredSizesAreRefusedAtTheLimit(t *testing.T) {
 		blob := append(pbVarint(2, MaxBlockBytes+1), pbBytes(3, deflate([]byte("small")))...)
 		d := NewReader(bytes.NewReader(frame(TypeData, blob)))
 		_, err := d.Next()
-		if err == nil || !strings.Contains(err.Error(), "at most") {
+		if err == nil || !strings.Contains(err.Error(), "fewer than") {
 			t.Fatalf("Next: %v, want a refusal naming the limit", err)
 		}
 	})
@@ -227,6 +227,16 @@ func TestMalformedBlobsAreNamed(t *testing.T) {
 			file: frame(TypeData, append(pbVarint(2, 8), pbBytes(3, []byte("not zlib"))...)),
 			want: "not zlib",
 		},
+		{
+			// A zlib stream whose header is intact and whose body stops
+			// early, which is what a download cut in the middle looks like
+			// from inside a blob. It fails in the inflate rather than in the
+			// zlib header, and that is a different error from the one above:
+			// short, not wrong.
+			name: "a zlib stream that stops part way through",
+			file: frame(TypeData, truncatedZlibBlob(bytes.Repeat([]byte("boundary"), 500), 20)),
+			want: "inflating a blob",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := NewReader(bytes.NewReader(tc.file))
@@ -270,5 +280,284 @@ func TestUnknownBlobHeaderFieldsAreSkipped(t *testing.T) {
 	blocks := readAll(t, file)
 	if len(blocks) != 1 || !bytes.Equal(blocks[0].Data, []byte("payload")) {
 		t.Fatalf("read %v, want one block of the payload", blocks)
+	}
+}
+
+// Every compressed block in a file must read back as itself. A real extract
+// is thousands of zlib blocks read by one Reader, and this reader reuses both
+// the inflate buffer and the zlib stream between them -- so the second block
+// is the first one that exercises either reuse, and no other test in this file
+// inflates twice.
+//
+// The failure this catches is silent: with the buffer left unreset, block 2
+// comes back as block 1 followed by block 2, and with the zlib stream left
+// unreset it comes back empty. Neither errors, and both produce a block the
+// element decoder will read as ordinary, wrong data.
+//
+// Lengths differ between blocks and descend at the end so that a stale buffer
+// cannot be mistaken for a correct one.
+func TestEveryBlockOfAFileReadsBackAsItself(t *testing.T) {
+	payloads := [][]byte{
+		bytes.Repeat([]byte("first "), 100),
+		bytes.Repeat([]byte("second "), 900),
+		bytes.Repeat([]byte("third "), 20),
+		bytes.Repeat([]byte("fourth "), 500),
+		bytes.Repeat([]byte("fifth "), 3),
+	}
+
+	var file []byte
+	for i, p := range payloads {
+		// One raw blob in the middle: the two paths share a reader, and a raw
+		// blob between two compressed ones must not disturb the reuse.
+		if i == 2 {
+			file = append(file, frame(TypeData, rawBlob(p))...)
+			continue
+		}
+		file = append(file, frame(TypeData, zlibBlob(p))...)
+	}
+
+	blocks := readAll(t, file)
+
+	if len(blocks) != len(payloads) {
+		t.Fatalf("read %d blocks, want %d", len(blocks), len(payloads))
+	}
+	for i, want := range payloads {
+		if got := blocks[i].Data; !bytes.Equal(got, want) {
+			t.Errorf("block %d is %d bytes, want the %d written; first 40 bytes %q",
+				i, len(got), len(want), got[:min(40, len(got))])
+		}
+	}
+}
+
+// Exactly at a limit is legal; one past it is not. Paired with
+// TestDeclaredSizesAreRefusedAtTheLimit, which only ever exceeds them: on its
+// own that test passes just as well against a reader that refused at the limit
+// itself, which would reject the largest well-formed files the format allows.
+// The limits are exclusive, as the specification words them, so the boundary
+// has two sides and both need pinning: one byte under must be read, and the
+// limit itself must be refused. Tested together because an off-by-one here is
+// invisible from either side alone -- a reader that refused one byte early
+// would reject well-formed files, and one that accepted the limit would carry
+// a bound that does not mean what its comment says.
+func TestTheSizeLimitsAreExclusive(t *testing.T) {
+	t.Run("a blob header one byte under", func(t *testing.T) {
+		blob := rawBlob([]byte("payload"))
+		header := paddedHeader(TypeData, len(blob), MaxHeaderBytes-1)
+		if len(header) != MaxHeaderBytes-1 {
+			t.Fatalf("the fixture header is %d bytes, want exactly %d", len(header), MaxHeaderBytes-1)
+		}
+		blocks := readAll(t, framedWith(header, blob))
+		if len(blocks) != 1 || !bytes.Equal(blocks[0].Data, []byte("payload")) {
+			t.Fatalf("read %v, want one block of the payload", blocks)
+		}
+	})
+
+	t.Run("a blob header of exactly the limit", func(t *testing.T) {
+		file := binary.BigEndian.AppendUint32(nil, MaxHeaderBytes)
+		d := NewReader(bytes.NewReader(file))
+		_, err := d.Next()
+		if err == nil || !strings.Contains(err.Error(), "fewer than") {
+			t.Fatalf("Next: %v, want a refusal; the specification says a header must be LESS than %d bytes",
+				err, MaxHeaderBytes)
+		}
+	})
+
+	t.Run("a blob one byte under", func(t *testing.T) {
+		// Declared but not supplied, so the fixture stays small: what is
+		// under test is that the size passed the limit check and the reader
+		// went on to read, which a refusal would not do. The failure is then
+		// a short file, not a refusal naming the limit.
+		header := append(pbString(1, TypeData), pbVarint(3, MaxBlobBytes-1)...)
+		d := NewReader(bytes.NewReader(framedWith(header, nil)))
+		_, err := d.Next()
+		if err == nil {
+			t.Fatal("a blob with no bytes behind it read as a block")
+		}
+		if strings.Contains(err.Error(), "fewer than") {
+			t.Errorf("Next: %v, want the read to have been attempted; %d bytes is under the limit",
+				err, MaxBlobBytes-1)
+		}
+	})
+
+	t.Run("a blob of exactly the limit", func(t *testing.T) {
+		header := append(pbString(1, TypeData), pbVarint(3, MaxBlobBytes)...)
+		d := NewReader(bytes.NewReader(framedWith(header, nil)))
+		_, err := d.Next()
+		if err == nil || !strings.Contains(err.Error(), "fewer than") {
+			t.Fatalf("Next: %v, want a refusal at exactly the limit", err)
+		}
+	})
+
+	t.Run("an inflated size one byte under", func(t *testing.T) {
+		payload := []byte("a small block declaring the largest legal size")
+		blocks := readAll(t, frame(TypeData, zlibBlobDeclaring(payload, MaxBlockBytes-1)))
+		if len(blocks) != 1 || !bytes.Equal(blocks[0].Data, payload) {
+			t.Fatalf("read %v, want one block of the payload", blocks)
+		}
+	})
+
+	t.Run("an inflated size of exactly the limit", func(t *testing.T) {
+		blob := zlibBlobDeclaring([]byte("small"), MaxBlockBytes)
+		d := NewReader(bytes.NewReader(frame(TypeData, blob)))
+		_, err := d.Next()
+		if err == nil || !strings.Contains(err.Error(), "fewer than") {
+			t.Fatalf("Next: %v, want a refusal at exactly the limit", err)
+		}
+	})
+}
+
+// A size the format's signed field cannot hold is refused, not used.
+//
+// Both sizes are int32 in the schema and both arrive as unsigned varints, so a
+// file can declare 2^31 and have it read back as a large negative number. The
+// blob size then reaches a make() and a reslice, where a negative length is a
+// panic rather than an error -- and the inflated size would fall through to
+// the no-declaration fallback, quietly granting a bomb the full 32 MiB the
+// blob just said it did not need.
+func TestANegativeDeclaredSizeIsRefused(t *testing.T) {
+	const negativeAsVarint = 1 << 31 // int32(1<<31) is -2147483648
+
+	t.Run("the blob size", func(t *testing.T) {
+		header := append(pbString(1, TypeData), pbVarint(3, negativeAsVarint)...)
+		d := NewReader(bytes.NewReader(framedWith(header, rawBlob([]byte("payload")))))
+		if _, err := d.Next(); err == nil {
+			t.Fatal("a blob declaring 2^31 bytes was accepted")
+		}
+	})
+
+	t.Run("the inflated size", func(t *testing.T) {
+		blob := append(pbVarint(2, negativeAsVarint), pbBytes(3, deflate([]byte("small")))...)
+		d := NewReader(bytes.NewReader(frame(TypeData, blob)))
+		if _, err := d.Next(); err == nil {
+			t.Fatal("a blob declaring it inflates to 2^31 bytes was accepted")
+		}
+	})
+}
+
+// A raw field that is present and empty is a block with nothing in it, which
+// is not the same as a blob that carries no payload field at all. The
+// difference is the presence of the field, not the value: reading it as
+// absent turns a well-formed empty block into "neither raw nor compressed
+// bytes", a malformed-file error for a file that is not malformed.
+func TestAnEmptyRawBlobIsAnEmptyBlockNotAMissingOne(t *testing.T) {
+	blocks := readAll(t, frame(TypeData, rawBlob(nil)))
+	if len(blocks) != 1 {
+		t.Fatalf("read %d blocks, want 1", len(blocks))
+	}
+	if len(blocks[0].Data) != 0 {
+		t.Errorf("an empty raw blob read back %d bytes, want none", len(blocks[0].Data))
+	}
+}
+
+// The Blob message is protobuf too, and the format has added fields to it
+// since 2010 -- the four compression codecs are fields 4 to 7. A field this
+// does not read must be skipped rather than ending the message, or a file
+// from a later producer loses its payload and reads as an empty block.
+func TestUnknownBlobFieldsAreSkipped(t *testing.T) {
+	blob := append(pbVarint(9, 12345), rawBlob([]byte("payload"))...)
+	blob = append(blob, pbBytes(10, []byte("a field from a later schema"))...)
+
+	blocks := readAll(t, frame(TypeData, blob))
+	if len(blocks) != 1 || !bytes.Equal(blocks[0].Data, []byte("payload")) {
+		t.Fatalf("read %v, want one block of the payload", blocks)
+	}
+}
+
+// Errors from the shared protobuf reader must name this format.
+//
+// The reader is shared with the vector tile decoder and took its error prefix
+// from there. A malformed extract that announced itself as "mvt:" would send
+// somebody looking in a file they had not opened -- and these are exactly the
+// errors nothing else names, since osmpbf's own messages carry the prefix in
+// their text.
+func TestErrorsNameTheFormatBeingRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "a blob header cut short mid-varint",
+			call: func() error {
+				header := []byte{0x18, 0xff} // field 3, varint, then no terminator
+				d := NewReader(bytes.NewReader(framedWith(header, nil)))
+				_, err := d.Next()
+				return err
+			},
+		},
+		{
+			name: "a blob whose field length overruns it",
+			call: func() error {
+				d := NewReader(bytes.NewReader(frame(TypeData, []byte{0x0a, 0x7f})))
+				_, err := d.Next()
+				return err
+			},
+		},
+		{
+			name: "a primitive block with a field length that overruns it",
+			call: func() error {
+				_, err := DecodePrimitiveBlock([]byte{0x0a, 0x7f})
+				return err
+			},
+		},
+		{
+			name: "a primitive block using a protobuf group",
+			call: func() error {
+				_, err := DecodePrimitiveBlock([]byte{0x0b, 0x00})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("malformed bytes decoded without an error")
+			}
+			if !strings.HasPrefix(err.Error(), "osmpbf:") {
+				t.Errorf("error %q, want it to name osmpbf; the shared reader must not "+
+					"report an OSM extract as a vector tile", err)
+			}
+			// The prefix is not the whole of it: one branch of the shared
+			// reader spelled the format into its sentence as well, and an
+			// error reading "these are not vector tile bytes" sends somebody
+			// to a file they never opened however it is prefixed.
+			if strings.Contains(err.Error(), "vector tile") {
+				t.Errorf("error %q talks about vector tiles while reading an OSM extract", err)
+			}
+		})
+	}
+}
+
+// The fallback limit, for a blob that declared no size, is one byte under
+// MaxBlockBytes because that bound is exclusive. Checked with real inflation
+// because nothing smaller reaches the branch: the limit only applies once the
+// output has actually grown past it.
+func TestTheFallbackLimitIsExclusiveToo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("inflates two blocks of ~32 MiB")
+	}
+	for _, tc := range []struct {
+		name      string
+		size      int
+		wantError bool
+	}{
+		{"one byte under the limit", MaxBlockBytes - 1, false},
+		{"exactly the limit", MaxBlockBytes, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// No raw_size, so the reader falls back to its own limit.
+			blob := pbBytes(3, deflate(bytes.Repeat([]byte{0}, tc.size)))
+			d := NewReader(bytes.NewReader(frame(TypeData, blob)))
+			b, err := d.Next()
+			switch {
+			case tc.wantError && err == nil:
+				t.Errorf("a %d byte block was accepted; the limit is exclusive", tc.size)
+			case tc.wantError && !strings.Contains(err.Error(), "declaring no size"):
+				t.Errorf("Next: %v, want the reader's own limit named", err)
+			case !tc.wantError && err != nil:
+				t.Errorf("a %d byte block was refused: %v", tc.size, err)
+			case !tc.wantError && len(b.Data) != tc.size:
+				t.Errorf("read %d bytes, want %d", len(b.Data), tc.size)
+			}
+		})
 	}
 }

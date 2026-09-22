@@ -23,8 +23,9 @@ import (
 )
 
 // Protobuf wire types. Types 3 and 4 (start group, end group) were removed
-// from the language long before this schema was written and are not handled;
-// encountering one means the bytes are not a vector tile.
+// from the language long before either of the schemas this reads was written
+// and are not handled; encountering one means the bytes are not of the format
+// they claim to be.
 const (
 	WireVarint     = 0
 	WireFixed64    = 1
@@ -139,7 +140,7 @@ func (r *Reader) Skip(field, wire int) error {
 		_, err := r.Fixed32(fmt.Sprintf("field %d", field))
 		return err
 	case WireStartGroup, WireEndGroup:
-		return fmt.Errorf("%s: %s uses a protobuf group for field %d; the vector tile schema has none, so these are not vector tile bytes", r.format, r.what, field)
+		return fmt.Errorf("%s: %s uses a protobuf group for field %d; this format's schema has none, so these are not %s bytes", r.format, r.what, field, r.format)
 	}
 	return fmt.Errorf("%s: %s has field %d with wire type %d, which protobuf does not define", r.format, r.what, field, wire)
 }
@@ -166,7 +167,7 @@ func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, e
 	if err != nil {
 		return nil, err
 	}
-	inner := Reader{b: payload, what: r.what}
+	inner := *New(payload, r.format, r.what)
 	for !inner.Done() {
 		v, err := inner.Uvarint(field)
 		if err != nil {

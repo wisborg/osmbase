@@ -24,8 +24,8 @@ func TestDecodePrimitiveBlockReadsTheStringTableAndGroups(t *testing.T) {
 		t.Fatalf("the string table has %d entries, want %d", len(b.Strings), len(want))
 	}
 	for i, w := range want {
-		if got := b.String(i); got != w {
-			t.Errorf("String(%d) = %q, want %q", i, got, w)
+		if got := b.StringAt(i); got != w {
+			t.Errorf("StringAt(%d) = %q, want %q", i, got, w)
 		}
 	}
 
@@ -41,17 +41,17 @@ func TestDecodePrimitiveBlockReadsTheStringTableAndGroups(t *testing.T) {
 // returning a neighbour. A pass over an extract resolves millions of tag
 // indices, and one bad index in a downloaded file should mean "this tag does
 // not match", not the end of the pass.
-func TestStringOutOfRangeIsEmpty(t *testing.T) {
+func TestStringAtOutOfRangeIsEmpty(t *testing.T) {
 	b, err := DecodePrimitiveBlock(primitiveBlock(stringTable("", "name"), nil))
 	if err != nil {
 		t.Fatalf("DecodePrimitiveBlock: %v", err)
 	}
 	for _, i := range []int{-1, 2, 1 << 20} {
-		if got := b.String(i); got != "" {
-			t.Errorf("String(%d) = %q, want the empty string", i, got)
+		if got := b.StringAt(i); got != "" {
+			t.Errorf("StringAt(%d) = %q, want the empty string", i, got)
 		}
 	}
-	if got := b.String(1); got != "name" {
+	if got := b.StringAt(1); got != "name" {
 		t.Errorf("String(1) = %q, want %q; the guard must not swallow real entries", got, "name")
 	}
 }
@@ -59,13 +59,13 @@ func TestStringOutOfRangeIsEmpty(t *testing.T) {
 // String returns a copy. The entries point into the reader's reused buffer,
 // so a name kept across a call to Next would otherwise become whatever the
 // next block put there.
-func TestStringCopiesOutOfTheBuffer(t *testing.T) {
+func TestStringAtCopiesOutOfTheBuffer(t *testing.T) {
 	data := primitiveBlock(stringTable("", "Horsens"), nil)
 	b, err := DecodePrimitiveBlock(data)
 	if err != nil {
 		t.Fatalf("DecodePrimitiveBlock: %v", err)
 	}
-	kept := b.String(1)
+	kept := b.StringAt(1)
 	for i := range data {
 		data[i] = 'z'
 	}
@@ -192,8 +192,8 @@ func TestUnknownPrimitiveBlockFieldsAreSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodePrimitiveBlock: %v", err)
 	}
-	if len(b.Groups) != 1 || b.String(1) != "name" {
-		t.Errorf("unknown fields cost the block its contents: %d groups, String(1)=%q", len(b.Groups), b.String(1))
+	if len(b.Groups) != 1 || b.StringAt(1) != "name" {
+		t.Errorf("unknown fields cost the block its contents: %d groups, StringAt(1)=%q", len(b.Groups), b.StringAt(1))
 	}
 }
 
@@ -209,6 +209,80 @@ func TestMalformedPrimitiveBlocksAreRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := DecodePrimitiveBlock(tc.data); err == nil {
 				t.Error("malformed bytes decoded as a valid block")
+			}
+		})
+	}
+}
+
+// A block that sets one scaling field leaves the others at the format's
+// defaults. Neither of the tests either side of this one sees that: one sets
+// every field and the other sets none, so a decoder that applied the defaults
+// only to a block with no scaling fields at all -- or dropped them as soon as
+// it saw one -- passes both. Real blocks are the partial case: producers write
+// granularity and the offsets and leave date_granularity out.
+func TestSomeScalingFieldsPresentLeavesTheRestAtTheirDefaults(t *testing.T) {
+	var latOffset int64 = -500_000_000
+	// Granularity and one offset written, date_granularity and the other
+	// offset left out -- the shape a real producer writes. 500 rather than
+	// 100 so the assertion on it cannot be satisfied by the default.
+	extra := append(pbVarint(17, 500), pbVarint(19, uint64(latOffset))...)
+
+	b, err := DecodePrimitiveBlock(primitiveBlock(stringTable(""), extra))
+	if err != nil {
+		t.Fatalf("DecodePrimitiveBlock: %v", err)
+	}
+	if b.LatOffset != latOffset {
+		t.Errorf("lat offset = %d, want %d", b.LatOffset, latOffset)
+	}
+	if b.Granularity != 500 {
+		t.Errorf("granularity = %d, want the 500 the block declared", b.Granularity)
+	}
+	if b.DateGranularity != DefaultDateGranularity {
+		t.Errorf("date granularity = %d, want the default %d; a field present next to it "+
+			"must not cost it its default", b.DateGranularity, DefaultDateGranularity)
+	}
+	if b.LonOffset != 0 {
+		t.Errorf("lon offset = %d, want 0; only the latitude offset was written", b.LonOffset)
+	}
+}
+
+// Every field is cut short in turn, and none of them decodes as a block.
+//
+// The branches are copy-pasted, one per field number, and the copy where the
+// error is dropped is not loud: for the two length-delimited fields the
+// reader has already stepped over the length it could not honour, so a
+// dropped error there leaves a block with no string table and no groups and
+// nothing reporting a problem -- a file that decodes as empty rather than as
+// broken. The scalar rows are here as the boundary of the same table; they
+// are weaker, because the shared reader does not advance past a varint it
+// could not read and the next tag read fails whatever this branch did.
+func TestAFieldCutShortIsRefusedWhicheverFieldItIs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field int
+		wire  int
+	}{
+		{"a string table", 1, protobufWireBytes},
+		{"a primitive group", 2, protobufWireBytes},
+		{"a granularity", 17, protobufWireVarint},
+		{"a date granularity", 18, protobufWireVarint},
+		{"a latitude offset", 19, protobufWireVarint},
+		{"a longitude offset", 20, protobufWireVarint},
+		{"a field this decoder does not read", 30, protobufWireVarint},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var data []byte
+			if tc.wire == protobufWireBytes {
+				// A length longer than the bytes that follow it.
+				data = append(pbTag(tc.field, tc.wire), 0x7f)
+			} else {
+				// A varint with its continuation bit set and nothing after.
+				data = append(pbTag(tc.field, tc.wire), 0xff)
+			}
+			b, err := DecodePrimitiveBlock(data)
+			if err == nil {
+				t.Fatalf("a truncated %s decoded as a valid block: %d strings, %d groups",
+					tc.name, len(b.Strings), len(b.Groups))
 			}
 		})
 	}

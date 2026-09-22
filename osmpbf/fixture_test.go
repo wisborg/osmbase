@@ -94,3 +94,56 @@ func primitiveBlock(strings []byte, extra []byte, groups ...[]byte) []byte {
 	}
 	return append(out, extra...)
 }
+
+// paddedHeader builds a BlobHeader of exactly total bytes, for a blob of
+// blobLen bytes, padding it out with a field no decoder reads.
+//
+// Exact length matters because the header limit is a boundary: a test that
+// only ever exceeds it cannot tell an enforced limit from one enforced a byte
+// early, and a header of exactly 64 KiB must still read.
+func paddedHeader(kind string, blobLen, total int) []byte {
+	base := append(pbString(1, kind), pbVarint(3, uint64(blobLen))...)
+	// One byte of tag for field 9, then the padding's own length varint.
+	for n := 0; n <= total; n++ {
+		if len(base)+1+len(binary.AppendUvarint(nil, uint64(n)))+n == total {
+			return append(base, pbBytes(9, make([]byte, n))...)
+		}
+	}
+	panic("no padding length gives a header of exactly that size")
+}
+
+// framedWith wraps a blob in a header the caller built, rather than in the
+// minimal one frame writes.
+func framedWith(header, blob []byte) []byte {
+	out := binary.BigEndian.AppendUint32(nil, uint32(len(header)))
+	out = append(out, header...)
+	return append(out, blob...)
+}
+
+// The two protobuf wire types these fixtures write, spelled locally so a test
+// naming one does not have to import the internal reader.
+const (
+	protobufWireVarint = 0
+	protobufWireBytes  = 2
+)
+
+// truncatedZlibBlob is a compressed blob whose zlib stream is cut short by
+// drop bytes, as a download interrupted mid-file would be. It still declares
+// the payload's true length, so what fails is the inflate and not a limit.
+func truncatedZlibBlob(payload []byte, drop int) []byte {
+	z := deflate(payload)
+	out := pbVarint(2, uint64(len(payload)))
+	return append(out, pbBytes(3, z[:len(z)-drop])...)
+}
+
+// header encodes a HeaderBlock's feature declarations.
+func header(required, optional []string) []byte {
+	var out []byte
+	for _, f := range required {
+		out = append(out, pbString(4, f)...)
+	}
+	for _, f := range optional {
+		out = append(out, pbString(5, f)...)
+	}
+	return out
+}
