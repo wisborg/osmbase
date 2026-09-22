@@ -66,6 +66,25 @@ type PrimitiveBlock struct {
 	LatOffset       int64
 	LonOffset       int64
 	DateGranularity int32
+
+	// Scratch reused across the elements of a block, which is why the
+	// element decoding takes a pointer receiver. A country extract holds
+	// millions of elements of a handful of tags each; a fresh slice per
+	// element is millions of allocations to hold one element at a time.
+	scratch scratch
+}
+
+// scratch holds the slices the element decoding reuses. Every one of them is
+// reset per element rather than reallocated.
+type scratch struct {
+	keys, vals []int32
+	refs       []int64
+	members    []Member
+	roles      []int32
+	types      []int32
+	ids        []int64
+	lats, lons []int64
+	keysVals   []int32
 }
 
 // StringAt returns a copy of string table entry i, or "" for an index outside

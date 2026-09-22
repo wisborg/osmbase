@@ -147,3 +147,93 @@ func header(required, optional []string) []byte {
 	}
 	return out
 }
+
+// zigzag encodes a signed value the way the format's sint64 fields do. The
+// rule, not a call into the decoder: a fixture that encoded through the code
+// under test would agree with it however wrong both were.
+func zigzag(v int64) uint64 { return uint64((v << 1) ^ (v >> 63)) }
+
+// packedSint encodes a run of signed values as one delta-coded packed field,
+// which is how the format stores every list of ids it repeats.
+func packedSint(field int, vs ...int64) []byte {
+	var payload []byte
+	var prev int64
+	for _, v := range vs {
+		payload = binary.AppendUvarint(payload, zigzag(v-prev))
+		prev = v
+	}
+	return pbBytes(field, payload)
+}
+
+// packedInt encodes a run of plain (not zigzag, not delta) int32 values.
+func packedInt(field int, vs ...int32) []byte {
+	var payload []byte
+	for _, v := range vs {
+		payload = binary.AppendUvarint(payload, uint64(int64(v)))
+	}
+	return pbBytes(field, payload)
+}
+
+// tagRun flattens per-element tag pairs into the dense keys_vals encoding:
+// each element's pairs in order, terminated by a zero.
+func tagRun(perNode [][]int32) []int32 {
+	var out []int32
+	for _, pairs := range perNode {
+		out = append(out, pairs...)
+		out = append(out, 0)
+	}
+	return out
+}
+
+// denseNodes encodes a DenseNodes message. ids, lats and lons are absolute;
+// the deltas are computed here.
+func denseNodes(ids, lats, lons []int64, keysVals []int32) []byte {
+	out := packedSint(1, ids...)
+	out = append(out, packedSint(8, lats...)...)
+	out = append(out, packedSint(9, lons...)...)
+	if keysVals != nil {
+		out = append(out, packedInt(10, keysVals...)...)
+	}
+	return pbBytes(2, out) // field 2 of PrimitiveGroup
+}
+
+// plainNode encodes a Node message -- the per-node form, which real extracts
+// use only for what a dense run cannot hold.
+func plainNode(id, lat, lon int64, keys, vals []int32) []byte {
+	out := append(pbTag(1, 0), binary.AppendUvarint(nil, zigzag(id))...)
+	if keys != nil {
+		out = append(out, packedInt(2, keys...)...)
+		out = append(out, packedInt(3, vals...)...)
+	}
+	out = append(out, append(pbTag(8, 0), binary.AppendUvarint(nil, zigzag(lat))...)...)
+	out = append(out, append(pbTag(9, 0), binary.AppendUvarint(nil, zigzag(lon))...)...)
+	return pbBytes(1, out) // field 1 of PrimitiveGroup
+}
+
+// way encodes a Way message. refs are absolute; the deltas are computed here.
+// The id is a plain int64, not a zigzag one -- that asymmetry is in the
+// format, and a fixture that zigzagged it would hide a decoder doing the same.
+func way(id int64, refs []int64, keys, vals []int32) []byte {
+	out := pbVarint(1, uint64(id))
+	if keys != nil {
+		out = append(out, packedInt(2, keys...)...)
+		out = append(out, packedInt(3, vals...)...)
+	}
+	if refs != nil {
+		out = append(out, packedSint(8, refs...)...)
+	}
+	return pbBytes(3, out) // field 3 of PrimitiveGroup
+}
+
+// relation encodes a Relation message. memids are absolute.
+func relation(id int64, roles []int32, memids []int64, types []int32, keys, vals []int32) []byte {
+	out := pbVarint(1, uint64(id))
+	if keys != nil {
+		out = append(out, packedInt(2, keys...)...)
+		out = append(out, packedInt(3, vals...)...)
+	}
+	out = append(out, packedInt(8, roles...)...)
+	out = append(out, packedSint(9, memids...)...)
+	out = append(out, packedInt(10, types...)...)
+	return pbBytes(4, out) // field 4 of PrimitiveGroup
+}

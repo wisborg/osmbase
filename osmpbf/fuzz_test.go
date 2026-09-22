@@ -17,7 +17,10 @@ import (
 // rather than trusted.
 func FuzzReader(f *testing.F) {
 	f.Add(frame(TypeHeader, rawBlob(header([]string{"OsmSchema-V0.6"}, nil))))
-	f.Add(frame(TypeData, zlibBlob(primitiveBlock(stringTable("", "name"), nil, []byte("group")))))
+	f.Add(frame(TypeData, zlibBlob(primitiveBlock(stringTable("", "name", "boundary", "administrative"), nil,
+		append(append(denseNodes([]int64{1, 2}, []int64{0, 1}, []int64{0, 1}, tagRun([][]int32{{1, 2}, nil})),
+			way(3, []int64{1, 2}, []int32{2}, []int32{3})...),
+			relation(4, []int32{1}, []int64{3}, []int32{1}, []int32{2}, []int32{3})...)))))
 	f.Add(frame(TypeData, zlibBlobDeclaring(bytes.Repeat([]byte{0}, 1<<16), 8)))
 	f.Add(frame("", rawBlob(nil)))
 	f.Add([]byte{0, 0, 0, 1})
@@ -69,6 +72,28 @@ func FuzzReader(f *testing.F) {
 					t.Fatalf("StringAt(%d) = %q with %d entries, want the empty string", i, s, len(pb.Strings))
 				}
 			}
+			// The element decoding, which is where a crafted block reaches the
+			// delta arithmetic and the parallel-run length checks. Errors are
+			// expected and fine; a panic or a runaway is not.
+			_ = pb.EachNode(func(n Node) error {
+				pb.Degrees(n.Lat, n.Lon)
+				return tagsAreConsistent(t, n.Tags)
+			})
+			_ = pb.EachWay(func(w Way) error {
+				if len(w.Refs) > MaxWayRefs {
+					t.Fatalf("a way came back with %d references, past the %d cap", len(w.Refs), MaxWayRefs)
+				}
+				return tagsAreConsistent(t, w.Tags)
+			})
+			_ = pb.EachRelation(func(r Relation) error {
+				for _, m := range r.Members {
+					if m.Type != MemberNode && m.Type != MemberWay && m.Type != MemberRelation {
+						t.Fatalf("a member came back with type %d", int(m.Type))
+					}
+				}
+				return tagsAreConsistent(t, r.Tags)
+			})
+
 			lat, lon := pb.Degrees(1<<40, -(1 << 40))
 			if math.IsNaN(lat) || math.IsInf(lat, 0) || math.IsNaN(lon) || math.IsInf(lon, 0) {
 				t.Fatalf("Degrees returned %v,%v from granularity %d and offsets %d,%d",
@@ -76,4 +101,18 @@ func FuzzReader(f *testing.F) {
 			}
 		}
 	})
+}
+
+// tagsAreConsistent checks what Tags must hold whatever the file said: a pair
+// count within the cap, and every key resolvable and findable again.
+func tagsAreConsistent(t *testing.T, tags Tags) error {
+	if tags.Len() > MaxTags {
+		t.Fatalf("an element came back with %d tags, past the %d cap", tags.Len(), MaxTags)
+	}
+	for i := 0; i < tags.Len(); i++ {
+		if k, _ := tags.At(i); k != "" && !tags.Has(k) {
+			t.Fatalf("tag %d has key %q, which Has does not find", i, k)
+		}
+	}
+	return nil
 }
