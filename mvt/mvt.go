@@ -434,7 +434,7 @@ func decodeValue(data []byte) (Value, error) {
 			if err != nil {
 				return Value{}, err
 			}
-			v = SintValue(unzigzag64(u))
+			v = SintValue(protobuf.Unzigzag64(u))
 		case field == valueBool && wire == protobuf.WireVarint:
 			u, err := r.Uvarint("a bool value")
 			if err != nil {

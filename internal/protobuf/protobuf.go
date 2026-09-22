@@ -20,6 +20,7 @@ package protobuf
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 )
 
 // Protobuf wire types. Types 3 and 4 (start group, end group) were removed
@@ -145,20 +146,72 @@ func (r *Reader) Skip(field, wire int) error {
 	return fmt.Errorf("%s: %s has field %d with wire type %d, which protobuf does not define", r.format, r.what, field, wire)
 }
 
-// packedUint32 reads a repeated uint32 field that may be packed into one
+// Signed varint accessors.
+//
+// Protobuf has three ways of putting a signed number in a varint and they are
+// not interchangeable, which is why each has its own name here rather than a
+// cast at the call site. int32 and int64 are two's complement, so a negative
+// one is sign-extended to 64 bits and always costs ten bytes; sint64 is
+// zigzag, so a small negative costs one. Reading an sint as an int does not
+// fail -- it returns a large positive number -- and that is precisely the kind
+// of mistake this package exists to make impossible to write by accident.
+
+// Int64 reads a two's complement signed varint.
+func (r *Reader) Int64(field string) (int64, error) {
+	v, err := r.Uvarint(field)
+	if err != nil {
+		return 0, err
+	}
+	return int64(v), nil
+}
+
+// Int32 reads a two's complement signed varint that must fit in 32 bits.
+func (r *Reader) Int32(field string) (int32, error) {
+	v, err := r.Uvarint(field)
+	if err != nil {
+		return 0, err
+	}
+	i, err := toInt32(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %s: %s: %w", r.format, r.what, field, err)
+	}
+	return i, nil
+}
+
+// Sint64 reads a zigzag signed varint.
+func (r *Reader) Sint64(field string) (int64, error) {
+	v, err := r.Uvarint(field)
+	if err != nil {
+		return 0, err
+	}
+	return Unzigzag64(v), nil
+}
+
+// Packed reads a repeated numeric field that may be packed into one
 // length-delimited run or, from an older or simpler encoder, repeated one
 // varint at a time. Both are valid protobuf for the same field, so both are
 // accepted; out is appended to so the unpacked case accumulates.
-func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, error) {
-	if wire == WireVarint {
-		v, err := r.Uvarint(field)
+//
+// A function rather than a method because Go does not allow type parameters
+// on methods, and one generic rather than a loop per width because the loop
+// is the part that is easy to get subtly wrong -- the packed case has to
+// consume the whole payload and stop exactly at its end.
+func Packed[T any](r *Reader, out []T, field string, wire int, decode func(uint64) (T, error)) ([]T, error) {
+	read := func(from *Reader) error {
+		v, err := from.Uvarint(field)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if v > 0xffffffff {
-			return nil, fmt.Errorf("%s: %s has a value in %s that does not fit in 32 bits", r.format, r.what, field)
+		x, err := decode(v)
+		if err != nil {
+			return fmt.Errorf("%s: %s: %s: %w", r.format, r.what, field, err)
 		}
-		return append(out, uint32(v)), nil
+		out = append(out, x)
+		return nil
+	}
+
+	if wire == WireVarint {
+		return out, read(r)
 	}
 	if wire != WireBytes {
 		return nil, fmt.Errorf("%s: %s has %s with wire type %d, and it must be a packed or repeated varint", r.format, r.what, field, wire)
@@ -167,16 +220,71 @@ func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, e
 	if err != nil {
 		return nil, err
 	}
-	inner := *New(payload, r.format, r.what)
+	inner := New(payload, r.format, r.what)
 	for !inner.Done() {
-		v, err := inner.Uvarint(field)
-		if err != nil {
+		if err := read(inner); err != nil {
 			return nil, err
 		}
-		if v > 0xffffffff {
-			return nil, fmt.Errorf("%s: %s has a value in %s that does not fit in 32 bits", r.format, r.what, field)
-		}
-		out = append(out, uint32(v))
 	}
 	return out, nil
+}
+
+// PackedUint32, PackedInt32 and PackedSint64 are Packed at the widths the two
+// formats use: vector tile tag indices, OSM tag and role indices, and OSM
+// deltas respectively.
+func (r *Reader) PackedUint32(out []uint32, field string, wire int) ([]uint32, error) {
+	return Packed(r, out, field, wire, toUint32)
+}
+
+func (r *Reader) PackedInt32(out []int32, field string, wire int) ([]int32, error) {
+	return Packed(r, out, field, wire, toInt32)
+}
+
+func (r *Reader) PackedSint64(out []int64, field string, wire int) ([]int64, error) {
+	return Packed(r, out, field, wire, toSint64)
+}
+
+func toUint32(v uint64) (uint32, error) {
+	if v > math.MaxUint32 {
+		return 0, fmt.Errorf("the value %d does not fit in 32 bits", v)
+	}
+	return uint32(v), nil
+}
+
+func toInt32(v uint64) (int32, error) {
+	// Through int64 first: protobuf sign-extends a negative int32 to 64 bits,
+	// so -1 arrives as ten bytes of ones and must be reinterpreted before it
+	// can be range-checked. Checking the uint64 directly would reject every
+	// negative value there is.
+	i := int64(v)
+	if i < math.MinInt32 || i > math.MaxInt32 {
+		return 0, fmt.Errorf("the value %d does not fit in 32 bits", i)
+	}
+	return int32(i), nil
+}
+
+func toSint64(v uint64) (int64, error) { return Unzigzag64(v), nil }
+
+// Unzigzag32 decodes a vector tile geometry parameter, and Unzigzag64 an
+// sint attribute value or an OSM element's delta.
+//
+// Deltas are commonly small and as often negative as positive, so the format
+// interleaves the two signs onto the naturals -- 0, -1, 1, -2 -> 0, 1, 2, 3 --
+// and a varint then spends one byte on both directions instead of ten on every
+// step west or north. An sint value is the same encoding at 64 bits.
+//
+// The two are written together, and named for their width, because they are
+// one rule with two spellings: the 64-bit one used to sit inline in the value
+// decoder where nothing connected it to this, and a shift or a cast at the
+// wrong width is invisible except at the extremes of the range. They live here
+// rather than in either decoder because both formats use the encoding -- the
+// vector tile for its geometry deltas, OSM PBF for node coordinates, way refs
+// and relation members -- and a second copy would be the same mistake this
+// package was extracted to undo.
+func Unzigzag32(v uint32) int32 {
+	return int32(v>>1) ^ -int32(v&1)
+}
+
+func Unzigzag64(v uint64) int64 {
+	return int64(v>>1) ^ -int64(v&1)
 }

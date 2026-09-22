@@ -2,6 +2,7 @@ package mvt
 
 import (
 	"fmt"
+	"github.com/wisborg/osmbase/internal/protobuf"
 	"math"
 	"math/bits"
 )
@@ -360,8 +361,8 @@ func decodeGeometry(t GeomType, g []uint32, extent uint32) (Geometry, error) {
 			// clearer spelling, because it puts the number being tested and
 			// the number being stored in the same expression instead of
 			// leaving the reader to work out that they agree.
-			nx := int64(cx) + int64(unzigzag32(g[i]))
-			ny := int64(cy) + int64(unzigzag32(g[i+1]))
+			nx := int64(cx) + int64(protobuf.Unzigzag32(g[i]))
+			ny := int64(cy) + int64(protobuf.Unzigzag32(g[i+1]))
 			if nx < -bound || nx > bound || ny < -bound || ny > bound {
 				return fmt.Errorf("a vertex at (%d, %d) is more than %d units from the origin, and a tile of extent %d cannot reach there", nx, ny, bound, extent)
 			}
@@ -542,26 +543,6 @@ func orient(r Ring, have, want int) Ring {
 		return r.reverse()
 	}
 	return r
-}
-
-// unzigzag32 decodes a geometry parameter integer, and unzigzag64 decodes an
-// sint attribute value.
-//
-// Deltas are commonly small and as often negative as positive, so the format
-// interleaves the two signs onto the naturals -- 0, -1, 1, -2 -> 0, 1, 2, 3 --
-// and a varint then spends one byte on both directions instead of ten on every
-// step west or north. An sint value is the same encoding at 64 bits.
-//
-// The two are written together, and named for their width, because they are
-// one rule with two spellings: the 64-bit one used to sit inline in the value
-// decoder where nothing connected it to this, and a shift or a cast at the
-// wrong width is invisible except at the extremes of the range.
-func unzigzag32(v uint32) int32 {
-	return int32(v>>1) ^ -int32(v&1)
-}
-
-func unzigzag64(v uint64) int64 {
-	return int64(v>>1) ^ -int64(v&1)
 }
 
 func commandName(cmd uint32) string {

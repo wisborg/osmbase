@@ -1,11 +1,11 @@
-package mvt
+package protobuf
 
 import (
 	"math"
 	"testing"
 )
 
-// TestUnzigzag32 and TestUnzigzag64 pin the parameter and sint decodings at
+// TestUnzigzag32 and TestUnzigzag64 pin the two widths at
 // the edges of their ranges, which is the only place a shift or a cast at the
 // wrong width shows.
 //
@@ -15,10 +15,10 @@ import (
 // largest positive number of the width, and the largest odd value to the most
 // negative.
 //
-// These are internal tests because the functions are unexported, and they are
-// worth having at that level rather than only through the decoder: the 32-bit
-// path is bounded by decodeGeometry long before its extremes are reachable, so
-// nothing above this can reach the values that matter.
+// They are worth having at this level rather than only through a decoder: the
+// 32-bit path is bounded by the vector tile's geometry decoding long before
+// its extremes are reachable, so nothing above this can reach the values that
+// matter.
 func TestUnzigzag32(t *testing.T) {
 	cases := []struct {
 		in   uint32
@@ -34,8 +34,8 @@ func TestUnzigzag32(t *testing.T) {
 		{0xffffffff, math.MinInt32}, // 2n-1 with n = 2147483648
 	}
 	for _, c := range cases {
-		if got := unzigzag32(c.in); got != c.want {
-			t.Errorf("unzigzag32(%#x) = %d, want %d", c.in, got, c.want)
+		if got := Unzigzag32(c.in); got != c.want {
+			t.Errorf("Unzigzag32(%#x) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
@@ -55,8 +55,8 @@ func TestUnzigzag64(t *testing.T) {
 		{0xffffffffffffffff, math.MinInt64},
 	}
 	for _, c := range cases {
-		if got := unzigzag64(c.in); got != c.want {
-			t.Errorf("unzigzag64(%#x) = %d, want %d", c.in, got, c.want)
+		if got := Unzigzag64(c.in); got != c.want {
+			t.Errorf("Unzigzag64(%#x) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
