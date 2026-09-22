@@ -3,6 +3,7 @@ package osm
 import (
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"testing"
 
@@ -78,6 +79,7 @@ func TestSurveyARealExtract(t *testing.T) {
 	}
 
 	t.Logf("%s: %d relations", *extractPath, relations)
+	surveyTaggedWays(t, open)
 	report(t, "relation boundary=administrative, admin_level", relAdmin)
 	report(t, "relation place", relPlace)
 	report(t, "way boundary=administrative, admin_level", wayAdmin)
@@ -109,4 +111,73 @@ func report(t *testing.T, label string, m map[string]int) {
 		}
 		t.Logf("    %-20q %6d", k, m[k])
 	}
+}
+
+// surveyTaggedWays answers the one question the counts above raise but cannot
+// settle: a way may carry boundary=administrative itself, and this pipeline
+// reads only relations, so either those ways are boundaries it is missing or
+// they are segments already named by a relation and tagged twice.
+//
+// Measured on Denmark: 174 of 175 are already relation members, and the one
+// that is not carries admin_level="", which is not a level. Sydney has none
+// at all. So reading only relations loses nothing in either -- but the answer
+// is a property of a country's tagging habits, which is why this reports
+// rather than assumes.
+func surveyTaggedWays(t *testing.T, open Open) {
+	t.Helper()
+
+	var members []int64
+	err := eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+		return b.EachRelation(func(r osmpbf.Relation) error {
+			if !r.Tags.Is("boundary", "administrative") {
+				return nil
+			}
+			for _, m := range r.Members {
+				if m.Type == osmpbf.MemberWay {
+					members = append(members, m.ID)
+				}
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("collecting relation members: %v", err)
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
+	members = slices.Compact(members)
+
+	var tagged, alsoMember, standalone int
+	err = eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+		return b.EachWay(func(w osmpbf.Way) error {
+			if !w.Tags.Is("boundary", "administrative") {
+				return nil
+			}
+			tagged++
+			if _, ok := slices.BinarySearch(members, w.ID); ok {
+				alsoMember++
+				return nil
+			}
+			// A boundary in its own right has to be a closed ring with a
+			// name and a level. Anything short of that is a fragment whose
+			// relation is outside the extract, or a tagging mistake.
+			closed := len(w.Refs) > 3 && w.Refs[0] == w.Refs[len(w.Refs)-1]
+			name, named := w.Tags.Get("name")
+			if _, hasLevel := adminLevel(w.Tags); closed && named && name != "" && hasLevel {
+				standalone++
+				t.Logf("    standalone boundary way %d, %d refs -- this pipeline does not read it",
+					w.ID, len(w.Refs))
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("walking ways: %v", err)
+	}
+
+	t.Logf("ways tagged boundary=administrative: %d", tagged)
+	if tagged > 0 {
+		t.Logf("    also named by a relation (so already read): %d (%.1f%%)",
+			alsoMember, 100*float64(alsoMember)/float64(tagged))
+	}
+	t.Logf("    standalone closed, named, levelled ways this pipeline misses: %d", standalone)
 }

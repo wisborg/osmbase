@@ -393,10 +393,14 @@ What follows:
    Sydney, 6 in Denmark. Same three passes, different predicate. Worth adding only if a
    country turns up that has them and lacks the admin relations — Denmark is not that
    country either.
-4. **Closed ways are unread.** A boundary may be a single closed way rather than a relation;
-   Denmark has 68 level-7 boundaries tagged on ways, Sydney none at all. Whether Denmark's
-   are duplicates of relation members or boundaries in their own right is still unchecked,
-   and it should be checked before part 5 assumes every outline comes from a relation.
+4. **Closed ways are unread, and that costs nothing — checked.** A boundary may be a single
+   closed way rather than a relation, and this pipeline reads only relations. Denmark tags
+   175 ways `boundary=administrative`; **174 of them (99.4%) are already members of an admin
+   relation**, so the tag is redundant on a segment the pipeline reads anyway. The single
+   orphan carries `admin_level=""`, which is not a level, so it would be refused even by a
+   pipeline that did read ways. Sydney tags none at all. `TestSurveyARealExtract` reports
+   this for any extract, because it is a property of a country's tagging habits rather than
+   a fact about the format.
 
 ### The rule the reviews keep finding
 
