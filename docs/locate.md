@@ -190,7 +190,7 @@ None of them requires the one after it to be useful.
 | 1 | **Shared protobuf reader** | ✅ committed — `internal/protobuf`, extracted from `mvt` |
 | 2 | **PBF block reader** | Blob/BlobHeader framing, zlib inflation, and `PrimitiveBlock` string tables decode from a synthetic fixture. No OSM semantics yet. |
 | 3 | **Element decoding** | Dense nodes (delta-encoded), ways, and relations come back as Go structs, with tags resolved against the string table. Fuzzed, as `mvt` is. |
-| 4 | **The three passes** | ✅ committed — `boundary/osm`. Relation → member ways with their coordinates and node ids. The *multiplier* is measured and recorded below; the **count** still is not — see the gate. |
+| 4 | **The three passes** | ✅ committed — `boundary/osm`. Relation → member ways with their coordinates and node ids. Measured against a real Denmark extract: the memory gate passes by two orders of magnitude, and the *data* premise does not hold there. See below. |
 | 5 | **Ring assembly** | Ways joined end to end into closed rings, outers and inners oriented, unclosed rings reported rather than silently dropped. |
 | 6 | **The derived file** | A compact format `boundary` can read, plus the writer. Versioned, because it is on somebody's disk. |
 | 7 | **`osmbase boundaries --osm`** | Fetch an extract through `acquire`, run the pipeline, delete the extract, record the ODbL obligation. |
@@ -309,22 +309,72 @@ required-features check nobody owned, two separate memory amplifications of four
 orders of magnitude, and a memory measurement taken on a workload that could not show the
 defect it was written to rule out.
 
-### The gate that has NOT been run
+### The gate: run, and passed by two orders of magnitude
 
-`docs/locate.md` asks for one number before this design is trusted, and part 4 did not
-produce it:
+Measured 2026-09-23 against `denmark-latest.osm.pbf` (472 MB, dated 2026-09-21), with
+`TestMeasureARealExtract`:
 
-> how many distinct nodes the admin boundaries reference [in a real Denmark extract]. If it
-> is a few million the sorted-slice approach is a few tens of megabytes and the design
-> holds. **If it is far larger, stop and reconsider.**
+| | all levels | levels 8–10 |
+|---|---|---|
+| boundaries kept | 145 | 23 |
+| distinct ways wanted | 5,725 (2,512 held) | 892 (72 held) |
+| **distinct nodes** | **554,214** | 4,399 |
+| coordinates held | 8.5 MB | 0.1 MB |
+| id sets | 4.3 MB | — |
+| live heap after three passes | 4.5 MB | 0.3 MB |
+| wall time, three passes | 25 s | 25 s |
 
-What part 4 measured is the **multiplier** — 8 bytes a distinct id — on synthetic ids. The
-count it multiplies is still an estimate. The pipeline is now complete enough to produce the
-real number: point `boundary/osm.Read` at a Denmark extract and print `wantedNodes.len()`.
-That needs a download, so it belongs with part 7 (`osmbase boundaries --osm`, which fetches
-through `acquire`) or a one-off run before part 5. **Do it before part 6 commits the
-on-disk format**, because an answer far above a few million changes what that format has to
-be.
+The plan expected "a few million" distinct nodes and warned to stop and reconsider above
+that. The real figure is **half a million**, and the whole working set is under 15 MB. The
+in-memory design holds with two orders of magnitude to spare, and the on-disk intermediate
+the plan named as the fallback is not needed.
+
+Two things the numbers say that the plan did not ask about. Three passes over 472 MB take
+**25 seconds**, all of it decode rather than IO, so a country is a coffee-break operation
+and a planet file is not. And **56% of the ways these relations name are not in the
+extract** (5,725 wanted, 2,512 held) — Denmark's own boundaries reference ways across its
+land borders and around its coast, so "a way beyond the cut" is the common case, not the
+edge case. Part 5 must treat an incomplete ring as normal input.
+
+### The premise did NOT hold, and that is the finding that matters
+
+The gate was about memory. The thing that actually threatens stage two is the data.
+
+`TestSurveyARealExtract` against the same file, counting what is there rather than what the
+pipeline keeps:
+
+```
+relation boundary=administrative, admin_level:  "7" 108   "8" 21   "4" 9   "2" 6   "6" 3   "10" 1   "9" 1
+way      boundary=administrative, admin_level:  "7"  68   "2" 56   "8" 14  "4" 7   "6" 5
+relation place:   island 53  islet 44  archipelago 27  hamlet 23  square 22  locality 12  suburb 6
+way      place:   islet 1030  square 695  hamlet 437  quarter 68  neighbourhood 56
+node     place:   hamlet 6626  village 1480  locality 970  neighbourhood 927  quarter 542  suburb 415
+```
+
+This document says, as the justification for the whole of stage two: *"levels 8 to 10 are
+suburb, and no other available dataset reaches them."* **In Denmark there are 21 relations
+at level 8 and one each at 9 and 10.** Level 7 is the kommune. So the OSM pipeline, in
+Denmark, lands at **municipality** — which is precisely the granularity geoBoundaries was
+rejected for in the table below, on the grounds that it "reaches neither of their goals".
+
+Where Denmark's suburbs actually live is as **points**: 415 `place=suburb` nodes, 927
+`place=neighbourhood`, 542 `place=quarter`. Containment is impossible against a point, so
+that is stage one's nearest-feature answer, which already exists.
+
+Three things follow, and they are a decision rather than a task:
+
+1. **This is one country.** Australian suburbs are mapped as administrative boundaries, and
+   Hornsby is the other stated use case. The survey should be run against a Sydney extract
+   before anything is concluded about the design — the answer may be that the pipeline is
+   right and Denmark is simply thin.
+2. **`place=*` polygons are the other candidate.** `place=suburb`/`quarter`/`neighbourhood`
+   on relations and closed ways is where sub-municipal polygons exist where they exist at
+   all. That is the same three passes with a different filter, so it is cheap to add — but
+   in Denmark it adds six relations, which does not rescue it there.
+3. **Closed ways are unread.** A boundary may be a single closed way rather than a relation,
+   and 68 of Denmark's level-7 boundaries are tagged on ways. The pipeline reads only
+   relations. Whether those are duplicates of relation members or boundaries in their own
+   right is unchecked, and it should be checked before part 5.
 
 ### The rule the reviews keep finding
 
