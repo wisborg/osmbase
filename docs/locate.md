@@ -336,7 +336,7 @@ extract** (5,725 wanted, 2,512 held) — Denmark's own boundaries reference ways
 land borders and around its coast, so "a way beyond the cut" is the common case, not the
 edge case. Part 5 must treat an incomplete ring as normal input.
 
-### The premise did NOT hold, and that is the finding that matters
+### The premise holds where the mapping does — Denmark is thin, Sydney is not
 
 The gate was about memory. The thing that actually threatens stage two is the data.
 
@@ -361,20 +361,42 @@ Where Denmark's suburbs actually live is as **points**: 415 `place=suburb` nodes
 `place=neighbourhood`, 542 `place=quarter`. Containment is impossible against a point, so
 that is stage one's nearest-feature answer, which already exists.
 
-Three things follow, and they are a decision rather than a task:
+So the survey was run against Sydney (BBBike, 54 MB) before concluding anything, and it
+answers the question:
 
-1. **This is one country.** Australian suburbs are mapped as administrative boundaries, and
-   Hornsby is the other stated use case. The survey should be run against a Sydney extract
-   before anything is concluded about the design — the answer may be that the pipeline is
-   right and Denmark is simply thin.
-2. **`place=*` polygons are the other candidate.** `place=suburb`/`quarter`/`neighbourhood`
-   on relations and closed ways is where sub-municipal polygons exist where they exist at
-   all. That is the same three passes with a different filter, so it is cheap to add — but
-   in Denmark it adds six relations, which does not rescue it there.
-3. **Closed ways are unread.** A boundary may be a single closed way rather than a relation,
-   and 68 of Denmark's level-7 boundaries are tagged on ways. The pipeline reads only
-   relations. Whether those are duplicates of relation members or boundaries in their own
-   right is unchecked, and it should be checked before part 5.
+```
+relation boundary=administrative, admin_level:  "9" 522   "6" 58   "2" 1   "4" 1
+relation place:   suburb 509  municipality 28  borough 8
+node     place:   suburb 483  locality 108  neighbourhood 58
+```
+
+**522 administrative relations at level 9, and they are the suburbs.** The whole pipeline
+end to end on that extract: 522 boundaries at levels 8–10, every one of them with geometry,
+61,382 distinct nodes, 0.9 MB of coordinates, 0.7 MB of live heap, three seconds. Hornsby
+comes out at level 9 with 46 member ways and 496 points.
+
+**The design is right and Denmark is thin.** Australia maps suburbs as administrative
+boundaries; Denmark maps them as points and stops its admin hierarchy at the kommune. That
+is a property of each country's mapping community, not of this pipeline, and no dataset
+choice fixes it — geoBoundaries and Overture inherit the same OSM tagging.
+
+What follows:
+
+1. **Ship it, and let the data answer per country.** Where the relations exist, containment
+   works; where they do not, `locate` already falls back to stage one's nearest point. The
+   fallback is the honest answer for Denmark rather than a failure, and the `Source` field
+   on a `Match` already tells a caller which it got.
+2. **Every way arrives open.** Not one of Hornsby's 46 ways is closed on its own, and the
+   same is true across the extract. Ring assembly is not an optimisation for tidiness; it
+   is the only thing that turns this output into a polygon. Part 5 is load-bearing.
+3. **`place=*` polygons remain a candidate, and are cheap.** 509 `place=suburb` relations in
+   Sydney, 6 in Denmark. Same three passes, different predicate. Worth adding only if a
+   country turns up that has them and lacks the admin relations — Denmark is not that
+   country either.
+4. **Closed ways are unread.** A boundary may be a single closed way rather than a relation;
+   Denmark has 68 level-7 boundaries tagged on ways, Sydney none at all. Whether Denmark's
+   are duplicates of relation members or boundaries in their own right is still unchecked,
+   and it should be checked before part 5 assumes every outline comes from a relation.
 
 ### The rule the reviews keep finding
 
