@@ -174,3 +174,104 @@ func TestATagRunThatEndsLateIsRefused(t *testing.T) {
 		t.Errorf("EachNode: %v, want an error about the leftover entries", err)
 	}
 }
+
+// The origin is bounded per axis. An earlier version bounded latitude by the
+// longitude figure, which let a node come back at 270 degrees north -- no
+// error, no NaN, a confident position that does not exist.
+func TestTheOriginIsBoundedPerAxis(t *testing.T) {
+	const beyondLat = 90_000_000_001
+	const withinLon = 179_000_000_000
+
+	t.Run("a latitude origin past its own axis", func(t *testing.T) {
+		_, err := DecodePrimitiveBlock(primitiveBlock(stringTable(""), pbVarint(19, beyondLat)))
+		if err == nil {
+			t.Error("a latitude origin of 90.000000001 degrees was accepted")
+		}
+	})
+
+	t.Run("a longitude origin at the same value is fine", func(t *testing.T) {
+		b, err := DecodePrimitiveBlock(primitiveBlock(stringTable(""), pbVarint(20, beyondLat)))
+		if err != nil {
+			t.Fatalf("a longitude origin well inside its axis was refused: %v", err)
+		}
+		if b.LonOffset != beyondLat {
+			t.Errorf("lon offset = %d, want %d", b.LonOffset, int64(beyondLat))
+		}
+	})
+
+	t.Run("a longitude origin near its own limit", func(t *testing.T) {
+		if _, err := DecodePrimitiveBlock(primitiveBlock(stringTable(""), pbVarint(20, withinLon))); err != nil {
+			t.Errorf("a longitude origin of 179 degrees was refused: %v", err)
+		}
+	})
+}
+
+// Each within its axis and the sum outside it is the case bounding the two
+// separately cannot catch, and it is the one that produced 270 degrees north.
+func TestTheOriginAndTheCoordinateAreBoundedTogether(t *testing.T) {
+	// An origin at the pole, and a node a further 45 degrees north of it.
+	extra := pbVarint(17, 100) // granularity
+	extra = append(extra, pbVarint(19, 90_000_000_000)...)
+	data := primitiveBlock(stringTable(""), extra,
+		denseNodes([]int64{1}, []int64{450_000_000}, []int64{0}, nil))
+
+	b, err := DecodePrimitiveBlock(data)
+	if err != nil {
+		t.Fatalf("DecodePrimitiveBlock: %v", err)
+	}
+	err = b.EachNode(func(n Node) error { return nil })
+	if err == nil {
+		t.Fatal("a node 135 degrees north was accepted")
+	}
+	if !strings.Contains(err.Error(), "origin is applied") {
+		t.Errorf("EachNode: %v, want an error naming the origin", err)
+	}
+}
+
+// An origin a real file uses, with a node inside it, must still decode.
+func TestAnOriginWithANodeInsideItIsAccepted(t *testing.T) {
+	extra := pbVarint(17, 100)
+	extra = append(extra, pbVarint(19, 50_000_000_000)...) // 50 degrees north
+	data := primitiveBlock(stringTable(""), extra,
+		denseNodes([]int64{1}, []int64{57_000_000}, []int64{95_000_000}, nil))
+
+	b, err := DecodePrimitiveBlock(data)
+	if err != nil {
+		t.Fatalf("DecodePrimitiveBlock: %v", err)
+	}
+	var seen bool
+	if err := b.EachNode(func(n Node) error {
+		seen = true
+		lat, lon := b.Degrees(n.Lat, n.Lon)
+		if lat < 55.6 || lat > 55.8 || lon < 9.4 || lon > 9.6 {
+			t.Errorf("the node came back at %f,%f, want about 55.7,9.5", lat, lon)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("EachNode: %v", err)
+	}
+	if !seen {
+		t.Error("the node did not come back")
+	}
+}
+
+// Counting entries is not enough. One entry is bounded only by the block, so
+// a handful of 32 MiB strings passes MaxStrings comfortably -- and every
+// element resolving one gets a fresh copy.
+func TestAStringTableEntryIsBounded(t *testing.T) {
+	long := strings.Repeat("x", MaxStringBytes+1)
+	_, err := DecodePrimitiveBlock(primitiveBlock(stringTable("", long), nil))
+	if err == nil {
+		t.Fatalf("a string table entry of %d bytes was accepted", len(long))
+	}
+	if !strings.Contains(err.Error(), "at most") {
+		t.Errorf("DecodePrimitiveBlock: %v, want an error naming the limit", err)
+	}
+
+	// And the longest thing OpenStreetMap legitimately carries -- a
+	// description, an opening-hours expression -- must still read.
+	ok := strings.Repeat("Mo-Fr 09:00-17:00; ", 100)
+	if _, err := DecodePrimitiveBlock(primitiveBlock(stringTable("", ok), nil)); err != nil {
+		t.Errorf("a %d byte tag value was refused: %v", len(ok), err)
+	}
+}

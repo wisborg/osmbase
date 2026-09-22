@@ -71,7 +71,9 @@ func TestABoundaryComesBackWithItsGeometry(t *testing.T) {
 	}
 	// The first way runs 1 -> 2 -> 3, and the coordinates must arrive in that
 	// order and at those places.
-	want := []Point{{55.70, 9.50}, {55.70, 9.60}, {55.80, 9.60}}
+	// Keyed, so that a reordering of Point's fields fails here rather than
+	// compiling and passing with the world transposed.
+	want := []Point{{Lat: 55.70, Lon: 9.50}, {Lat: 55.70, Lon: 9.60}, {Lat: 55.80, Lon: 9.60}}
 	for i, p := range b.Ways[0].Points {
 		if math.Abs(p.Lat-want[i].Lat) > 1e-7 || math.Abs(p.Lon-want[i].Lon) > 1e-7 {
 			t.Errorf("point %d = %v, want %v", i, p, want[i])
@@ -278,7 +280,7 @@ func TestTheLimitsAreEnforced(t *testing.T) {
 		{"nodes", Limits{Boundaries: 100, Ways: 100, Nodes: 1}, "ids were wanted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Read(from(file), tc.limits.options())
+			_, err := Read(from(file), Options{Limits: tc.limits})
 			if err == nil {
 				t.Fatalf("a limit of %+v was not enforced", tc.limits)
 			}
@@ -288,8 +290,6 @@ func TestTheLimitsAreEnforced(t *testing.T) {
 		})
 	}
 }
-
-func (l Limits) options() Options { return Options{Limits: l} }
 
 // The zero Limits must mean the defaults, not a pipeline that refuses
 // everything.
@@ -305,5 +305,138 @@ func TestAnUnopenableExtractIsReported(t *testing.T) {
 	_, err := Read(func() (io.ReadCloser, error) { return nil, want }, Options{})
 	if !errors.Is(err, want) {
 		t.Errorf("Read: %v, want the opener's own error", err)
+	}
+}
+
+// The geometry handed back is not proportional to anything the passes
+// recorded: one way's node list is expanded once per relation that names it,
+// and boundary ways are shared between neighbours. Measured before this had
+// its own limit, a 1,495-byte file yielded 1.6 GB.
+func TestTheGeometryHandedBackIsBounded(t *testing.T) {
+	const ways, relations, refsPerWay = 4, 40, 200
+
+	e := osmbasetest.NewExtract().Node(1, 55.7, 9.5)
+	refs := make([]int64, refsPerWay)
+	for i := range refs {
+		refs[i] = 1 // every reference to the one node, so the file stays tiny
+	}
+	members := make([]osmbasetest.ExtractMember, 0, ways)
+	for w := int64(10); w < 10+ways; w++ {
+		e.Way(w, refs)
+		members = append(members, osmbasetest.ExtractMember{Type: "way", ID: w, Role: "outer"})
+	}
+	// Every relation names every way, which is the shape heavy sharing takes
+	// and needs no duplicate members to reach.
+	for r := int64(100); r < 100+relations; r++ {
+		e.Relation(r, members, "boundary", "administrative", "admin_level", "8", "name", "Shared")
+	}
+	file := e.Bytes()
+
+	total := ways * relations * refsPerWay
+	t.Run("past the limit", func(t *testing.T) {
+		_, err := Read(from(file), Options{Limits: Limits{Points: total - 1}})
+		if err == nil {
+			t.Fatalf("a %d byte file expanded to %d points with a limit of %d", len(file), total, total-1)
+		}
+		if !strings.Contains(err.Error(), "points") {
+			t.Errorf("Read: %v, want an error naming the points", err)
+		}
+	})
+
+	t.Run("within it", func(t *testing.T) {
+		got, err := Read(from(file), Options{Limits: Limits{Points: total}})
+		if err != nil {
+			t.Fatalf("a file expanding to exactly the limit was refused: %v", err)
+		}
+		if len(got) != relations {
+			t.Errorf("read %d boundaries, want %d", len(got), relations)
+		}
+	})
+}
+
+// A node held twice gets the same answer as a way held twice: the file gives
+// two positions and there is no mechanism to make them agree, and this is the
+// structure whose values end up as drawn pixels.
+func TestANodeHeldTwiceIsRefused(t *testing.T) {
+	e := osmbasetest.NewExtract().
+		Node(1, 55.7, 9.5).
+		Node(1, 56.9, 10.9). // the same id, somewhere else
+		Node(2, 55.8, 9.6).
+		Way(10, []int64{1, 2})
+	e.Relation(100, []osmbasetest.ExtractMember{{Type: "way", ID: 10, Role: "outer"}},
+		"boundary", "administrative", "admin_level", "8", "name", "Horsens")
+
+	_, err := Read(from(e.Bytes()), Options{})
+	if err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("Read: %v, want a refusal naming the duplicate node", err)
+	}
+}
+
+// A way with no references at all is degenerate but permitted. It must be
+// distinguishable from a way the extract does not hold, and a second copy of
+// it must still be caught -- which nil-as-sentinel could not do, because
+// whether an empty Refs clones to nil depends on where the way sits in the
+// file.
+func TestAWayWithNoReferencesIsStillAWayThatWasSeen(t *testing.T) {
+	e := osmbasetest.NewExtract().
+		Node(1, 55.7, 9.5).Node(2, 55.8, 9.6).
+		Way(10, nil).           // no references, and first in the file
+		Way(10, []int64{1, 2}). // the same id again
+		Way(11, []int64{1, 2})
+	e.Relation(100, []osmbasetest.ExtractMember{
+		{Type: "way", ID: 10, Role: "outer"},
+		{Type: "way", ID: 11, Role: "outer"},
+	}, "boundary", "administrative", "admin_level", "8", "name", "Horsens")
+
+	_, err := Read(from(e.Bytes()), Options{})
+	if err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("Read: %v, want the duplicate caught even though the first copy is empty", err)
+	}
+}
+
+// Ring assembly joins ways by the node they share, so the ids have to survive
+// the pipeline alongside the coordinates.
+func TestAWayCarriesTheNodeIdsBesideItsPoints(t *testing.T) {
+	got, err := Read(from(square(t)), Options{})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	w := got[0].Ways[0]
+	if len(w.Nodes) != len(w.Points) {
+		t.Fatalf("the way has %d node ids and %d points; they must correspond", len(w.Nodes), len(w.Points))
+	}
+	want := []int64{1, 2, 3}
+	for i, id := range want {
+		if w.Nodes[i] != id {
+			t.Errorf("node id %d = %d, want %d", i, w.Nodes[i], id)
+		}
+	}
+	// The two ways of the square meet at node 3, and that is the join part 5
+	// makes. Asserted here because it is the property the ids exist for.
+	last := got[0].Ways[0].Nodes[len(got[0].Ways[0].Nodes)-1]
+	if first := got[0].Ways[1].Nodes[0]; first != last {
+		t.Errorf("the ways meet at ids %d and %d, want the same node", last, first)
+	}
+}
+
+// Raising one limit must not silently zero the others. All-or-nothing
+// defaulting meant a caller who set only Nodes got an error saying the
+// extract declared more than zero boundaries -- naming no field, and blaming
+// the file for the caller's struct literal.
+func TestOneLimitMayBeRaisedWithoutSettingTheRest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		limits Limits
+	}{
+		{"only boundaries", Limits{Boundaries: 10}},
+		{"only ways", Limits{Ways: 10}},
+		{"only nodes", Limits{Nodes: 10}},
+		{"only points", Limits{Points: 10}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Read(from(square(t)), Options{Limits: tc.limits}); err != nil {
+				t.Errorf("Read with %+v: %v", tc.limits, err)
+			}
+		})
 	}
 }

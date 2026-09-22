@@ -31,6 +31,14 @@ const (
 const (
 	MaxStrings = 1 << 20
 	MaxGroups  = 1 << 16
+
+	// MaxStringBytes bounds one entry. Counts alone are not enough: an entry
+	// is bounded only by the block, so a table of a handful of 32 MiB strings
+	// passes MaxStrings comfortably, and every element that resolves one gets
+	// a fresh copy of it. A name, a key and a role are all short; the
+	// longest thing OpenStreetMap legitimately carries in a tag value is a
+	// description or an opening-hours expression, which is hundreds of bytes.
+	MaxStringBytes = 1 << 16
 )
 
 // MaxGranularity is the largest coordinate scaling this accepts.
@@ -209,11 +217,11 @@ func DecodePrimitiveBlock(data []byte) (PrimitiveBlock, error) {
 			}
 			b.DateGranularity = int32(v)
 		case field == 19 && wire == protobuf.WireVarint: // lat_offset
-			if b.LatOffset, err = offset(r, "a latitude offset"); err != nil {
+			if b.LatOffset, err = offset(r, "a latitude offset", maxLatUnits); err != nil {
 				return PrimitiveBlock{}, err
 			}
 		case field == 20 && wire == protobuf.WireVarint: // lon_offset
-			if b.LonOffset, err = offset(r, "a longitude offset"); err != nil {
+			if b.LonOffset, err = offset(r, "a longitude offset", maxLonUnits); err != nil {
 				return PrimitiveBlock{}, err
 			}
 		default:
@@ -235,21 +243,26 @@ func DecodePrimitiveBlock(data []byte) (PrimitiveBlock, error) {
 	return b, nil
 }
 
-// offset reads a block's coordinate origin, bounded to the coordinate system.
+// offset reads a block's coordinate origin, bounded to its own axis.
 //
-// A whole turn of the Earth either way, which is more slack than any real
-// file uses -- they almost all write zero. The bound is here so that the
-// origin plus a bounded coordinate cannot overflow the int64 the two are
-// added in, which would put the block somewhere else with no error.
-func offset(r *protobuf.Reader, what string) (int64, error) {
+// Per axis, because latitude runs to 90 degrees and longitude to 180, and an
+// earlier version bounded both by the longitude figure. That was not merely
+// loose: the origin is added to a scaled coordinate that is itself bounded to
+// the axis, so a latitude origin allowed 180 degrees of slack let a node come
+// back at 270 degrees north -- no error, no NaN, just a confident position
+// that does not exist.
+//
+// The bound also keeps the addition in Degrees inside int64, which is where
+// the arithmetic would otherwise wrap silently.
+func offset(r *protobuf.Reader, what string, limit int64) (int64, error) {
 	v, err := r.Uvarint(what)
 	if err != nil {
 		return 0, err
 	}
 	o := int64(v)
-	if o < -maxLonUnits || o > maxLonUnits {
-		return 0, fmt.Errorf("osmpbf: a primitive block declares %s of %d, past the %d nanodegrees the coordinate system has",
-			what, o, int64(maxLonUnits))
+	if o < -limit || o > limit {
+		return 0, fmt.Errorf("osmpbf: a primitive block declares %s of %d, past the %d nanodegrees that axis has",
+			what, o, limit)
 	}
 	return o, nil
 }
@@ -271,6 +284,10 @@ func decodeStringTable(data []byte) ([][]byte, error) {
 			if len(out) >= MaxStrings {
 				return nil, fmt.Errorf(
 					"osmpbf: a string table holds more than %d entries, and the block's own size cannot account for that many", MaxStrings)
+			}
+			if len(v) > MaxStringBytes {
+				return nil, fmt.Errorf("osmpbf: a string table entry is %d bytes, and this reads at most %d",
+					len(v), MaxStringBytes)
 			}
 			out = append(out, v)
 			continue

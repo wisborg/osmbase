@@ -2,6 +2,7 @@ package osm
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"testing"
@@ -125,7 +126,7 @@ func TestOnlyTheNodesTheBoundariesTouchAreKept(t *testing.T) {
 
 	open := from(e.Bytes())
 
-	_, wantedWays, err := readRelations(open, Options{Limits: DefaultLimits})
+	_, wantedWays, err := readRelations(open, Options{Limits: DefaultLimits()})
 	if err != nil {
 		t.Fatalf("pass 1: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestOnlyTheNodesTheBoundariesTouchAreKept(t *testing.T) {
 		t.Errorf("pass 1 wants %d ways, want 1; the other %d are not boundaries", wantedWays.len(), 20)
 	}
 
-	_, wantedNodes, err := readWays(open, wantedWays, DefaultLimits)
+	_, wantedNodes, err := readWays(open, wantedWays, DefaultLimits())
 	if err != nil {
 		t.Fatalf("pass 2: %v", err)
 	}
@@ -146,8 +147,32 @@ func TestOnlyTheNodesTheBoundariesTouchAreKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pass 3: %v", err)
 	}
-	if len(points) != 4 {
-		t.Errorf("pass 3 kept %d coordinates out of an extract of %d nodes", len(points), irrelevant+4)
+	// len(points) is wantedNodes.len() by construction, so counting them
+	// asserts nothing the line above has not. What has to be true and is not
+	// guaranteed is that each coordinate landed at the POSITION its id
+	// occupies in the frozen set -- that is the whole reason the set is a
+	// sorted slice rather than a map, and a pass 3 that filled the array in
+	// arrival order instead would put every coordinate on the wrong node.
+	//
+	// The ids are 1 to 4 and the fixture puts node i at 55.7+i/100,
+	// 9.5+i/100, so position i-1 must hold exactly that.
+	for i := int64(1); i <= 4; i++ {
+		if !wantedNodes.has(i) {
+			t.Errorf("pass 2 did not want node %d, which the boundary way names", i)
+			continue
+		}
+		p := points[i-1]
+		wantLat, wantLon := 55.7+float64(i)/100, 9.5+float64(i)/100
+		if math.Abs(p.Lat-wantLat) > 1e-7 || math.Abs(p.Lon-wantLon) > 1e-7 {
+			t.Errorf("node %d came back at %v, want %v,%v", i, p, wantLat, wantLon)
+		}
+	}
+	// And nothing from the other twenty thousand, which sit in a different
+	// square of the map entirely.
+	for _, p := range points {
+		if p.Lat < 55.1 {
+			t.Errorf("a coordinate at %v is one of the building nodes, which no boundary touches", p)
+		}
 	}
 }
 
@@ -207,7 +232,18 @@ func TestIDSetRetainedSize(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds two structures of a million entries")
 	}
-	const n = 1 << 20
+	// Not a power of two, and every id added three times. Both matter, and
+	// an earlier version of this test had neither -- which is why it read 8
+	// bytes an id from a set that was really holding an array sized by the
+	// number of add calls. A power-of-two count with no duplicates is the one
+	// arrangement in which append's last growth step lands exactly on the
+	// length, leaving no spare array to notice.
+	//
+	// Three times is conservative against the real pass: a boundary way is a
+	// member of both neighbouring relations, and its end nodes belong to the
+	// way on either side.
+	const n = 1_000_003
+	const duplication = 3
 
 	ids := make([]int64, n)
 	for i := range ids {
@@ -215,9 +251,11 @@ func TestIDSetRetainedSize(t *testing.T) {
 	}
 
 	slicePer := retainedPerEntry(t, n, func() any {
-		s := newIDSet(n * 2)
-		for _, id := range ids {
-			_ = s.add(id)
+		s := newIDSet(n * duplication * 2)
+		for range duplication {
+			for _, id := range ids {
+				_ = s.add(id)
+			}
 		}
 		s.freeze()
 		return s
@@ -233,8 +271,11 @@ func TestIDSetRetainedSize(t *testing.T) {
 
 	t.Logf("retained per id: sorted slice %d bytes, map %d bytes", slicePer, mapPer)
 
-	// The sorted slice is one int64 an entry and nothing else, once frozen
-	// has clipped the spare capacity.
+	// One int64 an entry and nothing else, once freeze has handed back the
+	// array append grew. slices.Clip does not do that -- it lowers the cap
+	// and leaves the array reachable -- so this is the assertion that tells
+	// the two apart, and the duplication above is what gives it something to
+	// see.
 	if slicePer > 12 {
 		t.Errorf("the sorted slice retains %d bytes an id, want about 8", slicePer)
 	}

@@ -154,11 +154,20 @@ Two consequences to design around rather than discover:
 
 - The wanted-ID sets must themselves be compact. A **sorted slice of int64 with a binary
   search** is built once and never mutated, which is exactly the access pattern.
-  **Measured** (`TestIDSetRetainedSize`, `BenchmarkIDSet`, one million spread-out ids):
-  the sorted slice retains **8 bytes an id**, a `map[int64]struct{}` **28**, and the slice
-  builds about twelve times faster. The estimate here was originally ~50 bytes for the map;
-  Go's map is more compact than that now, so the ratio is 3.5x rather than 6x — the
-  conclusion is unchanged but the margin is smaller than the plan assumed.
+  **Measured** (`TestIDSetRetainedSize`, `BenchmarkIDSet`, a million ids each added three
+  times, a count deliberately not a power of two): the sorted slice retains **8 bytes an
+  id**, a `map[int64]struct{}` **29**, and the slice builds about twelve times faster. The
+  estimate here was originally ~50 bytes for the map; Go's map is more compact than that
+  now, so the ratio is 3.6x rather than 6x — the conclusion is unchanged, the margin is
+  smaller than the plan assumed.
+
+  The duplication and the odd count in that test are not decoration. The first version used
+  a power-of-two count with no duplicates, which is the one arrangement in which append's
+  last growth step lands exactly on the length — it read 8 bytes from a set that was really
+  holding an array sized by the number of `add` calls, and `freeze` used `slices.Clip`,
+  which lowers the cap without releasing anything. On the realistic workload that was
+  **25 bytes an id against the map's 29**, which would have left the design's whole
+  rationale standing on a 1.2x margin. `freeze` copies into an exactly-sized array now.
   The sorted slice pays a second time, and this was not in the original plan: because a
   binary search yields a *position*, the coordinates can live in an array parallel to the
   frozen set instead of a `map[int64]Point`. That is 24 bytes a node all-in, against a map's
@@ -181,7 +190,7 @@ None of them requires the one after it to be useful.
 | 1 | **Shared protobuf reader** | ✅ committed — `internal/protobuf`, extracted from `mvt` |
 | 2 | **PBF block reader** | Blob/BlobHeader framing, zlib inflation, and `PrimitiveBlock` string tables decode from a synthetic fixture. No OSM semantics yet. |
 | 3 | **Element decoding** | Dense nodes (delta-encoded), ways, and relations come back as Go structs, with tags resolved against the string table. Fuzzed, as `mvt` is. |
-| 4 | **The three passes** | Given a reader, produce relation → rings of coordinates. This is where the memory question is answered, with the measurement recorded. |
+| 4 | **The three passes** | ✅ committed — `boundary/osm`. Relation → member ways with their coordinates and node ids. The *multiplier* is measured and recorded below; the **count** still is not — see the gate. |
 | 5 | **Ring assembly** | Ways joined end to end into closed rings, outers and inners oriented, unclosed rings reported rather than silently dropped. |
 | 6 | **The derived file** | A compact format `boundary` can read, plus the writer. Versioned, because it is on somebody's disk. |
 | 7 | **`osmbase boundaries --osm`** | Fetch an extract through `acquire`, run the pipeline, delete the extract, record the ODbL obligation. |
@@ -288,53 +297,73 @@ Stage one is **built and merged**: country, region and water answered by contain
 Natural Earth, everything below by nearest-feature from the tiles, with `Place.Source` and
 `Match.DistanceM` saying which and how far.
 
-Stage two is **through part 3**. Parts 1 to 3 are committed on `decode-osm-elements`:
-the protobuf reader is shared between the formats and knows the signed encodings,
-`osmpbf` reads the file framing, blob decompression, header features and primitive
-blocks, and nodes, ways and relations come back as Go structs with their tags
-resolved. Parts 4 to 8 are untouched.
+Stage two is **through part 4**. Parts 1 to 4 are committed: the shared protobuf reader
+knows the signed encodings, `osmpbf` reads framing, blocks and elements, and `boundary/osm`
+runs the three passes to produce each boundary's member ways with their coordinates and
+node ids. Parts 5 to 8 are untouched.
 
 To resume: read this file, then the "Place names" section of `architecture.md`, then start
-at part 4 of the table. The three reviews are worth repeating per sub-part — on stage one
-they found a path traversal, an architectural violation, a concurrency crash and seven
-provably-deletable decisions; on part 2 a 90,000× memory amplification and a
-required-features check nobody owned; on part 3 the same amplification class one layer in,
-a granularity narrowed before it was bounded, and an aliasing trap with no way for a caller
-to escape it. None of it was visible from the code reading correctly.
+at part 5 of the table. The three reviews are worth repeating per sub-part — across parts 1
+to 4 they have found a path traversal, an architectural violation, a concurrency crash, a
+required-features check nobody owned, two separate memory amplifications of four to five
+orders of magnitude, and a memory measurement taken on a workload that could not show the
+defect it was written to rule out.
+
+### The gate that has NOT been run
+
+`docs/locate.md` asks for one number before this design is trusted, and part 4 did not
+produce it:
+
+> how many distinct nodes the admin boundaries reference [in a real Denmark extract]. If it
+> is a few million the sorted-slice approach is a few tens of megabytes and the design
+> holds. **If it is far larger, stop and reconsider.**
+
+What part 4 measured is the **multiplier** — 8 bytes a distinct id — on synthetic ids. The
+count it multiplies is still an estimate. The pipeline is now complete enough to produce the
+real number: point `boundary/osm.Read` at a Denmark extract and print `wantedNodes.len()`.
+That needs a download, so it belongs with part 7 (`osmbase boundaries --osm`, which fetches
+through `acquire`) or a one-off run before part 5. **Do it before part 6 commits the
+on-disk format**, because an answer far above a few million changes what that format has to
+be.
 
 ### The rule the reviews keep finding
 
-Three times now the same defect has appeared in a new place: **a limit that bounds what a
-decoder returns instead of what it allocates**. The string table in part 2, then every
-packed element run in part 3. The fix each time is the same — check the count *before* the
-append, in the loop doing the appending, not after the run — and it now lives in
-`protobuf.Packed`, which every repeated numeric field goes through.
+Four times now, in four different places: **a limit that bounds what a decoder returns
+instead of what it allocates**. The string table (part 2), every packed element run (part
+3), then in part 4 both the geometry `assemble` expands — a 1,495-byte file produced 1.6 GB
+— and the string table entries a relation's names and roles copy out. The fix is always the
+same: check before the append, in the loop doing the appending.
 
-Two things follow for part 4, which builds the first structure whose size is not bounded by
-one block:
+Two corollaries, both learned the hard way here:
 
-- The node-to-coordinate map is the obvious next instance. It is sized by the *file*, and
-  the memory analysis above assumes only boundary-referenced nodes are kept. Whatever
-  enforces that has to refuse before it allocates, not report afterwards.
-- A test that asserts an error came back does not test this. It passes before and after the
-  fix; `TestACraftedRunCannotAllocateInProportionToItself` measures the allocation instead,
-  and is the shape to copy.
+- **A test that asserts an error came back does not test this.** It passes before and after
+  the fix. Measure the allocation instead; `TestACraftedRunCannotAllocateInProportionToItself`
+  and `TestTheGeometryHandedBackIsBounded` are the shapes to copy.
+- **A limit on counts is not a limit on bytes.** `MaxStrings` bounded how many entries a
+  table held and nothing bounded how long one was, so a 450-byte file retained 1.26 GB.
+  Both axes need a bound.
 
-### Carried into part 4
+### Carried into part 5
 
 - **The decompression-bomb guard is still in three places** — `pmtiles.decompress`,
-  `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and three copies
-  of the reasoning. Carried from part 3, where it was deferred again because it touches two
-  working packages. It has already diverged once. It should be one function taking a
-  decompressor constructor, an optional reusable buffer and a package name.
-- **The header's sort order is still unread.** `Header.OptionalFeatures` has no consumer,
-  and a file marked sorted type-then-id lets the three passes stop early rather than read to
-  the end. Part 4 is where that pays off.
-- **`Header` does not carry the bounding box.** Readable now that signed varints exist; it
-  would let a caller reject an extract that does not cover the area before reading an
-  element.
+  `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and three copies of
+  the reasoning. Carried since part 3. It has already diverged once.
+- **The header's sort order is still unread**, and `osmpbf.ErrStop` still has no consumer
+  outside its own test. The plan said part 4 was where early termination paid off; part 4
+  read every block of all three passes to EOF. Either wire it up or strike the claim.
+- **`Header` does not carry the bounding box**, which would let a caller reject an extract
+  that does not cover the area before reading an element.
+- **The protobuf fixture primitives exist twice**: `osmbasetest` (shared by `Extract` and
+  the tile builder) and `osmpbf/fixture_test.go`. The latter should keep only what expresses
+  *malformed* files — `truncatedZlibBlob`, `zlibBlobDeclaring`, `paddedHeader`, `framedWith`
+  — which `Extract` cannot and should not express.
+- **`osmbasetest.Extract` emits one block per element kind**, so a multi-block file, a block
+  mixing kinds, a non-default granularity and a coordinate origin are all unexercised. A
+  real country extract has tens of thousands of blocks. A block-size option would close it.
+- **`Read` returns everything in memory.** Part 6 writes these out one at a time; a
+  `func(Boundary) error` form would let it stream and roughly halve peak, since a boundary
+  way shared between two neighbours currently has its coordinates held twice.
 
 One gap is knowingly left open: `unzlib` grows its buffer to the declared size only when one
-was declared, and that decision is invisible in the output, so no test pins it. A
-`runtime.MemStats` delta is too flaky to be worth it; an `AllocedBytesPerOp` benchmark is the
-honest form if it ever matters.
+was declared, and that decision is invisible in the output, so no test pins it. An
+`AllocedBytesPerOp` benchmark is the honest form if it ever matters.

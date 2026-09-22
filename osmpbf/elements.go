@@ -396,9 +396,19 @@ func (b *PrimitiveBlock) eachDenseNode(data []byte, f func(Node) error) error {
 // coordinate is what keeps this check itself from overflowing.
 func (b *PrimitiveBlock) onEarth(lat, lon int64) error {
 	g := int64(b.Granularity)
+	// The scaled value first, so neither multiply can overflow: each side is
+	// at most the axis limit, which is 1.8e11 at the outside.
 	if lat < -maxLatUnits/g || lat > maxLatUnits/g || lon < -maxLonUnits/g || lon > maxLonUnits/g {
 		return fmt.Errorf("osmpbf: a node is at %d,%d in units of %d nanodegrees, which is off the Earth",
 			lat, lon, g)
+	}
+	// Then the origin, which Degrees adds. Bounding the two separately is not
+	// enough: each may be within its axis and the sum outside it, and the
+	// result is a node at a latitude the Earth does not have.
+	if absLat, absLon := b.LatOffset+g*lat, b.LonOffset+g*lon; absLat < -maxLatUnits ||
+		absLat > maxLatUnits || absLon < -maxLonUnits || absLon > maxLonUnits {
+		return fmt.Errorf("osmpbf: a node is at %d,%d nanodegrees once the block's origin is applied, which is off the Earth",
+			absLat, absLon)
 	}
 	return nil
 }

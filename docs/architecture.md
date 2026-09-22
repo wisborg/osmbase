@@ -49,9 +49,10 @@ package inside either of them.
 | `osmbase/raster` | Path construction, stroking, dashing, filling on `x/image/vector` |
 | `osmbase/slice` | The on-disk store: cells, manifests, coverage, eviction |
 | `osmbase/boundary` | Admin polygon derivation, the compact on-disk format, containment |
+| `osmbase/boundary/osm` | The three passes that turn an OSM extract into administrative outlines. Reads the file three times so the node set stays the boundaries' nodes rather than the country's |
 | `osmbase/acquire` | The **only** package that opens a socket |
 | `cmd/osmbase` | Standalone CLI: `inspect`, `tile`, `geojson` today; `fetch`, `boundaries`, `render`, `place` to come |
-| `osmbasetest` | Synthetic archives, tiles and slices, mirroring `fitactivity/fittest` |
+| `osmbasetest` | Synthetic archives, tiles, slices and OSM extracts, mirroring `fitactivity/fittest` |
 
 The network lives in exactly one package, and that package is named after what it does.
 A reader wondering whether this library can reach the internet at render time should be

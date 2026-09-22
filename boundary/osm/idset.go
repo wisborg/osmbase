@@ -64,13 +64,40 @@ func (s *idSet) add(id int64) error {
 func (s *idSet) freeze() {
 	slices.Sort(s.ids)
 	s.ids = slices.Compact(s.ids)
-	s.ids = slices.Clip(s.ids)
+	// Copied into an array of exactly the right size, which is the only thing
+	// that actually releases the one append grew.
+	//
+	// slices.Clip was here and does not: it lowers the cap so a later append
+	// copies, but the array stays reachable through the slice's data pointer,
+	// and that array is sized by the number of add calls rather than by the
+	// number of distinct ids. Since the same id arrives many times -- the
+	// paragraph above is the whole reason -- it is several times the size of
+	// the set it holds, and the eight-bytes-an-id this design rests on is
+	// only true once it is handed back. slices.Clone does release it but
+	// appends, so it rounds the new array up to a size class; make and copy
+	// ask for exactly what is needed. The copy is paid at the one moment the
+	// old array is about to die anyway.
+	exact := make([]int64, len(s.ids))
+	copy(exact, s.ids)
+	s.ids = exact
 	s.frozen = true
+}
+
+// find returns the id's position in the frozen set, and whether it is there.
+//
+// The position is the point of it: everything the passes record about an
+// element is held in a slice parallel to this one, so a lookup that returned
+// only a yes would make the caller search twice. It is also the only search
+// in the package -- reaching past this into s.ids, which four call sites used
+// to do, leaves the "only valid after freeze" contract documented on a method
+// nothing calls.
+func (s *idSet) find(id int64) (int, bool) {
+	return slices.BinarySearch(s.ids, id)
 }
 
 // has reports whether the id is in the set. Only valid after freeze.
 func (s *idSet) has(id int64) bool {
-	_, ok := slices.BinarySearch(s.ids, id)
+	_, ok := s.find(id)
 	return ok
 }
 

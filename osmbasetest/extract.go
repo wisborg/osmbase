@@ -241,17 +241,19 @@ func (t *stringTable) tagFields(tags []string) []byte {
 
 // The protobuf and PBF encoding, from the schema.
 
-func pbTag(field, wire int) []byte {
-	return binary.AppendUvarint(nil, uint64(field)<<3|uint64(wire))
-}
+// These build on appendTagged and appendBytes in tile.go rather than
+// restating them. The vector tile builder and this one are deliberately
+// independent of the DECODERS; that is an argument against deriving a fixture
+// from the reader, and none at all for two copies of the protobuf field
+// encoding in one package.
+func pbTag(field, wire int) []byte { return appendTagged(nil, field, wire) }
 
 func pbVarint(field int, v uint64) []byte {
 	return binary.AppendUvarint(pbTag(field, 0), v)
 }
 
 func pbBytes(field int, b []byte) []byte {
-	out := binary.AppendUvarint(pbTag(field, 2), uint64(len(b)))
-	return append(out, b...)
+	return appendBytes(pbTag(field, 2), b)
 }
 
 func pbString(field int, s string) []byte { return pbBytes(field, []byte(s)) }
@@ -262,8 +264,7 @@ func packedSint(field int, vs ...int64) []byte {
 	var payload []byte
 	var prev int64
 	for _, v := range vs {
-		d := v - prev
-		payload = binary.AppendUvarint(payload, uint64((d<<1)^(d>>63)))
+		payload = binary.AppendUvarint(payload, zigzag64(v-prev))
 		prev = v
 	}
 	return pbBytes(field, payload)
