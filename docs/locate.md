@@ -152,9 +152,17 @@ admin boundaries".
 
 Two consequences to design around rather than discover:
 
-- The wanted-ID sets must themselves be compact. A `map[int64]struct{}` costs about 50 bytes
-  an entry; a **sorted slice of int64 with a binary search** costs 8 and is built once and
-  never mutated, which is exactly the access pattern. Worth measuring before choosing.
+- The wanted-ID sets must themselves be compact. A **sorted slice of int64 with a binary
+  search** is built once and never mutated, which is exactly the access pattern.
+  **Measured** (`TestIDSetRetainedSize`, `BenchmarkIDSet`, one million spread-out ids):
+  the sorted slice retains **8 bytes an id**, a `map[int64]struct{}` **28**, and the slice
+  builds about twelve times faster. The estimate here was originally ~50 bytes for the map;
+  Go's map is more compact than that now, so the ratio is 3.5x rather than 6x — the
+  conclusion is unchanged but the margin is smaller than the plan assumed.
+  The sorted slice pays a second time, and this was not in the original plan: because a
+  binary search yields a *position*, the coordinates can live in an array parallel to the
+  frozen set instead of a `map[int64]Point`. That is 24 bytes a node all-in, against a map's
+  per-entry overhead on top of the same 24.
 - Pass 2 must record way→nodes for wanted ways only, and pass 3 coordinates for wanted nodes
   only. Neither pass may accumulate anything proportional to the file.
 
