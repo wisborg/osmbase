@@ -127,19 +127,6 @@ func (s *Set) Provenance() Provenance { return s.prov }
 // Len is how many areas the set holds.
 func (s *Set) Len() int { return len(s.areas) }
 
-// At returns the area containing a coordinate, and whether one did.
-//
-// The SMALLEST containing area wins, not the first. The admin layers do not
-// overlap, so for them the two are the same thing -- but the marine layer
-// nests, and heavily: the Tasman Sea is inside the South Pacific, which is
-// inside nothing but sits earlier in the file. Taking the first reported a
-// trans-Tasman flight as being over the Pacific Ocean, which is true and is
-// not the answer anybody wanted.
-//
-// Smallest is measured by bounding-box area rather than by true area, which
-// is cheap, already computed, and enough to order things that genuinely
-// contain one another. It would be the wrong tool for ranking areas that
-// merely overlap; nothing here does.
 // Containing returns every area holding the coordinate, largest first.
 //
 // At answers "which one", which is the question for a set of countries,
@@ -156,14 +143,36 @@ func (s *Set) Containing(lat, lon float64) []Area {
 			out = append(out, s.areas[i])
 		}
 	}
-	slices.SortStableFunc(out, func(a, b Area) int {
-		// Largest first, and stable so that two areas of the same extent
-		// keep the order the file gave them rather than an arbitrary one.
-		return cmp.Compare(b.boxArea(), a.boxArea())
-	})
+	sortOutermostFirst(out)
 	return out
 }
 
+// sortOutermostFirst orders areas widest to narrowest.
+//
+// One function because the rule is one rule: the merged stack in
+// boundary/osm's source sorts again after combining several files, and a
+// comparator written twice is a comparator that can be refined once.
+func sortOutermostFirst(areas []Area) {
+	slices.SortStableFunc(areas, func(a, b Area) int {
+		// Stable, so two areas of the same extent keep the order the file
+		// gave them rather than an arbitrary one.
+		return cmp.Compare(b.boxArea(), a.boxArea())
+	})
+}
+
+// At returns the area containing a coordinate, and whether one did.
+//
+// The SMALLEST containing area wins, not the first. The admin layers do not
+// overlap, so for them the two are the same thing -- but the marine layer
+// nests, and heavily: the Tasman Sea is inside the South Pacific, which is
+// inside nothing but sits earlier in the file. Taking the first reported a
+// trans-Tasman flight as being over the Pacific Ocean, which is true and is
+// not the answer anybody wanted.
+//
+// Smallest is measured by bounding-box area rather than by true area, which
+// is cheap, already computed, and enough to order things that genuinely
+// contain one another. It would be the wrong tool for ranking areas that
+// merely overlap; nothing here does.
 func (s *Set) At(lat, lon float64) (Area, bool) {
 	best := -1
 	bestSize := math.Inf(1)
@@ -181,13 +190,24 @@ func (s *Set) At(lat, lon float64) (Area, bool) {
 	return s.areas[best], true
 }
 
+// Polygons with no extent are skipped rather than summed. A polygon with no
+// rings keeps the empty box its accumulation started from -- west +Inf, east
+// -Inf -- whose area is +Inf, and one of those beside a real polygon made the
+// WHOLE area infinite: larger than the world, so it won every outermost-first
+// ranking and lost to nothing in a smallest-first one. A single such area
+// then decided both ends of a lookup. It is the same shape as the
+// wrapped-coordinate case the derived format already refuses, with +Inf
+// instead of a large number.
+//
 // boxArea is how much ground an area's parts cover, for ordering areas that
 // contain one another. Degrees squared: not a real area, and never compared
 // against anything but another of these.
 func (a *Area) boxArea() float64 {
 	var total float64
 	for _, p := range a.polygons {
-		total += p.box.area()
+		if a := p.box.area(); !math.IsInf(a, 0) && !math.IsNaN(a) {
+			total += a
+		}
 	}
 	return total
 }

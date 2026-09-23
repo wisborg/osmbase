@@ -207,3 +207,86 @@ func TestTheCreditComesFromTheFileNotAConstant(t *testing.T) {
 		t.Errorf("a credit was attached to data that does not ask for one:\n%s", out)
 	}
 }
+
+// A name or a credit comes out of a file, and a derived file is meant to be
+// passed between people. One holding an ANSI escape colours somebody's
+// terminal; one holding a newline forges a line that looks like another
+// answer. Neither is a licence problem and both are the program lying on
+// behalf of a file it read.
+func TestAPlantedNameCannotForgeOutput(t *testing.T) {
+	root := t.TempDir()
+	dir := boundary.Dir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := boundary.DerivedFile("planted")
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	area := boundary.NewArea(
+		"\x1b[1;31mRED\x1b[0m\n  country        contained Atlantis (0)", "9",
+		[]boundary.Polygon{{Outer: boundary.Ring{
+			{Lat: 0, Lon: 0}, {Lat: 0, Lon: 1}, {Lat: 1, Lon: 1}, {Lat: 1, Lon: 0}}}})
+	prov := boundary.Provenance{Source: "x", Attribution: "\x1b[5mCREDIT\x1b[0m"}
+	if err := boundary.WriteDerived(f, boundary.NewSet(prov, []boundary.Area{area})); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	out, err := locateSaying(t, "--store", root, "--lat", "0.5", "--lon", "0.5", "--levels", "locality")
+	if err != nil {
+		t.Fatalf("locate: %v", err)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("an escape sequence reached the terminal:\n%q", out)
+	}
+	// The newline is gone, so the planted text stays inside the name it
+	// belongs to instead of becoming a line of its own. That is the whole
+	// point: garbage in a name is honest, and a second answer at a level
+	// nobody asked for is not.
+	var answers int
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  locality ") || strings.HasPrefix(line, "  country ") {
+			answers++
+		}
+	}
+	if answers != 1 {
+		t.Errorf("the output holds %d answer lines, want 1:\n%q", answers, out)
+	}
+	if strings.Contains(out, "\n  country") {
+		t.Errorf("a name forged a line of output:\n%q", out)
+	}
+}
+
+// JSON needs none of that -- encoding/json escapes control characters -- so
+// the filter must not be doing the escaping twice or mangling real names.
+func TestAnOrdinaryNameSurvivesIntact(t *testing.T) {
+	root := t.TempDir()
+	dir := boundary.Dir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := boundary.DerivedFile("nordic")
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Non-ASCII letters, an apostrophe and a hyphen are ordinary in place
+	// names and must come through untouched.
+	const want = "Nørre Snede-Øst (L'Île)"
+	area := boundary.NewArea(want, "9", []boundary.Polygon{{Outer: boundary.Ring{
+		{Lat: 0, Lon: 0}, {Lat: 0, Lon: 1}, {Lat: 1, Lon: 1}, {Lat: 1, Lon: 0}}}})
+	if err := boundary.WriteDerived(f, boundary.NewSet(boundary.Provenance{Source: "x"}, []boundary.Area{area})); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	out, err := locateSaying(t, "--store", root, "--lat", "0.5", "--lon", "0.5", "--levels", "locality")
+	if err != nil {
+		t.Fatalf("locate: %v", err)
+	}
+	if !strings.Contains(out, want) {
+		t.Errorf("the name did not survive:\n%s", out)
+	}
+}

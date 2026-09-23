@@ -43,9 +43,9 @@ type coveringSource struct {
 
 func (c coveringSource) Covers(l locate.Level) bool { return l == c.level }
 
-func (c coveringSource) Contains(l locate.Level, lat, lon float64) (string, string, bool) {
+func (c coveringSource) Contains(l locate.Level, lat, lon float64) (string, string, string, bool) {
 	if l != c.level {
-		return "", "", false
+		return "", "", "", false
 	}
-	return c.name, "country", true
+	return c.name, "country", "", true
 }

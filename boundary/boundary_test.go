@@ -102,22 +102,23 @@ func TestRead_RefusesAFileWithNoNamedAreas(t *testing.T) {
 // contained by the state around it would be a true statement answering the
 // wrong question, and it would carry the Contained source -- which a consumer
 // is told means a statement of fact about THAT level.
-func TestSource_CoversOnlyWhatNaturalEarthHas(t *testing.T) {
-	s := boundary.Open(t.TempDir(), "")
-	for _, c := range []struct {
-		level locate.Level
-		want  bool
-	}{
-		{locate.Country, true},
-		{locate.Region, true},
-		{locate.Water, true},
-		{locate.Locality, false},
-		{locate.Macrohood, false},
-		{locate.Neighbourhood, false},
-		{locate.Street, false},
+// Covers means "this source can answer that level", and the data has to be
+// there for it to be true.
+//
+// It used to mean "this KIND of source answers that level", which was safe
+// only while Available guaranteed every Natural Earth file existed before
+// anyone could open a source. A store holding a derived file and no Natural
+// Earth outlines broke that guarantee -- and because locate treats a covered
+// level as answered EXCLUSIVELY, claiming country there took the level away
+// from the tiles and then answered nothing at all.
+func TestSource_CoversOnlyWhatTheStoreActuallyHas(t *testing.T) {
+	empty := boundary.Open(t.TempDir(), "")
+	for _, level := range []locate.Level{
+		locate.Country, locate.Region, locate.Water,
+		locate.Locality, locate.Macrohood, locate.Neighbourhood, locate.Street,
 	} {
-		if got := s.Covers(c.level); got != c.want {
-			t.Errorf("Covers(%s) = %v, want %v", c.level, got, c.want)
+		if empty.Covers(level) {
+			t.Errorf("Covers(%s) = true for a store holding nothing", level)
 		}
 	}
 }
@@ -134,7 +135,7 @@ func TestSource_AMissingFileIsNoAnswerRatherThanAFailure(t *testing.T) {
 		t.Fatal("an empty directory reports boundaries available")
 	}
 	s := boundary.Open(dir, "")
-	if _, _, ok := s.Contains(locate.Country, 56, 10); ok {
+	if _, _, _, ok := s.Contains(locate.Country, 56, 10); ok {
 		t.Error("a store with no boundary files answered a containment question")
 	}
 }
@@ -301,18 +302,18 @@ func TestSource_AnswersCountryAndRegionIndependentlyFromDisk(t *testing.T) {
 	// Twice each, and interleaved, so the cached path is exercised as well as
 	// the first load -- the cache-key bug above only appears on the second.
 	for round := range 2 {
-		if name, kind, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" || kind != "country" {
+		if name, kind, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" || kind != "country" {
 			t.Errorf("round %d: country = (%q, %q, %v), want Denmark, country, true", round, name, kind, ok)
 		}
-		if name, kind, ok := s.Contains(locate.Region, 56, 10); !ok || name != "Midtjylland" || kind != "state" {
+		if name, kind, _, ok := s.Contains(locate.Region, 56, 10); !ok || name != "Midtjylland" || kind != "state" {
 			t.Errorf("round %d: region = (%q, %q, %v), want Midtjylland, state, true", round, name, kind, ok)
 		}
 		// Inside the country and outside the region, which no single file can
 		// answer correctly if the two are being confused.
-		if _, _, ok := s.Contains(locate.Region, 54.5, 12.5); ok {
+		if _, _, _, ok := s.Contains(locate.Region, 54.5, 12.5); ok {
 			t.Errorf("round %d: a point outside the region was reported inside it", round)
 		}
-		if _, _, ok := s.Contains(locate.Country, 54.5, 12.5); !ok {
+		if _, _, _, ok := s.Contains(locate.Country, 54.5, 12.5); !ok {
 			t.Errorf("round %d: a point inside the country was reported outside it", round)
 		}
 	}
@@ -331,10 +332,10 @@ func TestSource_ACorruptFileLosesItsLevelAndNothingElse(t *testing.T) {
 		squareDoc("Kattegat", 10, 56, 12, 58))
 	s := boundary.Open(root, "50m")
 
-	if _, _, ok := s.Contains(locate.Region, 56, 10); ok {
+	if _, _, _, ok := s.Contains(locate.Region, 56, 10); ok {
 		t.Error("a truncated region file answered a containment question")
 	}
-	if name, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
+	if name, _, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
 		t.Errorf("country = (%q, %v) with a broken region file alongside; one damaged file must not cost the other", name, ok)
 	}
 }
@@ -398,7 +399,7 @@ func TestValidDetail_RefusesAnythingThatCouldLeaveTheStore(t *testing.T) {
 	// And a refused detail yields a source that answers nothing rather than
 	// one pointed somewhere unexpected.
 	s := boundary.Open(t.TempDir(), "../..")
-	if _, _, ok := s.Contains(locate.Country, 0, 0); ok {
+	if _, _, _, ok := s.Contains(locate.Country, 0, 0); ok {
 		t.Error("a source opened with an invalid detail answered a containment question")
 	}
 }
@@ -440,7 +441,7 @@ func TestSource_IsSafeToShareBetweenGoroutines(t *testing.T) {
 
 	// And it still answers correctly afterwards, so a lock that serialised
 	// everything into nonsense would show up too.
-	if name, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
+	if name, _, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
 		t.Errorf("after concurrent use, country = (%q, %v), want Denmark, true", name, ok)
 	}
 }

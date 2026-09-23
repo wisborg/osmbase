@@ -159,9 +159,9 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 				return nil, fmt.Errorf("locate: looking up %s: %w", level, err)
 			}
 			for i, p := range pts {
-				if name, kind, ok := opts.Boundaries.Contains(level, p.Lat, p.Lon); ok {
+				if name, kind, credit, ok := opts.Boundaries.Contains(level, p.Lat, p.Lon); ok {
 					out[i].setMatch(Match{
-						Level: level, Name: name, Kind: kind,
+						Level: level, Name: name, Kind: kind, Attribution: credit,
 						Source: Contained,
 					})
 				}
@@ -283,7 +283,14 @@ type BoundarySource interface {
 	// Contains returns the name and kind of the area holding the coordinate.
 	// The boolean is false when no area does, which over the sea is the
 	// truth rather than a failure.
-	Contains(l Level, lat, lon float64) (name, kind string, ok bool)
+	// Contains reports the area holding a coordinate at a level.
+	//
+	// credit is the attribution that answer owes, empty when it owes none.
+	// It is returned PER ANSWER rather than per source because one source
+	// may hold data under several licences -- a store may hold a file
+	// derived from OpenStreetMap beside one that is public domain -- and
+	// crediting the wrong one is a claim about somebody else's work.
+	Contains(l Level, lat, lon float64) (name, kind, credit string, ok bool)
 }
 
 type tileRef struct {

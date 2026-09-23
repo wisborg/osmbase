@@ -149,6 +149,21 @@ type Match struct {
 	// somewhere near the middle of a town, and a millimetre on that is noise
 	// dressed as data.
 	DistanceM float64 `json:"distance_m"`
+
+	// Attribution is what this answer's source asks to be said about it,
+	// empty when it asks for nothing.
+	//
+	// Per match rather than per document, because one lookup can mix
+	// licences: a country from Natural Earth, which is public domain, and a
+	// suburb from a file derived from OpenStreetMap, which is not. A single
+	// line covering both either over-credits one source or under-credits the
+	// other, and only one of those is merely untidy.
+	//
+	// It is not always an obligation. Natural Earth's string says "public
+	// domain" in as many words, because a reader can act on knowing that two
+	// names in one answer came from different places under different terms,
+	// and cannot act on silence.
+	Attribution string `json:"attribution,omitempty"`
 }
 
 // Place is everything known about one coordinate.

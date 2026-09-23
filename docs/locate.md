@@ -449,18 +449,36 @@ in Denmark and nine is the suburb in Australia — so a table mapping numbers to
 would be asserting one country's scheme over every other. That is why `Kind` stays the
 number.
 
-The rule is the nesting instead: of the administrative areas containing a point, the
-**outermost is its locality and the innermost its neighbourhood**, with anything between a
-macrohood. One area is a locality and nothing else, because a place with one administrative
-name at this range has one, and inventing two from it would be a claim the data does not
-make.
+The rule is the nesting instead. Of the administrative areas containing a point, the
+**three innermost** are ranked: the outermost of those is the locality and the innermost the
+neighbourhood, with the one between them the macrohood. One area is a locality and nothing
+else, because a place with one administrative name at this range has one, and inventing two
+from it would be a claim the data does not make.
 
-Measured on the two extracts this was built against, that gives Denmark's kommune as a
-locality, and Sydney's council area as a locality with its suburb as a neighbourhood — which
-is what a person would have said. Worth knowing when reading an answer: which slot a name
-lands in depends on how many levels the extract actually *closed*, so a bounding-box cut
-that severs the council area leaves the suburb reported as a locality. The `Kind` is how a
-reader tells.
+**Three innermost, not the whole stack**, and that took a second attempt. Ranking everything
+sounds equivalent and is not: `osmbase boundaries --osm` keeps every `admin_level` by
+default, so in Denmark the outermost containing area is the *country* — locality came back
+as "Danmark", duplicating the answer Natural Earth had already given at its own level, while
+the region and the kommune appeared at no level at all. Anything wider than three deep is a
+region or a country, and something else answers those.
+
+Two limits worth knowing when reading an answer. Which slot a name lands in depends on how
+many levels the extract actually *closed*, so a bounding-box cut that severs the council area
+leaves the suburb reported as a locality — the `Kind` is how a reader tells. And a hierarchy
+deeper than three reports its three innermost and drops the rest.
+
+### The store directory is trusted, and the files in it are not
+
+`ReadDerived` treats every count in a file as untrusted, and `boundary.Source` is bounded in
+aggregate as well as per file — sixty-four files, sixty-five thousand areas between them. But
+the *directory* is the user's own, and `RegionOf` deliberately accepts any region a user
+chose, so a file copied in from elsewhere is a supported workflow (the `NOTICE` contemplates
+exactly that).
+
+Because the smallest containing area wins, a few-hundred-byte file holding one tiny square
+is enough to own an answer. That is an acceptable trust model for a directory the user
+controls, and it is not the same guarantee the format reader's carefulness implies — which
+is why it is written down here.
 
 ### What stage two did not settle
 
@@ -472,13 +490,30 @@ reader tells.
   `slice.decompress` and `osmpbf.unzlib`, with three error vocabularies. Carried since part
   3 and deferred each time because it touches two working packages. It has already diverged
   once.
-- **The header's sort order is still unread**, and `osmpbf.ErrStop` still has no consumer
+- **The protobuf fixture primitives still exist twice**: `osmbasetest` (shared by `Extract`
+  and the tile builder) and `osmpbf/fixture_test.go`. The latter should keep only what
+  expresses *malformed* files — `truncatedZlibBlob`, `zlibBlobDeclaring`, `paddedHeader`,
+  `framedWith` — which `Extract` cannot and should not express.
+- **The header's sort order is still unread, and `osmpbf.ErrStop` still has no consumer**
   outside its own test. A file marked sorted type-then-id would let the three passes stop
-  early rather than read to the end.
+  early rather than read to the end. Either wire it up or strike the claim in `ErrStop`'s
+  doc that "the three passes over an extract all want it".
 - **`Header` does not carry the bounding box**, which would let a caller reject an extract
   that does not cover the area before reading an element.
+- **`osm.Read` returns everything in memory.** A `func(Boundary) error` form would let the
+  build stream and roughly halve peak, since a boundary way shared between two neighbours
+  currently has its coordinates held twice.
 - **`osmbasetest.Extract` emits one block per element kind**, so a multi-block file, a block
   mixing kinds, a non-default granularity and a coordinate origin are all unexercised.
 - **Nothing handles a signal.** An interrupted run's temporary files are swept by the *next*
   run rather than by the interrupted one; a `signal.NotifyContext` would do it properly and
   would also let a long download be cancelled cleanly.
+- **`Source.Contains` rebuilds and ranks the whole containment stack once per level per
+  point**, keeping one of three answers and discarding the rest. The interface asks a level
+  at a time, so fixing it means changing that interface; a route of thousands of points pays
+  three times.
+
+Two items from earlier lists are now **resolved** and are recorded here so nobody goes
+looking: "`Set` cannot be asked for one level" — the three-innermost rule is that filter, and
+`Provenance().Levels` says what the file was built for; and the naming rule's inverse, which
+is `boundary.RegionOf` and `DerivedRegions`.

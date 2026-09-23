@@ -656,15 +656,16 @@ type fakeBoundaries struct {
 	covers map[locate.Level]bool
 	name   string
 	inside bool
+	credit string
 }
 
 func (f fakeBoundaries) Covers(l locate.Level) bool { return f.covers[l] }
 
-func (f fakeBoundaries) Contains(l locate.Level, lat, lon float64) (string, string, bool) {
+func (f fakeBoundaries) Contains(l locate.Level, lat, lon float64) (string, string, string, bool) {
 	if !f.covers[l] || !f.inside {
-		return "", "", false
+		return "", "", "", false
 	}
-	return f.name, "country", true
+	return f.name, "country", f.credit, true
 }
 
 // TestAt_ContainmentAnswersALevelInsteadOfTheTilesAndNotAsWell is the

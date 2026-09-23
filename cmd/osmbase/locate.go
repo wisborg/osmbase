@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/wisborg/osmbase/boundary"
 	osmlocate "github.com/wisborg/osmbase/locate"
@@ -154,8 +155,12 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 				// The store holds boundaries and no map. Naming the levels
 				// that need one turns "there is no store" into something the
 				// user can act on: ask for fewer levels, or fetch tiles.
+				verb := "need"
+				if len(need) == 1 {
+					verb = "needs"
+				}
 				return fmt.Errorf("%s %s map tiles, and %s holds boundaries but no map: ask for fewer levels, or run \"osmbase fetch\"",
-					joinLevelNames(need), plural(need, "needs", "need"), root)
+					joinLevelNames(need), verb, root)
 			}
 			return fmt.Errorf("opening the store at %s: %w", root, err)
 		}
@@ -183,12 +188,10 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	// JSON document pasted into a report carries whatever is inside it and
 	// nothing that was on the terminal around it.
 	//
-	// It names OpenStreetMap only, and an answer can now mix two sources: a
-	// Contained match comes from Natural Earth, which is public domain and
-	// requires no credit at all. Crediting OSM for the whole answer is not a
-	// licence problem -- nothing is owed to Natural Earth -- but it is
-	// imprecise, so the line says which levels it covers rather than implying
-	// every name came from there.
+	// It names the TILE archive only. A contained answer comes from a
+	// boundary file, and what that owes depends on which file -- Natural
+	// Earth is public domain, a file derived from OpenStreetMap is not --
+	// so those are reported separately, from the answers themselves.
 	//
 	// Read from the manifest, never written down here -- see the same argument
 	// in the render command. A store refilled from a different archive must
@@ -203,7 +206,7 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	// boundary file is OpenStreetMap, which is not, so an answer taken from
 	// one is a Produced Work that owes the credit. Which of them answered is
 	// something only the source knows, so it is asked rather than assumed.
-	contained := containedCredits(bounds, places)
+	contained := containedCredits(places)
 
 	if format == "json" {
 		return writeLocateJSON(stdout, places, credit, contained)
@@ -242,28 +245,25 @@ func joinLevelNames(levels []osmlocate.Level) string {
 	return strings.Join(names, ", ")
 }
 
-func plural[T any](xs []T, one, many string) string {
-	if len(xs) == 1 {
-		return one
-	}
-	return many
-}
-
 // containedCredits names the sources behind the contained answers, and only
 // those: a lookup that used no boundary file, or whose boundary file answered
 // nothing, owes nothing here.
-func containedCredits(bounds *boundary.Source, places []osmlocate.Place) []string {
-	if bounds == nil {
-		return nil
-	}
+//
+// Read off the ANSWERS rather than asked of the source per level. A store may
+// hold a file derived from OpenStreetMap beside one that is public domain,
+// and a credit taken from the store as a whole attributes an answer to
+// whichever file did not give it.
+func containedCredits(places []osmlocate.Place) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, p := range places {
 		for _, m := range p.Matches {
-			if m.Source != osmlocate.Contained {
+			if m.Source != osmlocate.Contained || m.Attribution == "" {
 				continue
 			}
-			c := bounds.CreditFor(m.Level)
+			// Through the same cleaner the tile credit uses, so an
+			// attribution carrying markup prints as text either way.
+			c := safeForTerminal(render.PlainCredit(m.Attribution))
 			if c == "" || seen[c] {
 				continue
 			}
@@ -273,6 +273,28 @@ func containedCredits(bounds *boundary.Source, places []osmlocate.Place) []strin
 	}
 	slices.Sort(out)
 	return out
+}
+
+// safeForTerminal strips what a name or a credit has no business carrying.
+//
+// Both come out of a file, and a derived boundary file is meant to be passed
+// between people -- the NOTICE says so. A name holding an ANSI escape colours
+// somebody's terminal, and one holding a newline forges a line of output that
+// looks like another answer. Neither is a licence problem and both are the
+// program lying on behalf of a file it read.
+//
+// JSON needs none of this: encoding/json escapes control characters already.
+// It is the text path that prints what it is given.
+func safeForTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // locateReport is what --format json writes.
@@ -327,7 +349,7 @@ func writeLocateText(w io.Writer, places []osmlocate.Place, credit string, conta
 			if kind == "" {
 				kind = m.Level.String()
 			}
-			fmt.Fprintf(w, "  %-14s %s %s (%s)\n", m.Level, m.Source, m.Name, kind)
+			fmt.Fprintf(w, "  %-14s %s %s (%s)\n", m.Level, m.Source, safeForTerminal(m.Name), safeForTerminal(kind))
 			// No distance for a contained match. It is always zero, and
 			// printing "0 m away" invites a reader to think a measurement was
 			// taken and came back as nothing, when in fact the question does
@@ -343,20 +365,6 @@ func writeLocateText(w io.Writer, places []osmlocate.Place, credit string, conta
 	if len(contained) > 0 {
 		fmt.Fprintf(w, "Contained answers are from %s.\n", strings.Join(contained, "; "))
 	}
-}
-
-// anyContained reports whether any answer came from boundary data rather than
-// from the tiles, which is what decides whether the second credit line means
-// anything.
-func anyContained(places []osmlocate.Place) bool {
-	for _, p := range places {
-		for _, m := range p.Matches {
-			if m.Source == osmlocate.Contained {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // humanDistance prints a distance at a precision the measurement supports.
@@ -376,13 +384,7 @@ func humanDistance(m float64) string {
 }
 
 // levelNames lists the levels for the flag's help.
-func levelNames() string {
-	names := make([]string, 0, len(osmlocate.Levels))
-	for _, l := range osmlocate.Levels {
-		names = append(names, l.String())
-	}
-	return strings.Join(names, ", ")
-}
+func levelNames() string { return joinLevelNames(osmlocate.Levels) }
 
 // parseLevels turns the --levels flag into the levels to ask for.
 //

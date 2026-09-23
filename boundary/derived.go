@@ -372,6 +372,12 @@ func checkWritable(set *Set) error {
 				a.Name, len(a.polygons), maxDerivedPolygons)
 		}
 		for _, p := range a.polygons {
+			if len(p.rings) == 0 {
+				return fmt.Errorf("boundary: %q has a polygon with no rings, which has no extent", a.Name)
+			}
+			if len(p.rings[0]) == 0 {
+				return fmt.Errorf("boundary: %q has a polygon whose outline has no points", a.Name)
+			}
 			if len(p.rings) > maxDerivedRings {
 				return fmt.Errorf("boundary: %q has a polygon of %d rings, past the %d this format holds",
 					a.Name, len(p.rings), maxDerivedRings)
@@ -573,6 +579,16 @@ func readArea(br *bufio.Reader, b *budget) (Area, error) {
 		if err != nil {
 			return Area{}, err
 		}
+		if ringCount == 0 {
+			// A polygon with no rings has no extent, and newArea gives it
+			// the empty box -- west +Inf, east -Inf -- whose area is +Inf.
+			// It therefore sorts as the LARGEST area there is and wins
+			// every outermost-first ranking, which is the same shape as the
+			// wrapped-coordinate case this format already refuses: an area
+			// whose box spans the plane wins exactly where the honest
+			// answer is nowhere.
+			return Area{}, fmt.Errorf("%w: it holds a polygon with no rings", ErrDerivedFormat)
+		}
 		if err := b.spend("rings", ringCount, &b.rings); err != nil {
 			return Area{}, err
 		}
@@ -581,6 +597,9 @@ func readArea(br *bufio.Reader, b *budget) (Area, error) {
 			ring, err := readRing(br)
 			if err != nil {
 				return Area{}, err
+			}
+			if len(ring) == 0 {
+				return Area{}, fmt.Errorf("%w: it holds a ring with no points", ErrDerivedFormat)
 			}
 			rings = append(rings, ring)
 		}
