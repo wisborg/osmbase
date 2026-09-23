@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/wisborg/osmbase/locate"
@@ -25,6 +26,50 @@ func File(detail string, layer Layer) string {
 	default:
 		return fmt.Sprintf("ne_%s_admin_0_countries.geojson", detail)
 	}
+}
+
+// DerivedFile names the derived boundary file for a region.
+//
+// The region is part of the name for the same reason the detail is: a store
+// may hold several, and a file swapped underneath a program that believed it
+// had the other changes every answer near a border with nothing to say it
+// had.
+//
+// It returns an error rather than a name for an unusable region, and the
+// check is HERE rather than in the command, because this is where the value
+// becomes a path component. The same interpolation on the detail escaped this
+// directory once -- a value containing ".." read a planted file from outside
+// the store and printed its contents as a country name -- and the lesson
+// recorded then was that a check every caller has to remember is a check that
+// will be forgotten.
+func DerivedFile(region string) (string, error) {
+	if !ValidRegion(region) {
+		return "", fmt.Errorf("boundary: %q is not a usable region name; it may hold letters, digits, dots, dashes and underscores", region)
+	}
+	return "osm_" + region + DerivedExt, nil
+}
+
+// DerivedExt is the extension a derived boundary file carries.
+const DerivedExt = ".osmb"
+
+// ValidRegion reports whether a string may be part of a derived file's name.
+//
+// Deliberately narrow: no separator of any platform, no leading dot, nothing
+// that a shell or a path join can read as anything but a name. A region comes
+// from a URL or a filename the user supplied, so it is input.
+func ValidRegion(region string) bool {
+	if region == "" || len(region) > 64 || strings.HasPrefix(region, ".") {
+		return false
+	}
+	for _, r := range region {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Layer is one of the files a boundary store holds.

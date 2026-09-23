@@ -43,6 +43,7 @@ const maxBoundaryBytes = 128 << 20
 
 func boundariesUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, `usage: osmbase boundaries --store DIR [--detail 50m] [--yes]
+       osmbase boundaries --store DIR --osm EXTRACT [--levels 8,9,10] [--yes]
 
 Download the country, state and sea outlines that let "osmbase locate" say a
 coordinate is IN a country rather than near one, and name the water it is over.
@@ -65,6 +66,20 @@ outlines are complete: the 50m set has state subdivisions for nine countries
 and none for Denmark, Germany, France or the United Kingdom, and its sea
 outlines are missing Bass Strait, the English Channel and the Kattegat.
 
+With --osm it builds SUBURB outlines instead, from an OpenStreetMap extract --
+a URL to fetch or a .osm.pbf already on disk. That is the only route to an
+answer below the state, and whether it reaches one depends on the country:
+Australian suburbs are mapped as administrative boundaries and Danish ones are
+mapped as points, so the same command gives Sydney its suburbs and Denmark its
+municipalities. Run it without --levels first to see what a region actually
+carries.
+
+The extract is OpenStreetMap data, which is NOT public domain. The file this
+writes from it is a Derivative Database under the ODbL, so share-alike attaches
+to that file: passing it to somebody else passes the licence with it. Answering
+a lookup from it is a Produced Work and needs the credit only. The command says
+so again before it starts.
+
 examples:
   osmbase boundaries --store ~/Library/Caches/osmbase
       about 56 MB, and a coordinate can then be placed in a country, a state
@@ -74,24 +89,50 @@ examples:
       about 5 MB. Countries are covered in full; states are covered for nine
       countries only, so region is usually unanswered
 
+  osmbase boundaries --store DIR --osm sydney.osm.pbf
+      read an extract already on disk and keep every admin_level it holds.
+      The extract is left where it is
+
+  osmbase boundaries --store DIR --osm https://HOST/denmark-latest.osm.pbf --levels 7
+      fetch an extract, keep one level, and delete the extract afterwards
+
 `)
 	printFlags(w, fs)
 }
 
 func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 	var (
-		store  string
-		detail string
-		yes    bool
+		store   string
+		detail  string
+		osmFrom string
+		region  string
+		levels  string
+		keep    bool
+		yes     bool
 	)
 	fs := newFlagSet("boundaries", boundariesUsage)
 	fs.StringVar(&store, "store", "", "directory to keep the outlines in (default: the osmbase folder under your user cache directory)")
 	fs.StringVar(&detail, "detail", boundary.DefaultDetail,
 		"how fine the outlines are: "+strings.Join(boundary.Details, ", ")+". Finer is more accurate near a border and slower to read on every lookup")
+	fs.StringVar(&osmFrom, "osm", "",
+		"build suburb outlines from an OpenStreetMap extract instead: a URL to fetch or a .osm.pbf to read")
+	fs.StringVar(&region, "region", "", "what to call the derived file (default: named after the extract)")
+	fs.StringVar(&levels, "levels", "", "which OpenStreetMap admin_level values to keep, comma separated (default: all of them)")
+	fs.BoolVar(&keep, "keep-extract", false, "keep the downloaded extract instead of deleting it once the outlines are built")
 	fs.BoolVar(&yes, "yes", false, "do not ask before downloading")
 
 	if _, err := parseArgs(fs, args, stdout); err != nil {
 		return err
+	}
+	if osmFrom == "" {
+		for name, flagName := range map[string]string{region: "--region", levels: "--levels"} {
+			if name != "" {
+				return usageErrorf("%s only means something with --osm", flagName)
+			}
+		}
+		if keep {
+			return usageErrorf("--keep-extract only means something with --osm")
+		}
 	}
 	if !slices.Contains(boundary.Details, detail) {
 		return usageErrorf("--detail %q is not one this command knows; it has %s",
@@ -106,6 +147,10 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	dir := boundary.Dir(root)
+
+	if osmFrom != "" {
+		return osmBoundaries(osmFrom, region, levels, dir, keep, yes, stdout, stderr)
+	}
 
 	var files []string
 	for _, layer := range boundary.Layers {

@@ -193,7 +193,7 @@ None of them requires the one after it to be useful.
 | 4 | **The three passes** | ✅ committed — `boundary/osm`. Relation → member ways with their coordinates and node ids. Measured against a real Denmark extract: the memory gate passes by two orders of magnitude, and the *data* premise does not hold there. See below. |
 | 5 | **Ring assembly** | ✅ committed — `boundary/osm.Assemble`. Ways joined on node id into closed rings, outers counterclockwise and inners clockwise per RFC 7946, unclosed chains reported with the node ids of the gap. Measured: Sydney closes 471 of 522 outlines, Hornsby's 46 ways into one ring of 450 points. |
 | 6 | **The derived file** | ✅ committed — `boundary.WriteDerived`/`ReadDerived`, magic, version, a length-prefixed provenance header, delta-coded varints at OSM's own resolution. `boundary.Polygons` pairs holes to outlines; `osm.Areas` converts and reports. Measured: Sydney's 471 areas are **0.41 MB**, and containment answers are identical on either side of the file. |
-| 7 | **`osmbase boundaries --osm`** | Fetch an extract through `acquire`, run the pipeline, delete the extract, record the ODbL obligation. |
+| 7 | **`osmbase boundaries --osm`** | ✅ committed — a URL to fetch or a `.osm.pbf` to read, `--levels`, `--region`, `--keep-extract`. A fetched extract is deleted; one the user pointed at is left alone. The ODbL obligation is stated before the file exists, and travels inside it. |
 | 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. |
 
 Parts 2 and 3 need no network and no real extract: synthetic fixtures in the style of
@@ -442,7 +442,7 @@ it. Source and levels ride along for a second reason: two stores' files are othe
 indistinguishable, and without the levels a reader cannot tell "this file has no suburbs"
 from "this file was not asked for suburbs".
 
-### Carried into part 7
+### Carried into part 8
 
 - **The decompression-bomb guard is still in three places** — `pmtiles.decompress`,
   `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and three copies of
