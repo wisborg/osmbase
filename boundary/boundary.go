@@ -49,7 +49,14 @@ type polygon struct {
 	west, south, east, north float64
 }
 
-type point struct{ lon, lat float64 }
+// point is a vertex of a ring, LATITUDE FIRST.
+//
+// The order matters more than it looks. This module now carries four
+// coordinate types -- this one, locate.Coord, osm.Point and the Coord below
+// -- and a transposition between any two of them compiles, passes a
+// positional literal, and puts a Danish municipality in the Indian Ocean.
+// They all read latitude first, and this one used to read longitude first.
+type point struct{ lat, lon float64 }
 
 // Set is the areas of one level, searchable by coordinate.
 type Set struct {
@@ -348,7 +355,7 @@ func toRings(rings [][][2]float64) [][]point {
 	for _, ring := range rings {
 		pts := make([]point, len(ring))
 		for i, c := range ring {
-			pts[i] = point{lon: c[0], lat: c[1]}
+			pts[i] = point{lat: c[1], lon: c[0]}
 		}
 		out = append(out, pts)
 	}

@@ -192,7 +192,7 @@ None of them requires the one after it to be useful.
 | 3 | **Element decoding** | Dense nodes (delta-encoded), ways, and relations come back as Go structs, with tags resolved against the string table. Fuzzed, as `mvt` is. |
 | 4 | **The three passes** | ✅ committed — `boundary/osm`. Relation → member ways with their coordinates and node ids. Measured against a real Denmark extract: the memory gate passes by two orders of magnitude, and the *data* premise does not hold there. See below. |
 | 5 | **Ring assembly** | ✅ committed — `boundary/osm.Assemble`. Ways joined on node id into closed rings, outers counterclockwise and inners clockwise per RFC 7946, unclosed chains reported with the node ids of the gap. Measured: Sydney closes 471 of 522 outlines, Hornsby's 46 ways into one ring of 450 points. |
-| 6 | **The derived file** | A compact format `boundary` can read, plus the writer. Versioned, because it is on somebody's disk. |
+| 6 | **The derived file** | ✅ committed — `boundary.WriteDerived`/`ReadDerived`, magic and version, delta-coded varints at OSM's own resolution. `boundary.Polygons` pairs holes to outlines; `osm.Areas` converts and reports. Measured: Sydney's 471 areas are **0.41 MB**, and containment answers are identical on either side of the file. |
 | 7 | **`osmbase boundaries --osm`** | Fetch an extract through `acquire`, run the pipeline, delete the extract, record the ODbL obligation. |
 | 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. |
 
@@ -444,19 +444,14 @@ Two corollaries, both learned the hard way here:
 - **`Read` returns everything in memory.** Part 6 writes these out one at a time; a
   `func(Boundary) error` form would let it stream and roughly halve peak, since a boundary
   way shared between two neighbours currently has its coordinates held twice.
-- **Pairing inner rings to the outer that contains them is not done.** `Assemble` returns
-  `Outer` and `Inner` flat, and `boundary.polygon` wants GeoJSON order — outline then its
-  holes. That pairing is a point-in-ring test, and `boundary.inRing` already is one, over a
-  point type whose field order is the reverse of `osm.Point`. Writing a third ray-cast in
-  part 6 would give this module three across two transposed types; share it instead. Part 6
-  will also want a bounding box per ring, which assembly walks every point without
-  computing.
-- **A ring crossing the antimeridian winds the wrong way.** `winding()` treats longitude as
-  a plane coordinate, so a counterclockwise ring straddling ±180 reads clockwise and gets
-  reversed. The code comment argues no administrative boundary does this because
-  OpenStreetMap cuts them there — probably right, since a ring cut at ±180 cannot close
-  across it and would be reported open instead — but neither extract goes near it, so it is
-  unverified rather than known. A wrapping-aware winding is a design decision, not a test.
+- **The antimeridian is detected, not handled.** `winding()` treats longitude as a plane
+  coordinate and `boundary.inRing` says outright that a source which does not pre-split a
+  ring at the seam "would be wrong in a way this cannot detect". OSM is that new source, so
+  `osm.Areas` checks: a ring with a step of more than 180 degrees between consecutive
+  vertices has wrapped, and those are counted in the `Report` and left out rather than
+  written as a boundary that quietly contains the wrong half of the planet. Neither Sydney
+  nor Denmark produces one. Handling them — unwrapping, or splitting at the seam — is a
+  design decision for whoever first needs Fiji.
 
 One gap is knowingly left open: `unzlib` grows its buffer to the declared size only when one
 was declared, and that decision is invisible in the output, so no test pins it. An

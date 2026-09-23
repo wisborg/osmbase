@@ -1,6 +1,7 @@
 package osm
 
 import (
+	"bytes"
 	"flag"
 	"io"
 	"math/rand"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wisborg/osmbase/boundary"
 )
 
 // extractPath names a real OpenStreetMap extract to measure against.
@@ -366,4 +369,86 @@ func repeatedCorners(r Ring) int {
 		seen[p] = true
 	}
 	return n
+}
+
+// TestARealExtractSurvivesTheDerivedFile runs the whole pipeline: extract to
+// boundaries, boundaries to rings, rings to areas, areas through the file,
+// and out the other side as containment answers.
+//
+// The assertion is that the answers are the SAME on either side. That is what
+// the file is for, and it needs no coordinate written into this repository:
+// the sample points are computed from the extract at run time, so nothing
+// here records where anybody is.
+func TestARealExtractSurvivesTheDerivedFile(t *testing.T) {
+	if *extractPath == "" {
+		t.Skip("no -extract given")
+	}
+	open := Open(func() (io.ReadCloser, error) { return os.Open(*extractPath) })
+
+	boundaries, err := Read(open, Options{Levels: []int{8, 9, 10}})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	areas, rep, err := Areas(boundaries)
+	if err != nil {
+		t.Fatalf("Areas: %v", err)
+	}
+	t.Logf("%d boundaries -> %d areas; %+v", len(boundaries), len(areas), rep)
+	if len(areas) == 0 {
+		t.Fatal("no areas came out of the extract")
+	}
+
+	var buf bytes.Buffer
+	if err := boundary.WriteDerived(&buf, areas); err != nil {
+		t.Fatalf("WriteDerived: %v", err)
+	}
+	t.Logf("derived file: %.2f MB for %d areas", float64(buf.Len())/(1<<20), len(areas))
+
+	before := boundary.NewSet(areas)
+	after, err := boundary.ReadDerived(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("ReadDerived: %v", err)
+	}
+	if after.Len() != before.Len() {
+		t.Fatalf("wrote %d areas and read back %d", before.Len(), after.Len())
+	}
+
+	// Sample points taken from the geometry itself: the midpoint of each
+	// ring's bounding box, which is inside for most shapes and outside for
+	// the rest -- and both are answers the file has to preserve.
+	var checked, inside int
+	for _, b := range boundaries {
+		rings, err := Assemble(b.Ways)
+		if err != nil || len(rings.Outer) == 0 {
+			continue
+		}
+		for _, r := range rings.Outer {
+			lat, lon := midpoint(r)
+			was, okBefore := before.At(lat, lon)
+			is, okAfter := after.At(lat, lon)
+			checked++
+			if okBefore != okAfter || was.Name != is.Name {
+				t.Fatalf("at %.5f,%.5f the file changed the answer from %q (%v) to %q (%v)",
+					lat, lon, was.Name, okBefore, is.Name, okAfter)
+			}
+			if okBefore {
+				inside++
+			}
+		}
+	}
+	t.Logf("checked %d points, %d of them inside some area", checked, inside)
+	if inside == 0 {
+		t.Error("no sample point landed inside any area; the check proved nothing")
+	}
+}
+
+// midpoint is the centre of a ring's bounding box.
+func midpoint(r Ring) (lat, lon float64) {
+	west, south := r[0].Lon, r[0].Lat
+	east, north := west, south
+	for _, p := range r {
+		west, east = min(west, p.Lon), max(east, p.Lon)
+		south, north = min(south, p.Lat), max(north, p.Lat)
+	}
+	return (south + north) / 2, (west + east) / 2
 }

@@ -63,6 +63,27 @@ OpenStreetMap              Map data is © OpenStreetMap contributors, available
                            constant, so a slice built from another source
                            carries that source's own credit instead.
 
+                           A DERIVED BOUNDARY FILE IS DIFFERENT.  The file
+                           that "boundary/osm" builds from an OpenStreetMap
+                           extract -- administrative outlines, written in this
+                           module's own format -- is a Derivative Database,
+                           not a Produced Work, because it IS the map data in
+                           another shape rather than a picture made from it.
+                           Share-alike attaches to it: whoever receives that
+                           file must receive it under the ODbL.
+
+                           Answering "which suburb is this coordinate in" FROM
+                           that file is a Produced Work again, and needs the
+                           credit only.  The distinction is the difference
+                           between handing somebody the boundaries and telling
+                           them a place name.
+
+                           This is an obligation on the DATA and not on this
+                           Apache-2.0 code.  It is also the first such
+                           obligation in this project, and the command that
+                           builds the file has to say so where the person
+                           running it will see it.
+
 Protomaps                  The public planet builds this library takes tiles
                            from are themselves a Produced Work over OpenStreet-
                            Map data.  https://protomaps.com
