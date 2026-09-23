@@ -3,9 +3,12 @@ package osm
 import (
 	"flag"
 	"io"
+	"math/rand"
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -164,7 +167,7 @@ func TestAssembleARealExtract(t *testing.T) {
 	}
 
 	var whole, partial, none int
-	var rings, holes, chains, points int
+	var rings, holes, chains, points, revisited int
 	worst := ""
 	worstOpen := 0
 
@@ -189,6 +192,10 @@ func TestAssembleARealExtract(t *testing.T) {
 		}
 
 		assertAssemblyInvariants(t, b.Name, b.Ways, got)
+		assertOrderDoesNotMatter(t, b.Name, b.Ways, got)
+		for _, r := range got.Outer {
+			revisited += repeatedCorners(r)
+		}
 
 		switch {
 		case len(got.Outer) > 0 && len(got.Open) == 0:
@@ -208,6 +215,7 @@ func TestAssembleARealExtract(t *testing.T) {
 	t.Logf("  closed with gaps left    %6d", partial)
 	t.Logf("  did not close at all     %6d", none)
 	t.Logf("  outer rings %d, holes %d, open chains %d, points %d", rings, holes, chains, points)
+	t.Logf("  corners a ring visits twice %d (not zero means two outlines were welded at a junction)", revisited)
 	if worst != "" {
 		t.Logf("  most fragmented outline: %d open chains", worstOpen)
 	}
@@ -224,36 +232,138 @@ func TestAssembleARealExtract(t *testing.T) {
 
 // assertAssemblyInvariants checks what must be true of any assembly, however
 // complete or broken the data behind it is.
+//
+// The three here were chosen because each can actually fail. An invariant
+// that cannot is worse than none: it reads as a guarantee in the test and
+// costs a reader the time to work out that it is not one. Two earlier
+// invariants were exactly that -- "no more points came out than went in",
+// which the used[] flags make structurally impossible, and "no open chain
+// runs from a node back to itself", which is the definition of closed() and
+// so cannot describe anything the code puts in Open.
 func assertAssemblyInvariants(t *testing.T, name string, in []Way, got Rings) {
 	t.Helper()
 
-	var inPoints, outPoints int
+	// 1. Every point is accounted for, exactly.
+	//
+	//	out = in - (ways - groups) - rings
+	//
+	// where a group is a ring or an open chain: joining drops one point at
+	// each join, because the two ways share that node, and one more when a
+	// ring closes, because the closing vertex is not repeated. Nothing else
+	// is dropped and nothing is duplicated. Unlike the inequality this
+	// replaces, it fails if a way is consumed twice, if a join forgets to
+	// drop the shared node, if a closure keeps the repeated vertex, or if a
+	// way is silently discarded -- and on a real extract it is checked
+	// against outlines of hundreds of ways, which is where an off-by-one in
+	// the accounting shows up and a four-way fixture does not.
+	var inPoints int
 	for _, w := range in {
 		inPoints += len(w.Points)
 	}
-	for _, r := range got.Outer {
-		outPoints += len(r)
-	}
-	for _, r := range got.Inner {
-		outPoints += len(r)
-	}
-	for _, c := range got.Open {
-		outPoints += len(c.Points)
+	outPoints, rings, groups := pointsOut(got)
+	if want := inPoints - (len(in) - groups) - rings; outPoints != want {
+		t.Errorf("%s: %d points went in from %d ways, forming %d groups of which %d closed, so %d should have come out; %d did",
+			name, inPoints, len(in), groups, rings, want, outPoints)
 	}
 
-	// Joining only ever removes points -- one per join, one more per closure
-	// -- so more coming out than went in means a way was used twice, which is
-	// how an outline acquires a second lap of itself.
-	if outPoints > inPoints {
-		t.Errorf("%s: %d points went in and %d came out; a way was used more than once",
-			name, inPoints, outPoints)
-	}
-
-	// An open chain whose ends are the same node is a closed ring that was
-	// not recognised as one.
-	for _, c := range got.Open {
-		if c.From == c.To && len(c.Points) > 3 {
-			t.Errorf("%s: an open chain runs from node %d back to itself; it is a ring", name, c.From)
+	// 2. An open chain's geometry runs between the two node ids it reports.
+	//
+	// From and To are ids and Points are coordinates, and nothing ties them
+	// together: a chain whose ids were reversed without its geometry reports
+	// two correct loose ends attached to a line drawn backwards. That is
+	// invisible in any count, and on a real extract most chains have been
+	// reversed at least once, because a run that starts in the middle of an
+	// outline is the normal case.
+	where := map[int64]Point{}
+	for _, w := range in {
+		for i, id := range w.Nodes {
+			where[id] = w.Points[i]
 		}
 	}
+	for _, c := range got.Open {
+		if len(c.Points) == 0 {
+			continue // A way with no references at all has no ends.
+		}
+		if p, ok := where[c.From]; ok && p != c.Points[0] {
+			t.Errorf("%s: a chain says it starts at node %d, which is at %v, but its first point is %v",
+				name, c.From, p, c.Points[0])
+		}
+		if p, ok := where[c.To]; ok && p != c.Points[len(c.Points)-1] {
+			t.Errorf("%s: a chain says it ends at node %d, which is at %v, but its last point is %v",
+				name, c.To, p, c.Points[len(c.Points)-1])
+		}
+	}
+}
+
+// assertOrderDoesNotMatter checks that the same ways in a different order
+// assemble to the same shapes.
+//
+// A relation's members arrive in whatever order a mapper added them, and that
+// order carries no information -- so it must not change the answer. It is the
+// property the join is least able to guarantee on its own: the walk takes one
+// fork at a time, and at a node where more than one unused way is available
+// the fork it takes depends on where the ways sit in the list. Two outlines
+// of one relation meeting at a node is the shape that offers such a fork.
+//
+// A failure here is not a flake. It says this extract contains a junction the
+// join guesses at, and that the geometry it produced for that relation
+// depends on the order of a list nobody controls.
+func assertOrderDoesNotMatter(t *testing.T, name string, in []Way, want Rings) {
+	t.Helper()
+	if len(in) < 2 {
+		return
+	}
+	rng := rand.New(rand.NewSource(int64(len(in))))
+	for attempt := 0; attempt < 5; attempt++ {
+		ways := slices.Clone(in)
+		rng.Shuffle(len(ways), func(i, j int) { ways[i], ways[j] = ways[j], ways[i] })
+		got, err := Assemble(ways)
+		if err != nil {
+			t.Fatalf("%s: Assemble(shuffled): %v", name, err)
+		}
+		if a, b := shapes(want), shapes(got); a != b {
+			t.Errorf("%s: listed as the file has them the ways assemble to %s; shuffled they assemble to %s",
+				name, a, b)
+			return
+		}
+	}
+}
+
+// shapes summarises an assembly by the sizes of what came out of it, which is
+// what must not depend on the order of the input.
+func shapes(r Rings) string {
+	size := func(n int) string { return strconv.Itoa(n) }
+	var outer, inner, open []string
+	for _, x := range r.Outer {
+		outer = append(outer, size(len(x)))
+	}
+	for _, x := range r.Inner {
+		inner = append(inner, size(len(x)))
+	}
+	for _, c := range r.Open {
+		open = append(open, size(len(c.Points)))
+	}
+	slices.Sort(outer)
+	slices.Sort(inner)
+	slices.Sort(open)
+	return "outer[" + strings.Join(outer, " ") + "] inner[" + strings.Join(inner, " ") +
+		"] open[" + strings.Join(open, " ") + "]"
+}
+
+// repeatedCorners counts the corners a ring visits more than once.
+//
+// Reported rather than asserted, because two distinct nodes at one coordinate
+// are legitimate where an extract has been cut. But a ring that returns to a
+// corner is the signature of two outlines welded at a junction, so a count
+// that is not zero is the thing to look at first.
+func repeatedCorners(r Ring) int {
+	seen := make(map[Point]bool, len(r))
+	n := 0
+	for _, p := range r {
+		if seen[p] {
+			n++
+		}
+		seen[p] = true
+	}
+	return n
 }

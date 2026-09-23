@@ -72,6 +72,12 @@ type Limits struct {
 
 	// Points bounds the geometry handed back.
 	//
+	// It also stands in for what ring assembly will spend on the same
+	// geometry, which is several times more: a chain grows by doubling and
+	// is then copied into its ring, so peak inside Assemble was measured at
+	// about four times the points it was handed. Raising this raises that
+	// too.
+	//
 	// It needs its own limit because it is not proportional to any of the
 	// above. A way's node list is expanded into coordinates once for every
 	// relation that names it, and heavy sharing between adjacent areas is
@@ -121,6 +127,14 @@ func (l Limits) withDefaults() Limits {
 // hundred megabytes. It is a ceiling for a hostile file, not a working set:
 // a real country extract uses a small fraction of it.
 //
+// Points is the one set from measurement rather than from headroom. Every
+// administrative boundary in a Sydney extract comes to 103,000 points and
+// all of Denmark's to around 600,000, so 8.4 million is an order of
+// magnitude above a large country and still bounds ring assembly -- which
+// spends several times the points it is given -- to a few hundred megabytes.
+// A country larger than any tried so far may need it raised; it is a field,
+// and raising one field is the supported gesture.
+//
 // A function rather than a package variable, as in pmtiles, because a
 // variable in a public library is one any consumer can change for every other
 // consumer in the process.
@@ -129,7 +143,7 @@ func DefaultLimits() Limits {
 		Boundaries: 1 << 18,
 		Ways:       1 << 22,
 		Nodes:      1 << 25,
-		Points:     1 << 25,
+		Points:     1 << 23,
 	}
 }
 
@@ -184,7 +198,7 @@ func Read(open Open, opts Options) ([]Boundary, error) {
 		return nil, err
 	}
 
-	return assemble(found, wantedWays, wayNodes, wantedNodes, places, opts.Limits.Points)
+	return collect(found, wantedWays, wayNodes, wantedNodes, places, opts.Limits.Points)
 }
 
 // relation is what pass 1 keeps: everything but the geometry.
@@ -356,12 +370,12 @@ func countFalse(bs []bool) int {
 	return n
 }
 
-// assemble joins the three passes back together.
+// collect joins the three passes back together.
 //
 // maxPoints bounds the geometry produced, which is not bounded by anything
 // the passes recorded: a way's node list is expanded once per relation that
 // names it, and boundary ways are shared between neighbours.
-func assemble(found []relation, wantedWays *idSet, wayNodes [][]int64, wantedNodes *idSet, points []Point, maxPoints int) ([]Boundary, error) {
+func collect(found []relation, wantedWays *idSet, wayNodes [][]int64, wantedNodes *idSet, points []Point, maxPoints int) ([]Boundary, error) {
 	out := make([]Boundary, 0, len(found))
 	var total int
 

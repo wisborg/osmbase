@@ -424,7 +424,7 @@ Two corollaries, both learned the hard way here:
   table held and nothing bounded how long one was, so a 450-byte file retained 1.26 GB.
   Both axes need a bound.
 
-### Carried into part 5
+### Carried into part 6
 
 - **The decompression-bomb guard is still in three places** — `pmtiles.decompress`,
   `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and three copies of
@@ -444,6 +444,19 @@ Two corollaries, both learned the hard way here:
 - **`Read` returns everything in memory.** Part 6 writes these out one at a time; a
   `func(Boundary) error` form would let it stream and roughly halve peak, since a boundary
   way shared between two neighbours currently has its coordinates held twice.
+- **Pairing inner rings to the outer that contains them is not done.** `Assemble` returns
+  `Outer` and `Inner` flat, and `boundary.polygon` wants GeoJSON order — outline then its
+  holes. That pairing is a point-in-ring test, and `boundary.inRing` already is one, over a
+  point type whose field order is the reverse of `osm.Point`. Writing a third ray-cast in
+  part 6 would give this module three across two transposed types; share it instead. Part 6
+  will also want a bounding box per ring, which assembly walks every point without
+  computing.
+- **A ring crossing the antimeridian winds the wrong way.** `winding()` treats longitude as
+  a plane coordinate, so a counterclockwise ring straddling ±180 reads clockwise and gets
+  reversed. The code comment argues no administrative boundary does this because
+  OpenStreetMap cuts them there — probably right, since a ring cut at ±180 cannot close
+  across it and would be reported open instead — but neither extract goes near it, so it is
+  unverified rather than known. A wrapping-aware winding is a design decision, not a test.
 
 One gap is knowingly left open: `unzlib` grows its buffer to the declared size only when one
 was declared, and that decision is invisible in the output, so no test pins it. An
