@@ -144,3 +144,116 @@ func TestMeasureARealExtract(t *testing.T) {
 		})
 	}
 }
+
+// TestAssembleARealExtract runs ring assembly over every boundary a real
+// extract holds and reports how many outlines actually close.
+//
+// The synthetic tests establish that the joining rules are right. This
+// establishes that they are the rules real data needs, which is a different
+// claim: a relation's ways are cut at every junction, listed in no order and
+// in no direction, and a country extract cuts some of them off entirely.
+func TestAssembleARealExtract(t *testing.T) {
+	if *extractPath == "" {
+		t.Skip("no -extract given")
+	}
+	open := Open(func() (io.ReadCloser, error) { return os.Open(*extractPath) })
+
+	boundaries, err := Read(open, Options{Levels: []int{8, 9, 10}})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	var whole, partial, none int
+	var rings, holes, chains, points int
+	worst := ""
+	worstOpen := 0
+
+	for _, b := range boundaries {
+		got, err := Assemble(b.Ways)
+		if err != nil {
+			t.Fatalf("Assemble(%q): %v", b.Name, err)
+		}
+		rings += len(got.Outer)
+		holes += len(got.Inner)
+		chains += len(got.Open)
+		for _, r := range got.Outer {
+			points += len(r)
+			if w := r.winding(); w != counterclockwise {
+				t.Errorf("%q has an outer ring winding %d", b.Name, w)
+			}
+		}
+		for _, r := range got.Inner {
+			if w := r.winding(); w != clockwise {
+				t.Errorf("%q has an inner ring winding %d", b.Name, w)
+			}
+		}
+
+		assertAssemblyInvariants(t, b.Name, b.Ways, got)
+
+		switch {
+		case len(got.Outer) > 0 && len(got.Open) == 0:
+			whole++
+		case len(got.Outer) > 0:
+			partial++
+		default:
+			none++
+		}
+		if len(got.Open) > worstOpen {
+			worstOpen, worst = len(got.Open), b.Name
+		}
+	}
+
+	t.Logf("%d boundaries at levels 8-10", len(boundaries))
+	t.Logf("  closed completely        %6d", whole)
+	t.Logf("  closed with gaps left    %6d", partial)
+	t.Logf("  did not close at all     %6d", none)
+	t.Logf("  outer rings %d, holes %d, open chains %d, points %d", rings, holes, chains, points)
+	if worst != "" {
+		t.Logf("  most fragmented outline: %d open chains", worstOpen)
+	}
+
+	// The closure rate is deliberately reported and NOT asserted. It measures
+	// how complete the extract is, not whether assembly works: Sydney closes
+	// 471 of 522 because a bounding-box cut severs the outlines at its edge,
+	// and Denmark closes 3 of 23 at these levels because more than half the
+	// ways its boundary relations name lie outside the country file. A
+	// threshold here would fail on the data and blame the code.
+	//
+	// What IS asserted below holds whatever the extract contains.
+}
+
+// assertAssemblyInvariants checks what must be true of any assembly, however
+// complete or broken the data behind it is.
+func assertAssemblyInvariants(t *testing.T, name string, in []Way, got Rings) {
+	t.Helper()
+
+	var inPoints, outPoints int
+	for _, w := range in {
+		inPoints += len(w.Points)
+	}
+	for _, r := range got.Outer {
+		outPoints += len(r)
+	}
+	for _, r := range got.Inner {
+		outPoints += len(r)
+	}
+	for _, c := range got.Open {
+		outPoints += len(c.Points)
+	}
+
+	// Joining only ever removes points -- one per join, one more per closure
+	// -- so more coming out than went in means a way was used twice, which is
+	// how an outline acquires a second lap of itself.
+	if outPoints > inPoints {
+		t.Errorf("%s: %d points went in and %d came out; a way was used more than once",
+			name, inPoints, outPoints)
+	}
+
+	// An open chain whose ends are the same node is a closed ring that was
+	// not recognised as one.
+	for _, c := range got.Open {
+		if c.From == c.To && len(c.Points) > 3 {
+			t.Errorf("%s: an open chain runs from node %d back to itself; it is a ring", name, c.From)
+		}
+	}
+}

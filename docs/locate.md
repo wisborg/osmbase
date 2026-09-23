@@ -191,7 +191,7 @@ None of them requires the one after it to be useful.
 | 2 | **PBF block reader** | Blob/BlobHeader framing, zlib inflation, and `PrimitiveBlock` string tables decode from a synthetic fixture. No OSM semantics yet. |
 | 3 | **Element decoding** | Dense nodes (delta-encoded), ways, and relations come back as Go structs, with tags resolved against the string table. Fuzzed, as `mvt` is. |
 | 4 | **The three passes** | ✅ committed — `boundary/osm`. Relation → member ways with their coordinates and node ids. Measured against a real Denmark extract: the memory gate passes by two orders of magnitude, and the *data* premise does not hold there. See below. |
-| 5 | **Ring assembly** | Ways joined end to end into closed rings, outers and inners oriented, unclosed rings reported rather than silently dropped. |
+| 5 | **Ring assembly** | ✅ committed — `boundary/osm.Assemble`. Ways joined on node id into closed rings, outers counterclockwise and inners clockwise per RFC 7946, unclosed chains reported with the node ids of the gap. Measured: Sydney closes 471 of 522 outlines, Hornsby's 46 ways into one ring of 450 points. |
 | 6 | **The derived file** | A compact format `boundary` can read, plus the writer. Versioned, because it is on somebody's disk. |
 | 7 | **`osmbase boundaries --osm`** | Fetch an extract through `acquire`, run the pipeline, delete the extract, record the ODbL obligation. |
 | 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. |
@@ -388,7 +388,12 @@ What follows:
    on a `Match` already tells a caller which it got.
 2. **Every way arrives open.** Not one of Hornsby's 46 ways is closed on its own, and the
    same is true across the extract. Ring assembly is not an optimisation for tidiness; it
-   is the only thing that turns this output into a polygon. Part 5 is load-bearing.
+   is the only thing that turns this output into a polygon. Part 5 is load-bearing, and is
+   now built: Sydney closes 471 of its 522 outlines completely, the other 51 being the
+   suburbs the bounding box cuts through. Denmark closes 3 of 23 at these levels, which is
+   the same thinness finding and not an assembly failure — the closure rate measures how
+   complete an extract is, so `TestAssembleARealExtract` reports it and asserts only what
+   holds whatever the data contains.
 3. **`place=*` polygons remain a candidate, and are cheap.** 509 `place=suburb` relations in
    Sydney, 6 in Denmark. Same three passes, different predicate. Worth adding only if a
    country turns up that has them and lacks the admin relations — Denmark is not that
