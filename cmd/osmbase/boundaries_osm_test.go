@@ -82,8 +82,16 @@ func TestBoundariesFromALocalExtract(t *testing.T) {
 	if got := set.Provenance().Attribution; !strings.Contains(got, "ODbL") {
 		t.Errorf("the file's attribution is %q", got)
 	}
-	if set.Provenance().Source != src {
-		t.Errorf("the file says it came from %q, want %q", set.Provenance().Source, src)
+	// The BASE name, not the path it was read from. This file exists to be
+	// handed to other people -- that is the whole share-alike argument the
+	// command prints -- and the path carries a username and whatever the
+	// directory is called. The provenance only has to tell two stores' files
+	// apart.
+	if got := set.Provenance().Source; got != filepath.Base(src) {
+		t.Errorf("the file says it came from %q, want just %q", got, filepath.Base(src))
+	}
+	if strings.Contains(set.Provenance().Source, string(os.PathSeparator)) {
+		t.Errorf("the file carries a path: %q", set.Provenance().Source)
 	}
 
 	// And in the terminal, before the file exists rather than after.

@@ -143,6 +143,25 @@ func NewRangeReader(rawURL string) (*RangeReader, error) {
 // query string, which is a small price for not having to keep a list of which
 // query parameters are secret -- a list that would be wrong the first time
 // somebody used a store this one has not heard of.
+// Redact renders a URL for printing, with anything secret taken out.
+//
+// Exported because a URL reaches more places than an error message. A
+// derived boundary file records the URL it was built from and is then
+// handed to other people, and a command that names its source in a usage
+// error puts that string on the stream people paste into issue reports. Both
+// wanted exactly this and neither could reach it, so one of them wrote the
+// credential out in full.
+//
+// A string that is not a URL comes back unchanged: the caller is printing it
+// either way, and a parse failure is not a reason to print nothing.
+func Redact(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	return redactURL(u)
+}
+
 func redactURL(u *url.URL) string {
 	shown := *u
 	if shown.User != nil {

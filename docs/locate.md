@@ -194,7 +194,7 @@ None of them requires the one after it to be useful.
 | 5 | **Ring assembly** | ✅ committed — `boundary/osm.Assemble`. Ways joined on node id into closed rings, outers counterclockwise and inners clockwise per RFC 7946, unclosed chains reported with the node ids of the gap. Measured: Sydney closes 471 of 522 outlines, Hornsby's 46 ways into one ring of 450 points. |
 | 6 | **The derived file** | ✅ committed — `boundary.WriteDerived`/`ReadDerived`, magic, version, a length-prefixed provenance header, delta-coded varints at OSM's own resolution. `boundary.Polygons` pairs holes to outlines; `osm.Areas` converts and reports. Measured: Sydney's 471 areas are **0.41 MB**, and containment answers are identical on either side of the file. |
 | 7 | **`osmbase boundaries --osm`** | ✅ committed — a URL to fetch or a `.osm.pbf` to read, `--levels`, `--region`, `--keep-extract`. A fetched extract is deleted; one the user pointed at is left alone. The ODbL obligation is stated before the file exists, and travels inside it. |
-| 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. |
+| 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. Also: the credit has to SWITCH — an answer from a derived file is a Produced Work owing the OpenStreetMap credit, while one from Natural Earth owes none. `Set.Provenance().Attribution` carries it. |
 
 Parts 2 and 3 need no network and no real extract: synthetic fixtures in the style of
 `osmbasetest` are enough, and are better, because a real file cannot express a malformed one.
@@ -462,7 +462,9 @@ from "this file was not asked for suburbs".
 - **`Read` returns everything in memory.** Part 6 writes these out one at a time; a
   `func(Boundary) error` form would let it stream and roughly halve peak, since a boundary
   way shared between two neighbours currently has its coordinates held twice.
-- **`Set` cannot be asked for one level.** `ReadDerived` returns a single set holding every
+- **`Set` cannot be asked for one level.** (Still true. `boundary.DerivedRegions` and
+  `RegionOf` now exist, so `locate` can FIND the files without re-spelling the naming rule
+  — that half is done.) `ReadDerived` returns a single set holding every
   level the file was built for, `Set.At` takes the smallest containing area regardless of
   kind, and `areas` is unexported with no way to partition it. Part 8 wiring Locality and
   Neighbourhood to containment will get "whatever the deepest admin level in this file is"

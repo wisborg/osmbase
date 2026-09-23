@@ -124,14 +124,25 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 	if _, err := parseArgs(fs, args, stdout); err != nil {
 		return err
 	}
-	if osmFrom == "" {
-		for name, flagName := range map[string]string{region: "--region", levels: "--levels"} {
-			if name != "" {
-				return usageErrorf("%s only means something with --osm", flagName)
-			}
+	// Each half checks its own flags, including the ones the other half owns.
+	// A flag that is quietly ignored is worse than one that is refused: the
+	// user asked for something and got silence -- and --detail, the one flag
+	// in this command with a path-traversal history, was the one being
+	// ignored while three harmless ones were refused.
+	for _, f := range []struct {
+		name string
+		osm  bool
+	}{
+		{"region", true}, {"levels", true}, {"keep-extract", true}, {"detail", false},
+	} {
+		if !flagGiven(fs, f.name) {
+			continue
 		}
-		if keep {
-			return usageErrorf("--keep-extract only means something with --osm")
+		if f.osm && osmFrom == "" {
+			return usageErrorf("--%s only means something with --osm", f.name)
+		}
+		if !f.osm && osmFrom != "" {
+			return usageErrorf("--%s is for the Natural Earth outlines; --osm reads an extract, which has no detail levels", f.name)
 		}
 	}
 	if !slices.Contains(boundary.Details, detail) {
@@ -149,7 +160,11 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 	dir := boundary.Dir(root)
 
 	if osmFrom != "" {
-		return osmBoundaries(osmFrom, region, levels, dir, keep, yes, stdout, stderr)
+		return osmBoundaries(osmOptions{
+			source: osmFrom, region: region, levels: levels,
+			dir: dir, keep: keep, yes: yes,
+			stdin: os.Stdin, stdout: stdout, stderr: stderr,
+		})
 	}
 
 	var files []string
@@ -165,7 +180,7 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stderr, "osmbase: they go in %s\n", dir)
 
 	if !yes {
-		ok, err := confirmBoundaries(stdout)
+		ok, err := confirmBoundaries(os.Stdin, stderr)
 		if err != nil {
 			return err
 		}
@@ -236,17 +251,23 @@ func saveThroughTemp(dir, name string, write func(io.Writer) (int64, error)) (in
 	return n, nil
 }
 
-// confirmBoundaries asks before the one network access this command makes.
+// confirmBoundaries asks before this command acts.
 //
 // Its own function rather than the fetch command's confirm, which reads a plan
-// it would have to be handed nil -- and which asks a different question. A
-// tile fetch tells a host which few-kilometre squares interest you; this tells
-// it only that somebody wanted world outlines, which is the same request every
-// user of this command makes.
-func confirmBoundaries(w io.Writer) (bool, error) {
+// it would have to be handed nil -- and which asks a different question. For
+// the Natural Earth path it tells a host only that somebody wanted world
+// outlines, which is the same request every user of that path makes; the
+// --osm path names a region, and says so itself rather than through this.
+//
+// The reader is a parameter because the answer to a question is not something
+// to reach into the process for. Reading os.Stdin directly meant a test had
+// to swap the process's stdin to say yes, so no test in that file could run
+// in parallel -- and the path where the user agrees went untested entirely,
+// which left "yes means no" a green mutation.
+func confirmBoundaries(r io.Reader, w io.Writer) (bool, error) {
 	fmt.Fprintf(w, "Continue? [y/N] ")
 	var answer string
-	if _, err := fmt.Fscanln(os.Stdin, &answer); err != nil {
+	if _, err := fmt.Fscanln(r, &answer); err != nil {
 		// A closed or empty stdin is a no rather than an error, for the same
 		// reason it is in the fetch command: a pipeline that reached this
 		// prompt did not mean to download anything.

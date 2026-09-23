@@ -46,11 +46,80 @@ func DerivedFile(region string) (string, error) {
 	if !ValidRegion(region) {
 		return "", fmt.Errorf("boundary: %q is not a usable region name; it may hold letters, digits, dots, dashes and underscores", region)
 	}
-	return "osm_" + region + DerivedExt, nil
+	return derivedPrefix + region + DerivedExt, nil
 }
 
-// DerivedExt is the extension a derived boundary file carries.
-const DerivedExt = ".osmb"
+// DerivedExt is the extension a derived boundary file carries, and
+// derivedPrefix what its name begins with.
+const (
+	DerivedExt    = ".osmb"
+	derivedPrefix = "osm_"
+
+	// extractPrefix is the working copy of an extract, which lives in the
+	// same directory while it is being read.
+	extractPrefix = "extract_"
+	extractExt    = ".osm.pbf"
+)
+
+// ExtractFile names the working copy of an extract for a region.
+//
+// Beside DerivedFile and validated the same way, because it is the second
+// path component built from the same user-supplied string -- and the command
+// that builds it was spelling it inline. That is safe only while the other
+// name happens to be built first, which makes an ordering the check. The
+// lesson this package already recorded is that a check every caller has to
+// remember is a check that will be forgotten.
+func ExtractFile(region string) (string, error) {
+	if !ValidRegion(region) {
+		return "", fmt.Errorf("boundary: %q is not a usable region name; it may hold letters, digits, dots, dashes and underscores", region)
+	}
+	return extractPrefix + region + extractExt, nil
+}
+
+// RegionOf recovers the region from a derived file's name, and reports
+// whether the name is one.
+//
+// The inverse of DerivedFile, here rather than in whatever wants it, because
+// the prefix is this package's and a caller that had to know it would be the
+// second place the naming rule is written. locate has to find these files
+// without ever being told a region.
+func RegionOf(name string) (string, bool) {
+	if !strings.HasPrefix(name, derivedPrefix) || !strings.HasSuffix(name, DerivedExt) {
+		return "", false
+	}
+	region := name[len(derivedPrefix) : len(name)-len(DerivedExt)]
+	if !ValidRegion(region) {
+		return "", false
+	}
+	return region, true
+}
+
+// DerivedRegions lists the regions a store holds derived boundaries for.
+//
+// Sorted, so two runs agree. A name this package did not write is skipped
+// rather than reported: the directory also holds the Natural Earth files and,
+// while a build is running or after one was interrupted, a working copy of an
+// extract.
+func DerivedRegions(storeRoot string) ([]string, error) {
+	entries, err := os.ReadDir(Dir(storeRoot))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if region, ok := RegionOf(e.Name()); ok {
+			out = append(out, region)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
 
 // ValidRegion reports whether a string may be part of a derived file's name.
 //

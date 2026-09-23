@@ -8,12 +8,20 @@ import (
 	"time"
 )
 
-// DownloadTimeout is how long a whole-file download may take.
+// DownloadTimeout is how long a whole-file download may take by default.
 //
 // Longer than DefaultTimeout, which bounds a single range request of a few
 // hundred kilobytes. A whole file here is tens of megabytes over a link this
 // cannot know the speed of, and a timeout that kills a download at ninety per
 // cent is worse than one that waits.
+//
+// Ten minutes is sized for those tens of megabytes, and it is NOT enough for
+// every caller: an OpenStreetMap country extract is hundreds of megabytes to
+// a gigabyte, which inside ten minutes needs a sustained six to thirteen
+// megabits -- so on an ordinary link the download would die at ninety per
+// cent, which is the thing this constant's own reasoning says to avoid. A
+// caller that knows it is asking for something larger says so with
+// DownloadWithin.
 const DownloadTimeout = 10 * time.Minute
 
 // Download copies a whole file from an https URL into w, returning how many
@@ -37,6 +45,18 @@ const DownloadTimeout = 10 * time.Minute
 // produced it. Zero means no limit, which is for a caller that genuinely
 // cannot bound the size and has decided that is acceptable.
 func Download(rawURL string, w io.Writer, limit int64) (int64, error) {
+	return DownloadWithin(rawURL, w, limit, DownloadTimeout)
+}
+
+// DownloadWithin is Download with a deadline the caller chooses.
+//
+// The deadline covers the whole transfer, body included, so it has to be
+// sized against what the caller is asking for rather than against what this
+// package usually fetches. Zero means DownloadTimeout.
+func DownloadWithin(rawURL string, w io.Writer, limit int64, timeout time.Duration) (int64, error) {
+	if timeout <= 0 {
+		timeout = DownloadTimeout
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return 0, fmt.Errorf("acquire: %q is not a URL: %w", rawURL, err)
@@ -46,7 +66,7 @@ func Download(rawURL string, w io.Writer, limit int64) (int64, error) {
 			redactURL(u), u.Scheme)
 	}
 
-	client := &http.Client{Timeout: DownloadTimeout, CheckRedirect: checkRedirect}
+	client := &http.Client{Timeout: timeout, CheckRedirect: checkRedirect}
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("acquire: preparing to download %s: %w", redactURL(u), err)
