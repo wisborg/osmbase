@@ -15,10 +15,12 @@
 package boundary
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -138,6 +140,30 @@ func (s *Set) Len() int { return len(s.areas) }
 // is cheap, already computed, and enough to order things that genuinely
 // contain one another. It would be the wrong tool for ranking areas that
 // merely overlap; nothing here does.
+// Containing returns every area holding the coordinate, largest first.
+//
+// At answers "which one", which is the question for a set of countries,
+// because they do not overlap. A set of administrative areas does overlap --
+// deliberately, because it IS a hierarchy: a point in a suburb is also in the
+// council area around it. Which of those is a "locality" and which a
+// "neighbourhood" cannot be read off an admin_level, because the levels mean
+// different things in different countries, so the caller needs the whole
+// stack and the order it nests in.
+func (s *Set) Containing(lat, lon float64) []Area {
+	var out []Area
+	for i := range s.areas {
+		if s.areas[i].contains(lat, lon) {
+			out = append(out, s.areas[i])
+		}
+	}
+	slices.SortStableFunc(out, func(a, b Area) int {
+		// Largest first, and stable so that two areas of the same extent
+		// keep the order the file gave them rather than an arbitrary one.
+		return cmp.Compare(b.boxArea(), a.boxArea())
+	})
+	return out
+}
+
 func (s *Set) At(lat, lon float64) (Area, bool) {
 	best := -1
 	bestSize := math.Inf(1)

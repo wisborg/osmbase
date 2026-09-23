@@ -1,6 +1,7 @@
 package boundary
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -209,6 +210,10 @@ func Dir(storeRoot string) string { return filepath.Join(storeRoot, "boundaries"
 // to parse the world's coastlines, and a route of thousands of points should
 // not pay twice.
 type Source struct {
+	derivedSets    []*Set
+	derivedCredits []string
+	derivedDone    bool
+
 	dir    string
 	detail string
 
@@ -235,6 +240,86 @@ type Source struct {
 // the other reasonable choice and is what the command does before it gets
 // here; at this level a caller has already decided to fall back to
 // nearest-feature when boundaries are unavailable, and an unknown detail is
+
+// CreditFor is the attribution an answer at this level owes.
+//
+// Empty means none is owed. The distinction matters and is the reason this
+// exists: a contained answer used to be Natural Earth and therefore public
+// domain, so the command could say so with a constant. A derived file is
+// OpenStreetMap, which is not public domain, and an answer taken from one is
+// a Produced Work that owes the credit. The command cannot tell which it got
+// without asking.
+func (s *Source) CreditFor(l locate.Level) string {
+	if _, ok := layerFor(l); ok {
+		return NaturalEarthCredit
+	}
+	if !derivedLevel(l) || len(s.derived()) == 0 {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.derivedCredits) == 0 {
+		return ""
+	}
+	return strings.Join(s.derivedCredits, "; ")
+}
+
+// NaturalEarthCredit names the source of the country, region and water
+// outlines. It is public domain and owes nothing; the string exists so a
+// reader of an answer can tell where it came from.
+const NaturalEarthCredit = "Natural Earth (public domain)"
+
+// derived loads every derived boundary file in the store, once.
+//
+// All of them rather than one named region, because nothing tells a lookup
+// which region a coordinate is in -- that is the question being asked. A
+// store holding two countries answers for both, and a store holding none
+// answers nothing and leaves the levels to the tiles.
+func (s *Source) derived() []*Set {
+	if s.loaded == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.derivedDone {
+		return s.derivedSets
+	}
+	s.derivedDone = true
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if _, ok := RegionOf(e.Name()); !ok {
+			continue
+		}
+		f, err := os.Open(filepath.Join(s.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		set, err := ReadDerived(f)
+		f.Close()
+		if err != nil {
+			// Remembered rather than retried, as a broken Natural Earth file
+			// is: a route is thousands of coordinates and a file that will
+			// not parse will not parse again.
+			s.loaded[e.Name()] = err
+			continue
+		}
+		s.derivedSets = append(s.derivedSets, set)
+		if c := set.Provenance().Attribution; c != "" && !seen[c] {
+			seen[c] = true
+			s.derivedCredits = append(s.derivedCredits, c)
+		}
+	}
+	return s.derivedSets
+}
+
 // a kind of unavailable.
 func Open(storeRoot, detail string) *Source {
 	if !ValidDetail(detail) {
@@ -257,12 +342,25 @@ func Available(storeRoot, detail string) bool {
 	if detail == "" {
 		detail = DefaultDetail
 	}
+	complete := true
 	for _, layer := range Layers {
 		if _, err := os.Stat(filepath.Join(Dir(storeRoot), File(detail, layer))); err != nil {
-			return false
+			complete = false
+			break
 		}
 	}
-	return true
+	if complete {
+		return true
+	}
+	// A store may hold derived files and no Natural Earth outlines at all,
+	// which is what running "boundaries --osm" without running "boundaries"
+	// leaves behind. Answering false there made the derived file dead: the
+	// command never opened a source, so the file nobody could see was never
+	// read. Covers still answers per level, so a source opened on this
+	// account offers the levels it actually has and leaves the rest to the
+	// tiles.
+	regions, err := DerivedRegions(storeRoot)
+	return err == nil && len(regions) > 0
 }
 
 // set loads one file, once, remembering a failure so a broken file is not
@@ -329,8 +427,68 @@ func layerKind(layer Layer) string {
 // point can be inside a country's outline and inside a named bay at once, and
 // both are worth saying.
 func (s *Source) Covers(l locate.Level) bool {
-	_, ok := layerFor(l)
-	return ok
+	if _, ok := layerFor(l); ok {
+		return true
+	}
+	// The levels below region are covered only when a derived file is
+	// actually present. A source that said it covered them regardless would
+	// take them away from the tiles and then answer nothing, turning a
+	// nearest-feature answer into no answer at all.
+	return derivedLevel(l) && len(s.derived()) > 0
+}
+
+// derivedLevel reports whether a level is one the derived files answer.
+//
+// Country and region come from Natural Earth and water has no administrative
+// equivalent; street is a line, not an area, and no boundary file holds one.
+// What is left is the three levels between a region and a street, which is
+// exactly the range OpenStreetMap's administrative relations cover and the
+// range the tiles could only ever answer by nearest label.
+func derivedLevel(l locate.Level) bool {
+	switch l {
+	case locate.Locality, locate.Macrohood, locate.Neighbourhood:
+		return true
+	}
+	return false
+}
+
+// derivedOrder is the levels the containment stack is ranked onto, outermost
+// first.
+var derivedOrder = []locate.Level{locate.Locality, locate.Macrohood, locate.Neighbourhood}
+
+// rankDerived assigns the areas containing a point to levels.
+//
+// The rule is the nesting itself, because nothing else is available: an
+// admin_level is a number whose meaning differs by country -- seven is the
+// municipality in Denmark and nine is the suburb in Australia -- so a table
+// mapping levels to names would be asserting one country's scheme over every
+// other.
+//
+// So the OUTERMOST area containing a point is its locality and the INNERMOST
+// is its neighbourhood, with anything in between a macrohood. One area is a
+// locality and nothing else: the place has one administrative name at this
+// range and inventing two from it would be a claim the data does not make.
+// Measured against the two extracts this was built on, that gives Denmark's
+// kommune as a locality, and Sydney's council area as a locality with its
+// suburb as a neighbourhood, which is what a person would have said.
+func rankDerived(areas []Area) map[locate.Level]Area {
+	out := map[locate.Level]Area{}
+	switch len(areas) {
+	case 0:
+		return out
+	case 1:
+		out[locate.Locality] = areas[0]
+		return out
+	}
+	out[locate.Locality] = areas[0]
+	out[locate.Neighbourhood] = areas[len(areas)-1]
+	if len(areas) > 2 {
+		// The one just outside the innermost, so that a deep hierarchy
+		// reports the two ends and the step between them rather than an
+		// arbitrary middle.
+		out[locate.Macrohood] = areas[len(areas)-2]
+	}
+	return out
 }
 
 // layerFor maps a level to the file that answers it.
@@ -356,7 +514,25 @@ func layerFor(l locate.Level) (Layer, bool) {
 func (s *Source) Contains(l locate.Level, lat, lon float64) (string, string, bool) {
 	layer, ok := layerFor(l)
 	if !ok {
-		return "", "", false
+		if !derivedLevel(l) {
+			return "", "", false
+		}
+		var stack []Area
+		for _, set := range s.derived() {
+			stack = append(stack, set.Containing(lat, lon)...)
+		}
+		// Ranked across every derived file at once. A store may hold several
+		// regions and they do not overlap, so in practice the stack comes
+		// from one of them -- but sorting the whole thing is what makes that
+		// a fact about the data rather than an assumption about the store.
+		slices.SortStableFunc(stack, func(a, b Area) int {
+			return cmp.Compare(b.boxArea(), a.boxArea())
+		})
+		a, ok := rankDerived(stack)[l]
+		if !ok {
+			return "", "", false
+		}
+		return a.Name, a.Kind, true
 	}
 	set := s.set(layer)
 	if set == nil {

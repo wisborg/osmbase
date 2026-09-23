@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -128,34 +129,46 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("finding the default store: %w; pass --store to say where the map data is", err)
 		}
 	}
-	st, err := slice.Open(root)
-	if err != nil {
-		return fmt.Errorf("opening the store at %s: %w", root, err)
-	}
-	sources, err := st.Sources()
-	if err != nil {
-		return err
-	}
-	chosen, err := chooseSource(root, sources, archive)
-	if err != nil {
-		return err
-	}
-	src, err := st.Source(chosen.ID)
-	if err != nil {
-		return err
-	}
-
-	// Boundaries if the store has them, and silently not if it does not: they
-	// are an optional download, a store without them is the ordinary case,
-	// and the difference is visible in the output anyway -- every answer says
-	// "near" instead of "in".
+	// Levels and boundaries first, because whether the tiles are needed at
+	// all depends on them. A store built by "osmbase boundaries --osm" and
+	// nothing else holds no tiles, and asking only for the levels those
+	// boundaries cover is a legitimate way to use it -- so opening the tile
+	// store cannot be the first thing that happens.
 	wanted, err := parseLevels(levels)
 	if err != nil {
 		return err
 	}
 	opts := osmlocate.Options{Language: language, Levels: wanted}
+	var bounds *boundary.Source
 	if boundary.Available(root, detail) {
-		opts.Boundaries = boundary.Open(root, detail)
+		bounds = boundary.Open(root, detail)
+		opts.Boundaries = bounds
+	}
+
+	var src osmlocate.TileSource
+	var chosen slice.Manifest
+	if need := tileLevels(wanted, bounds); len(need) > 0 {
+		st, err := slice.Open(root)
+		if err != nil {
+			if bounds != nil {
+				// The store holds boundaries and no map. Naming the levels
+				// that need one turns "there is no store" into something the
+				// user can act on: ask for fewer levels, or fetch tiles.
+				return fmt.Errorf("%s %s map tiles, and %s holds boundaries but no map: ask for fewer levels, or run \"osmbase fetch\"",
+					joinLevelNames(need), plural(need, "needs", "need"), root)
+			}
+			return fmt.Errorf("opening the store at %s: %w", root, err)
+		}
+		sources, err := st.Sources()
+		if err != nil {
+			return err
+		}
+		if chosen, err = chooseSource(root, sources, archive); err != nil {
+			return err
+		}
+		if src, err = st.Source(chosen.ID); err != nil {
+			return err
+		}
 	}
 
 	places, err := osmlocate.AtEach(context.Background(), src, pts, opts)
@@ -180,13 +193,86 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	// Read from the manifest, never written down here -- see the same argument
 	// in the render command. A store refilled from a different archive must
 	// change this line without anybody remembering to.
+	// Empty when no tiles were read, which is a store holding boundaries and
+	// nothing else: there is no archive to credit, and the contained credit
+	// below is the whole obligation.
 	credit := render.PlainCredit(chosen.Attribution)
 
+	// And which credit a CONTAINED answer owes is no longer a constant. It
+	// was Natural Earth, which is public domain and owes nothing; a derived
+	// boundary file is OpenStreetMap, which is not, so an answer taken from
+	// one is a Produced Work that owes the credit. Which of them answered is
+	// something only the source knows, so it is asked rather than assumed.
+	contained := containedCredits(bounds, places)
+
 	if format == "json" {
-		return writeLocateJSON(stdout, places, credit)
+		return writeLocateJSON(stdout, places, credit, contained)
 	}
-	writeLocateText(stdout, places, credit)
+	writeLocateText(stdout, places, credit, contained)
 	return nil
+}
+
+// tileLevels are the levels asked for that have to come from the tiles.
+//
+// Boundaries if the store has them, and silently not if it does not: they are
+// an optional download, a store without them is the ordinary case, and the
+// difference is visible in the output anyway -- every answer says "near"
+// instead of "in". What is new is that the reverse is also possible, so the
+// tiles have to be optional in the same way -- and when they are missing, the
+// levels that wanted them are what the message has to name.
+func tileLevels(wanted []osmlocate.Level, bounds *boundary.Source) []osmlocate.Level {
+	levels := wanted
+	if len(levels) == 0 {
+		levels = osmlocate.Levels
+	}
+	var need []osmlocate.Level
+	for _, l := range levels {
+		if bounds == nil || !bounds.Covers(l) {
+			need = append(need, l)
+		}
+	}
+	return need
+}
+
+func joinLevelNames(levels []osmlocate.Level) string {
+	names := make([]string, len(levels))
+	for i, l := range levels {
+		names[i] = l.String()
+	}
+	return strings.Join(names, ", ")
+}
+
+func plural[T any](xs []T, one, many string) string {
+	if len(xs) == 1 {
+		return one
+	}
+	return many
+}
+
+// containedCredits names the sources behind the contained answers, and only
+// those: a lookup that used no boundary file, or whose boundary file answered
+// nothing, owes nothing here.
+func containedCredits(bounds *boundary.Source, places []osmlocate.Place) []string {
+	if bounds == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range places {
+		for _, m := range p.Matches {
+			if m.Source != osmlocate.Contained {
+				continue
+			}
+			c := bounds.CreditFor(m.Level)
+			if c == "" || seen[c] {
+				continue
+			}
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // locateReport is what --format json writes.
@@ -197,20 +283,22 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 // obligation is the document itself.
 type locateReport struct {
 	// Credit covers the names taken from the tiles. A contained answer comes
-	// from Natural Earth, which is public domain and requires none -- said in
-	// its own field rather than folded into the first, so a consumer reading
-	// this document can tell which obligation applies to which names.
+	// from a boundary file, and which obligation that carries depends on
+	// which file: Natural Earth is public domain and owes nothing, while a
+	// file derived from OpenStreetMap owes the credit. Said in its own field
+	// rather than folded into the first, so a consumer reading this document
+	// can tell which obligation applies to which names.
 	Credit          string            `json:"credit,omitempty"`
 	ContainedCredit string            `json:"contained_credit,omitempty"`
 	Places          []osmlocate.Place `json:"places"`
 }
 
-func writeLocateJSON(w io.Writer, places []osmlocate.Place, credit string) error {
+func writeLocateJSON(w io.Writer, places []osmlocate.Place, credit string, contained []string) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	report := locateReport{Credit: credit, Places: places}
-	if anyContained(places) {
-		report.ContainedCredit = "Natural Earth (public domain)"
+	if len(contained) > 0 {
+		report.ContainedCredit = strings.Join(contained, "; ")
 	}
 	if err := enc.Encode(report); err != nil {
 		return fmt.Errorf("writing the answer: %w", err)
@@ -224,7 +312,7 @@ func writeLocateJSON(w io.Writer, places []osmlocate.Place, credit string) error
 // the two together are the whole honesty of this command: there is no level at
 // which the tiles can say a point is INSIDE anything, and a reader who sees
 // "Horsens" with no qualification will believe the point was in Horsens.
-func writeLocateText(w io.Writer, places []osmlocate.Place, credit string) {
+func writeLocateText(w io.Writer, places []osmlocate.Place, credit string, contained []string) {
 	for i, p := range places {
 		if i > 0 {
 			fmt.Fprintln(w)
@@ -251,9 +339,9 @@ func writeLocateText(w io.Writer, places []osmlocate.Place, credit string) {
 	}
 	if credit != "" {
 		fmt.Fprintf(w, "\n%s\n", credit)
-		if anyContained(places) {
-			fmt.Fprintf(w, "Contained answers are from Natural Earth, which is public domain.\n")
-		}
+	}
+	if len(contained) > 0 {
+		fmt.Fprintf(w, "Contained answers are from %s.\n", strings.Join(contained, "; "))
 	}
 }
 

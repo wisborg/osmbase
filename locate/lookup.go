@@ -126,6 +126,11 @@ func At(ctx context.Context, src TileSource, at Coord, opts Options) (Place, err
 //
 // The result is parallel to pts: one Place per coordinate, in order, including
 // for coordinates nothing could be found for.
+// src may be nil, and then only the levels Options.Boundaries covers can be
+// answered: a store may hold a derived boundary file and no tiles, which is
+// what building suburb outlines without fetching a map leaves behind. A level
+// that needs tiles is an error in that case rather than a silent absence,
+// because the caller asked for it.
 func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]Place, error) {
 	out := make([]Place, len(pts))
 	for i, p := range pts {
@@ -178,6 +183,13 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		spec, ok := tileSpec(level)
 		if !ok {
 			continue
+		}
+		if src == nil {
+			// A caller may hold boundary data and no tiles at all -- a store
+			// built by "osmbase boundaries --osm" and nothing else. That is
+			// a legitimate configuration for the levels those boundaries
+			// cover, and this is the point at which it stops being one.
+			return nil, fmt.Errorf("locate: %s needs map tiles and none were given; ask for fewer levels, or fetch tiles", level)
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("locate: looking up %s: %w", level, err)

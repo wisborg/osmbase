@@ -194,7 +194,7 @@ None of them requires the one after it to be useful.
 | 5 | **Ring assembly** | ✅ committed — `boundary/osm.Assemble`. Ways joined on node id into closed rings, outers counterclockwise and inners clockwise per RFC 7946, unclosed chains reported with the node ids of the gap. Measured: Sydney closes 471 of 522 outlines, Hornsby's 46 ways into one ring of 450 points. |
 | 6 | **The derived file** | ✅ committed — `boundary.WriteDerived`/`ReadDerived`, magic, version, a length-prefixed provenance header, delta-coded varints at OSM's own resolution. `boundary.Polygons` pairs holes to outlines; `osm.Areas` converts and reports. Measured: Sydney's 471 areas are **0.41 MB**, and containment answers are identical on either side of the file. |
 | 7 | **`osmbase boundaries --osm`** | ✅ committed — a URL to fetch or a `.osm.pbf` to read, `--levels`, `--region`, `--keep-extract`. A fetched extract is deleted; one the user pointed at is left alone. The ODbL obligation is stated before the file exists, and travels inside it. |
-| 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. Also: the credit has to SWITCH — an answer from a derived file is a Produced Work owing the OpenStreetMap credit, while one from Natural Earth owes none. `Set.Provenance().Attribution` carries it. |
+| 8 | **Wire into `locate`** | ✅ committed — `boundary.Source` loads every derived file in the store, ranks the containment stack onto Locality/Macrohood/Neighbourhood, and `CreditFor` reports which licence an answer owes. `locate` opens the tile store only for the levels boundaries do not cover. |
 
 Parts 2 and 3 need no network and no real extract: synthetic fixtures in the style of
 `osmbasetest` are enough, and are better, because a real file cannot express a malformed one.
@@ -442,43 +442,43 @@ it. Source and levels ride along for a second reason: two stores' files are othe
 indistinguishable, and without the levels a reader cannot tell "this file has no suburbs"
 from "this file was not asked for suburbs".
 
-### Carried into part 8
+### How a level is chosen, and why it is not a table
 
-- **The decompression-bomb guard is still in three places** — `pmtiles.decompress`,
-  `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and three copies of
-  the reasoning. Carried since part 3. It has already diverged once.
+An `admin_level` is a number whose meaning differs by country — seven is the municipality
+in Denmark and nine is the suburb in Australia — so a table mapping numbers to level names
+would be asserting one country's scheme over every other. That is why `Kind` stays the
+number.
+
+The rule is the nesting instead: of the administrative areas containing a point, the
+**outermost is its locality and the innermost its neighbourhood**, with anything between a
+macrohood. One area is a locality and nothing else, because a place with one administrative
+name at this range has one, and inventing two from it would be a claim the data does not
+make.
+
+Measured on the two extracts this was built against, that gives Denmark's kommune as a
+locality, and Sydney's council area as a locality with its suburb as a neighbourhood — which
+is what a person would have said. Worth knowing when reading an answer: which slot a name
+lands in depends on how many levels the extract actually *closed*, so a bounding-box cut
+that severs the council area leaves the suburb reported as a locality. The `Kind` is how a
+reader tells.
+
+### What stage two did not settle
+
+- **The antimeridian is detected, not handled.** `osm.Areas` counts a ring that crosses the
+  seam and leaves it out rather than handing it to `inRing`, which treats longitude as
+  linear. Neither extract produces one. Handling them — unwrapping, or splitting at the seam
+  — is a design decision for whoever first needs Fiji.
+- **The decompression-bomb guard is still in three places**: `pmtiles.decompress`,
+  `slice.decompress` and `osmpbf.unzlib`, with three error vocabularies. Carried since part
+  3 and deferred each time because it touches two working packages. It has already diverged
+  once.
 - **The header's sort order is still unread**, and `osmpbf.ErrStop` still has no consumer
-  outside its own test. The plan said part 4 was where early termination paid off; part 4
-  read every block of all three passes to EOF. Either wire it up or strike the claim.
+  outside its own test. A file marked sorted type-then-id would let the three passes stop
+  early rather than read to the end.
 - **`Header` does not carry the bounding box**, which would let a caller reject an extract
   that does not cover the area before reading an element.
-- **The protobuf fixture primitives exist twice**: `osmbasetest` (shared by `Extract` and
-  the tile builder) and `osmpbf/fixture_test.go`. The latter should keep only what expresses
-  *malformed* files — `truncatedZlibBlob`, `zlibBlobDeclaring`, `paddedHeader`, `framedWith`
-  — which `Extract` cannot and should not express.
 - **`osmbasetest.Extract` emits one block per element kind**, so a multi-block file, a block
-  mixing kinds, a non-default granularity and a coordinate origin are all unexercised. A
-  real country extract has tens of thousands of blocks. A block-size option would close it.
-- **`Read` returns everything in memory.** Part 6 writes these out one at a time; a
-  `func(Boundary) error` form would let it stream and roughly halve peak, since a boundary
-  way shared between two neighbours currently has its coordinates held twice.
-- **`Set` cannot be asked for one level.** (Still true. `boundary.DerivedRegions` and
-  `RegionOf` now exist, so `locate` can FIND the files without re-spelling the naming rule
-  — that half is done.) `ReadDerived` returns a single set holding every
-  level the file was built for, `Set.At` takes the smallest containing area regardless of
-  kind, and `areas` is unexported with no way to partition it. Part 8 wiring Locality and
-  Neighbourhood to containment will get "whatever the deepest admin level in this file is"
-  and cannot filter. The levels are in the header now, so the information exists; the
-  accessor does not.
-- **The antimeridian is detected, not handled.** `winding()` treats longitude as a plane
-  coordinate and `boundary.inRing` says outright that a source which does not pre-split a
-  ring at the seam "would be wrong in a way this cannot detect". OSM is that new source, so
-  `osm.Areas` checks: a ring with a step of more than 180 degrees between consecutive
-  vertices has wrapped, and those are counted in the `Report` and left out rather than
-  written as a boundary that quietly contains the wrong half of the planet. Neither Sydney
-  nor Denmark produces one. Handling them — unwrapping, or splitting at the seam — is a
-  design decision for whoever first needs Fiji.
-
-One gap is knowingly left open: `unzlib` grows its buffer to the declared size only when one
-was declared, and that decision is invisible in the output, so no test pins it. An
-`AllocedBytesPerOp` benchmark is the honest form if it ever matters.
+  mixing kinds, a non-default granularity and a coordinate origin are all unexercised.
+- **Nothing handles a signal.** An interrupted run's temporary files are swept by the *next*
+  run rather than by the interrupted one; a `signal.NotifyContext` would do it properly and
+  would also let a long download be cancelled cleanly.
