@@ -32,7 +32,7 @@ func TestADerivedFileRoundTrips(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := WriteDerived(&buf, areas); err != nil {
+	if err := WriteDerived(&buf, NewSet(Provenance{}, areas)); err != nil {
 		t.Fatalf("WriteDerived: %v", err)
 	}
 	got, err := ReadDerived(&buf)
@@ -82,7 +82,7 @@ func TestCoordinatesSurviveTheFileAtOsmResolution(t *testing.T) {
 		{Lat: 89.9999999, Lon: -179.9999999},
 	}
 	var buf bytes.Buffer
-	if err := WriteDerived(&buf, []Area{NewArea("n", "k", []Polygon{{Outer: want}})}); err != nil {
+	if err := WriteDerived(&buf, NewSet(Provenance{}, []Area{NewArea("n", "k", []Polygon{{Outer: want}})})); err != nil {
 		t.Fatalf("WriteDerived: %v", err)
 	}
 	got, err := ReadDerived(&buf)
@@ -97,8 +97,8 @@ func TestCoordinatesSurviveTheFileAtOsmResolution(t *testing.T) {
 		// Half a unit of the stored resolution: anything looser would accept
 		// a rounding that moves a vertex, and anything tighter would be
 		// asserting float equality after a divide.
-		if math.Abs(ring[i].lat-want[i].Lat) > 5e-8 || math.Abs(ring[i].lon-want[i].Lon) > 5e-8 {
-			t.Errorf("point %d = %f,%f, want %f,%f", i, ring[i].lat, ring[i].lon, want[i].Lat, want[i].Lon)
+		if math.Abs(ring[i].Lat-want[i].Lat) > 5e-8 || math.Abs(ring[i].Lon-want[i].Lon) > 5e-8 {
+			t.Errorf("point %d = %f,%f, want %f,%f", i, ring[i].Lat, ring[i].Lon, want[i].Lat, want[i].Lon)
 		}
 	}
 }
@@ -108,7 +108,7 @@ func TestCoordinatesSurviveTheFileAtOsmResolution(t *testing.T) {
 // somewhere else, and nothing about a wrong place looks wrong.
 func TestAnUnknownVersionIsRefused(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteDerived(&buf, []Area{NewArea("n", "k", []Polygon{{Outer: square(0, 0, 1)}})}); err != nil {
+	if err := WriteDerived(&buf, NewSet(Provenance{}, []Area{NewArea("n", "k", []Polygon{{Outer: square(0, 0, 1)}})})); err != nil {
 		t.Fatalf("WriteDerived: %v", err)
 	}
 	file := buf.Bytes()
@@ -133,12 +133,13 @@ func TestBytesThatAreNotADerivedFileAreRefused(t *testing.T) {
 		{"too short for the magic", []byte("os")},
 		{"the wrong magic", []byte("json{}")},
 		{"the magic and nothing else", []byte(derivedMagic)},
+		{"the magic and a version but no header", append([]byte(derivedMagic), derivedVersion)},
 		{"truncated part way through an area", append([]byte(derivedMagic), 1, 1, 3, 'a')},
 		// A file that is well formed in every way except that it is not
 		// this format. Without the magic it parses cleanly as an empty set,
 		// so nothing downstream would report a problem -- it would simply
 		// contain no boundaries.
-		{"a valid body behind the wrong magic", append([]byte("XXXX"), derivedVersion, 0)},
+		{"a valid body behind the wrong magic", append([]byte("XXXX"), derivedVersion, 4, 0, 0, 0, 0, 0)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ReadDerived(bytes.NewReader(tc.data)); !errors.Is(err, ErrDerivedFormat) {
@@ -178,6 +179,7 @@ func TestADeclaredCountPastItsLimitIsRefusedBeforeAllocating(t *testing.T) {
 // so a test can say what a file claims without supplying what it claims.
 func declaring(vs ...uint64) []byte {
 	out := append([]byte(derivedMagic), byte(derivedVersion))
+	out = append(out, 4, 0, 0, 0, 0) // an empty header block
 	for _, v := range vs {
 		out = binary.AppendUvarint(out, v)
 	}
@@ -205,7 +207,7 @@ func TestAFileMayHoldNoAreas(t *testing.T) {
 
 func TestANameTooLongToStoreIsRefusedOnWrite(t *testing.T) {
 	long := strings.Repeat("x", maxDerivedString+1)
-	err := WriteDerived(&bytes.Buffer{}, []Area{NewArea(long, "k", []Polygon{{Outer: square(0, 0, 1)}})})
+	err := WriteDerived(&bytes.Buffer{}, NewSet(Provenance{}, []Area{NewArea(long, "k", []Polygon{{Outer: square(0, 0, 1)}})}))
 	if err == nil {
 		t.Error("a name past the format's limit was written")
 	}
@@ -219,7 +221,7 @@ func TestHolesArePairedWithTheOutlineThatHoldsThem(t *testing.T) {
 	other := square(0, 20, 10)
 	hole := square(2, 2, 1)
 
-	polys, orphans := Polygons([]Ring{outer, other}, []Ring{hole})
+	polys, orphans, _ := Polygons([]Ring{outer, other}, []Ring{hole})
 	if len(orphans) != 0 {
 		t.Fatalf("got %d orphans, want none", len(orphans))
 	}
@@ -242,7 +244,7 @@ func TestTheSmallestContainingOutlineTakesTheHole(t *testing.T) {
 	small := square(10, 10, 10)
 	hole := square(12, 12, 1)
 
-	polys, orphans := Polygons([]Ring{big, small}, []Ring{hole})
+	polys, orphans, _ := Polygons([]Ring{big, small}, []Ring{hole})
 	if len(orphans) != 0 {
 		t.Fatalf("got %d orphans, want none", len(orphans))
 	}
@@ -258,7 +260,7 @@ func TestTheSmallestContainingOutlineTakesTheHole(t *testing.T) {
 // by the edge of the extract. Returned rather than discarded, because that is
 // a fact about the data the caller may want to report.
 func TestAHoleInsideNothingIsReturnedNotDiscarded(t *testing.T) {
-	polys, orphans := Polygons([]Ring{square(0, 0, 1)}, []Ring{square(50, 50, 1)})
+	polys, orphans, _ := Polygons([]Ring{square(0, 0, 1)}, []Ring{square(50, 50, 1)})
 	if len(orphans) != 1 {
 		t.Errorf("got %d orphans, want 1", len(orphans))
 	}
@@ -270,11 +272,11 @@ func TestAHoleInsideNothingIsReturnedNotDiscarded(t *testing.T) {
 }
 
 func TestPairingWithNothingToPair(t *testing.T) {
-	polys, orphans := Polygons([]Ring{square(0, 0, 1)}, nil)
+	polys, orphans, _ := Polygons([]Ring{square(0, 0, 1)}, nil)
 	if len(polys) != 1 || len(polys[0].Holes) != 0 || orphans != nil {
 		t.Errorf("Polygons with no holes = %+v, %+v", polys, orphans)
 	}
-	polys, orphans = Polygons(nil, []Ring{square(0, 0, 1)})
+	polys, orphans, _ = Polygons(nil, []Ring{square(0, 0, 1)})
 	if len(polys) != 0 || len(orphans) != 1 {
 		t.Errorf("Polygons with no outlines = %+v, %+v", polys, orphans)
 	}
@@ -293,7 +295,7 @@ func TestCoordinatesAreRoundedNotTruncated(t *testing.T) {
 		{Lat: -3.00000016, Lon: -4.00000018},
 	}
 	var buf bytes.Buffer
-	if err := WriteDerived(&buf, []Area{NewArea("n", "k", []Polygon{{Outer: want}})}); err != nil {
+	if err := WriteDerived(&buf, NewSet(Provenance{}, []Area{NewArea("n", "k", []Polygon{{Outer: want}})})); err != nil {
 		t.Fatalf("WriteDerived: %v", err)
 	}
 	got, err := ReadDerived(&buf)
@@ -302,9 +304,9 @@ func TestCoordinatesAreRoundedNotTruncated(t *testing.T) {
 	}
 	ring := got.areas[0].polygons[0].rings[0]
 	for i := range want {
-		if math.Abs(ring[i].lat-want[i].Lat) > 5e-8 || math.Abs(ring[i].lon-want[i].Lon) > 5e-8 {
+		if math.Abs(ring[i].Lat-want[i].Lat) > 5e-8 || math.Abs(ring[i].Lon-want[i].Lon) > 5e-8 {
 			t.Errorf("point %d = %.8f,%.8f, want %.8f,%.8f -- rounded to the nearest unit, not toward zero",
-				i, ring[i].lat, ring[i].lon, want[i].Lat, want[i].Lon)
+				i, ring[i].Lat, ring[i].Lon, want[i].Lat, want[i].Lon)
 		}
 	}
 }

@@ -192,7 +192,7 @@ None of them requires the one after it to be useful.
 | 3 | **Element decoding** | Dense nodes (delta-encoded), ways, and relations come back as Go structs, with tags resolved against the string table. Fuzzed, as `mvt` is. |
 | 4 | **The three passes** | ✅ committed — `boundary/osm`. Relation → member ways with their coordinates and node ids. Measured against a real Denmark extract: the memory gate passes by two orders of magnitude, and the *data* premise does not hold there. See below. |
 | 5 | **Ring assembly** | ✅ committed — `boundary/osm.Assemble`. Ways joined on node id into closed rings, outers counterclockwise and inners clockwise per RFC 7946, unclosed chains reported with the node ids of the gap. Measured: Sydney closes 471 of 522 outlines, Hornsby's 46 ways into one ring of 450 points. |
-| 6 | **The derived file** | ✅ committed — `boundary.WriteDerived`/`ReadDerived`, magic and version, delta-coded varints at OSM's own resolution. `boundary.Polygons` pairs holes to outlines; `osm.Areas` converts and reports. Measured: Sydney's 471 areas are **0.41 MB**, and containment answers are identical on either side of the file. |
+| 6 | **The derived file** | ✅ committed — `boundary.WriteDerived`/`ReadDerived`, magic, version, a length-prefixed provenance header, delta-coded varints at OSM's own resolution. `boundary.Polygons` pairs holes to outlines; `osm.Areas` converts and reports. Measured: Sydney's 471 areas are **0.41 MB**, and containment answers are identical on either side of the file. |
 | 7 | **`osmbase boundaries --osm`** | Fetch an extract through `acquire`, run the pipeline, delete the extract, record the ODbL obligation. |
 | 8 | **Wire into `locate`** | `Locality` and `Neighbourhood` answered by containment when the file is present. |
 
@@ -424,7 +424,25 @@ Two corollaries, both learned the hard way here:
   table held and nothing bounded how long one was, so a 450-byte file retained 1.26 GB.
   Both axes need a bound.
 
-### Carried into part 6
+### What the derived file carries, and why
+
+The header is **length-prefixed**, and that is the escape hatch rather than a detail. The
+version is compared for equality in both directions, so refusing an older file means every
+file on disk becomes a fresh country download — which makes "add a field in part 7" an
+expensive sentence. With the prefix, a later osmbase can append to the header and this
+reader steps over what it does not know; the version stays reserved for changes to the
+*geometry* encoding, which cannot be skipped.
+
+It carries **provenance** because of the licence, not for tidiness. A derived file is a
+Derivative Database under the ODbL — it *is* the map data in another shape — so share-alike
+attaches to the file, and a format carrying only geometry hands somebody a Derivative
+Database with no notice inside it. `osm.Attribution` is the single spelling of the credit
+and `osm.Provenance` fills it in, so the OSM path cannot produce a file that has forgotten
+it. Source and levels ride along for a second reason: two stores' files are otherwise
+indistinguishable, and without the levels a reader cannot tell "this file has no suburbs"
+from "this file was not asked for suburbs".
+
+### Carried into part 7
 
 - **The decompression-bomb guard is still in three places** — `pmtiles.decompress`,
   `slice.decompress` and `osmpbf.unzlib` — with three error vocabularies and three copies of
@@ -444,6 +462,12 @@ Two corollaries, both learned the hard way here:
 - **`Read` returns everything in memory.** Part 6 writes these out one at a time; a
   `func(Boundary) error` form would let it stream and roughly halve peak, since a boundary
   way shared between two neighbours currently has its coordinates held twice.
+- **`Set` cannot be asked for one level.** `ReadDerived` returns a single set holding every
+  level the file was built for, `Set.At` takes the smallest containing area regardless of
+  kind, and `areas` is unexported with no way to partition it. Part 8 wiring Locality and
+  Neighbourhood to containment will get "whatever the deepest admin level in this file is"
+  and cannot filter. The levels are in the header now, so the information exists; the
+  accessor does not.
 - **The antimeridian is detected, not handled.** `winding()` treats longitude as a plane
   coordinate and `boundary.inRing` says outright that a source which does not pre-split a
   ring at the seam "would be wrong in a way this cannot detect". OSM is that new source, so

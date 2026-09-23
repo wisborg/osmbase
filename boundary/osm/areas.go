@@ -2,8 +2,9 @@ package osm
 
 import (
 	"fmt"
-	"math"
+	"slices"
 	"strconv"
+	"time"
 
 	"github.com/wisborg/osmbase/boundary"
 )
@@ -16,13 +17,22 @@ import (
 // outlines mostly did not close is one whose extract was cut through them,
 // and the person who chose the extract is the one who can act on it.
 type Report struct {
-	// Complete is the number of boundaries that produced at least one ring
-	// and had nothing left over; Partial produced rings and gaps; Unclosed
-	// produced no ring at all.
+	// Complete is the number of boundaries that produced a usable outline
+	// and had nothing left over; Partial produced one and had gaps as well;
+	// Unclosed produced none.
+	//
+	// Unclosed counts two different things and part 7 should say so: a
+	// boundary whose ways never closed, and one whose only outlines closed
+	// and then had to be left out for crossing the antimeridian. Both mean
+	// "no geometry to test a point against", which is what the caller acts
+	// on; WrappedRings is how the second is told apart.
+	//
+	// The three always sum to the number of boundaries handed in.
 	Complete, Partial, Unclosed int
 
-	// Rings and Holes are the outlines and the holes in them.
-	Rings, Holes int
+	// Outlines and Holes are the rings kept: the areas enclosed, and the
+	// holes actually cut out of one of them.
+	Outlines, Holes int
 
 	// OrphanHoles is holes that lie inside no outline, which happens when
 	// the outline was cut off by the edge of the extract.
@@ -60,22 +70,8 @@ func Areas(bs []Boundary) ([]boundary.Area, Report, error) {
 			return nil, rep, fmt.Errorf("osm: assembling %q: %w", b.Name, err)
 		}
 
-		outers := make([]boundary.Ring, 0, len(rings.Outer))
-		for _, r := range rings.Outer {
-			if wraps(r) {
-				rep.WrappedRings++
-				continue
-			}
-			outers = append(outers, toRing(r))
-		}
-		holes := make([]boundary.Ring, 0, len(rings.Inner))
-		for _, r := range rings.Inner {
-			if wraps(r) {
-				rep.WrappedRings++
-				continue
-			}
-			holes = append(holes, toRing(r))
-		}
+		outers := keep(rings.Outer, &rep.WrappedRings)
+		holes := keep(rings.Inner, &rep.WrappedRings)
 
 		// Classified after the unusable rings are filtered out, not before:
 		// a boundary whose only outline wrapped the seam has no outline, and
@@ -94,14 +90,39 @@ func Areas(bs []Boundary) ([]boundary.Area, Report, error) {
 			rep.Partial++
 		}
 
-		polys, orphans := boundary.Polygons(outers, holes)
-		rep.Rings += len(outers)
-		rep.Holes += len(holes) - len(orphans)
+		polys, orphans, err := boundary.Polygons(outers, holes)
+		if err != nil {
+			return nil, rep, fmt.Errorf("osm: pairing the holes of %q: %w", b.Name, err)
+		}
+		rep.Outlines += len(outers)
+		// Counted from what was attached rather than by subtracting what was
+		// not. The subtraction was right only while nothing else could drop
+		// a hole, which is a thing to notice rather than a thing to rely on.
+		for _, p := range polys {
+			rep.Holes += len(p.Holes)
+		}
 		rep.OrphanHoles += len(orphans)
 
 		areas = append(areas, boundary.NewArea(b.Name, strconv.Itoa(b.AdminLevel), polys))
 	}
 	return areas, rep, nil
+}
+
+// keep converts the rings a boundary can be tested against, counting the
+// ones that wrap the antimeridian and leaving them out. See boundary.Wraps:
+// this pipeline cannot reason about a wrapped ring, so it says so rather
+// than handing it to a test that cannot see the problem.
+func keep(rs []Ring, wrapped *int) []boundary.Ring {
+	out := make([]boundary.Ring, 0, len(rs))
+	for _, r := range rs {
+		b := toRing(r)
+		if boundary.Wraps(b) {
+			*wrapped++
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 func toRing(r Ring) boundary.Ring {
@@ -112,19 +133,24 @@ func toRing(r Ring) boundary.Ring {
 	return out
 }
 
-// wraps reports whether a ring appears to cross the antimeridian.
+// Attribution is the credit the ODbL requires of anything built from
+// OpenStreetMap.
 //
-// A step of more than half the world between consecutive vertices is not a
-// step: boundary vertices are metres apart, so it is the seam. The ring would
-// need unwrapping to be tested against, and this pipeline does not do that --
-// counting it is how the gap stays visible instead of becoming a boundary
-// that quietly contains the wrong half of the planet.
-func wraps(r Ring) bool {
-	for i := range r {
-		j := (i + 1) % len(r)
-		if math.Abs(r[j].Lon-r[i].Lon) > 180 {
-			return true
-		}
+// A constant here, and the only spelling of it, because the derived file
+// carries it as DATA and the obligation is real: a derived boundary file is
+// a Derivative Database rather than a Produced Work, so share-alike attaches
+// to the file and whoever receives it must receive it under the ODbL. A
+// caller assembling its own credit string is a caller that can get it wrong
+// or leave it out.
+const Attribution = "© OpenStreetMap contributors, ODbL"
+
+// Provenance describes a file built from an OSM extract, with the credit
+// already filled in.
+func Provenance(source string, levels []int) boundary.Provenance {
+	return boundary.Provenance{
+		Source:      source,
+		Attribution: Attribution,
+		Created:     time.Now().UTC(),
+		Levels:      slices.Clone(levels),
 	}
-	return false
 }

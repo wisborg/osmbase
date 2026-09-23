@@ -312,3 +312,15 @@ func Unzigzag32(v uint32) int32 {
 func Unzigzag64(v uint64) int64 {
 	return int64(v>>1) ^ -int64(v&1)
 }
+
+// Zigzag32 and Zigzag64 are the encoding halves of Unzigzag32 and
+// Unzigzag64.
+//
+// Here rather than beside each caller for the reason the decoding halves are:
+// it is one rule, and a shift at the wrong width is invisible except at the
+// extremes of the range. Three packages needed it -- the vector tile fixture
+// builder, the OSM fixture builder, and the derived boundary file -- and the
+// third was about to be the third copy.
+func Zigzag32(v int32) uint32 { return uint32(v<<1) ^ uint32(v>>31) }
+
+func Zigzag64(v int64) uint64 { return uint64(v<<1) ^ uint64(v>>63) }

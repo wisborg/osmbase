@@ -1,8 +1,10 @@
 package osm
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ring builds a closed way whose points make a square of the given size, so
@@ -35,7 +37,7 @@ func TestAreasCarryTheAdminLevelAsTheirKind(t *testing.T) {
 	if got[0].Name != "Hornsby" || got[0].Kind != "9" {
 		t.Errorf("area = %q kind %q, want Hornsby kind 9", got[0].Name, got[0].Kind)
 	}
-	if rep.Complete != 1 || rep.Rings != 1 {
+	if rep.Complete != 1 || rep.Outlines != 1 {
 		t.Errorf("report = %+v, want one complete boundary with one ring", rep)
 	}
 }
@@ -99,5 +101,37 @@ func TestAreasReportsAFailureToAssemble(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "Broken") {
 		t.Errorf("Areas: %v, want an error naming the boundary", err)
+	}
+}
+
+// The credit has one spelling, and it is the one the derived file carries.
+// A caller assembling its own is a caller that can leave it out.
+func TestProvenanceCarriesTheCreditAndTheLevels(t *testing.T) {
+	before := time.Now().Add(-time.Second)
+	p := Provenance("denmark-latest.osm.pbf", []int{7, 8, 9})
+
+	if p.Attribution != Attribution {
+		t.Errorf("attribution = %q, want %q", p.Attribution, Attribution)
+	}
+	if !strings.Contains(p.Attribution, "ODbL") {
+		t.Errorf("attribution %q does not name the licence share-alike attaches under", p.Attribution)
+	}
+	if p.Source != "denmark-latest.osm.pbf" {
+		t.Errorf("source = %q", p.Source)
+	}
+	if !slices.Equal(p.Levels, []int{7, 8, 9}) {
+		t.Errorf("levels = %v, want 7,8,9", p.Levels)
+	}
+	if p.Created.Before(before) || p.Created.After(time.Now().Add(time.Second)) {
+		t.Errorf("created = %v, want about now", p.Created)
+	}
+
+	// Cloned, so a caller mutating its slice afterwards cannot change what
+	// the file will say it was built for.
+	levels := []int{7}
+	q := Provenance("s", levels)
+	levels[0] = 99
+	if q.Levels[0] != 7 {
+		t.Error("the provenance shares the caller's slice")
 	}
 }

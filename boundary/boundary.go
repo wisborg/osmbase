@@ -45,23 +45,82 @@ type Area struct {
 // polygons. Per part, each box is small and the prefilter works for exactly
 // the countries it previously gave up on.
 type polygon struct {
-	rings                    [][]point
-	west, south, east, north float64
+	rings []Ring
+	box   box
 }
 
-// point is a vertex of a ring, LATITUDE FIRST.
+// box is a bounding rectangle in degrees.
 //
-// The order matters more than it looks. This module now carries four
-// coordinate types -- this one, locate.Coord, osm.Point and the Coord below
-// -- and a transposition between any two of them compiles, passes a
-// positional literal, and puts a Danish municipality in the Indian Ocean.
-// They all read latitude first, and this one used to read longitude first.
-type point struct{ lat, lon float64 }
+// One type, because this package had four spellings of the same rule: the
+// fields on polygon, the accumulation in newArea, the prefilter written
+// inline in contains, and the degrees-squared product in boxArea. Two of
+// them already disagreed about whether a polygon's box covers its holes as
+// well as its outline -- which happened to be harmless, since a hole is
+// inside its outline, and was nobody's decision.
+type box struct{ west, south, east, north float64 }
+
+// boxOf is the bounding rectangle of a ring.
+func boxOf(r Ring) box {
+	b := box{west: math.Inf(1), south: math.Inf(1), east: math.Inf(-1), north: math.Inf(-1)}
+	return b.extend(r)
+}
+
+func (b box) extend(r Ring) box {
+	for _, c := range r {
+		b.west, b.east = math.Min(b.west, c.Lon), math.Max(b.east, c.Lon)
+		b.south, b.north = math.Min(b.south, c.Lat), math.Max(b.north, c.Lat)
+	}
+	return b
+}
+
+// holds reports whether a coordinate is inside the rectangle. It is the
+// prefilter that makes a lookup cheap: most of the work of one is NOT doing
+// the point-in-polygon test, because a coordinate is outside all but one of
+// two hundred countries.
+func (b box) holds(lat, lon float64) bool {
+	return lon >= b.west && lon <= b.east && lat >= b.south && lat <= b.north
+}
+
+// area is the rectangle's extent in degrees squared. A comparison between
+// two boxes only, never a real area -- a degree of longitude is not a degree
+// of latitude outside the equator.
+func (b box) area() float64 { return (b.east - b.west) * (b.north - b.south) }
+
+// Coord is a vertex, LATITUDE FIRST.
+//
+// The order matters more than it looks. This module carries a coordinate
+// type per package -- this one, locate.Coord, osm.Point -- and a
+// transposition between any two of them compiles, passes a positional
+// literal, and puts a Danish municipality in the Indian Ocean. They all read
+// latitude first, and this one used to read longitude first and be
+// unexported besides. Collapsing the internal vertex and the exported one
+// into a single type is what stops a conversion between them existing at
+// all, which is one fewer place for the transposition to happen.
+type Coord struct{ Lat, Lon float64 }
+
+// Ring is a closed ring, with the first point NOT repeated at the end. That
+// is what Area.contains assumes: it walks the edges with a wraparound rather
+// than looking for a repeated first vertex.
+type Ring []Coord
+
+// Polygon is one part of an area: an outline and the holes in it.
+type Polygon struct {
+	Outer Ring
+	Holes []Ring
+}
 
 // Set is the areas of one level, searchable by coordinate.
 type Set struct {
 	areas []Area
+
+	// prov is what the file said about itself, empty for a set read from
+	// GeoJSON or built in memory. See Provenance.
+	prov Provenance
 }
+
+// Provenance returns what the set's source said about itself. The zero value
+// means it said nothing, which is what a GeoJSON source does.
+func (s *Set) Provenance() Provenance { return s.prov }
 
 // Len is how many areas the set holds.
 func (s *Set) Len() int { return len(s.areas) }
@@ -102,7 +161,7 @@ func (s *Set) At(lat, lon float64) (Area, bool) {
 func (a *Area) boxArea() float64 {
 	var total float64
 	for _, p := range a.polygons {
-		total += (p.east - p.west) * (p.north - p.south)
+		total += p.box.area()
 	}
 	return total
 }
@@ -114,10 +173,8 @@ func (a *Area) boxArea() float64 {
 // area, which is what the inner loop subtracts.
 func (a *Area) contains(lat, lon float64) bool {
 	for _, poly := range a.polygons {
-		// The box first: most of the work of a lookup is NOT doing the
-		// point-in-polygon test, because a coordinate is outside all but one
-		// of two hundred countries.
-		if lon < poly.west || lon > poly.east || lat < poly.south || lat > poly.north {
+		// The box first; see box.holds.
+		if !poly.box.holds(lat, lon) {
 			continue
 		}
 		if len(poly.rings) == 0 || !inRing(poly.rings[0], lat, lon) {
@@ -131,6 +188,34 @@ func (a *Area) contains(lat, lon float64) bool {
 			}
 		}
 		if !inHole {
+			return true
+		}
+	}
+	return false
+}
+
+// Wraps reports whether a ring crosses the antimeridian.
+//
+// It lives here, next to inRing, because inRing is what makes it necessary:
+// that function treats longitude as linear and says so, adding that a source
+// which does not pre-split a ring at the seam "would be wrong in a way this
+// cannot detect, so a new BoundarySource has to be checked for it". Leaving
+// the check in whichever source happened to need it first means the next one
+// rediscovers the obligation from a comment, and writes it again.
+//
+// A step of more than half the world between consecutive vertices is not a
+// step: boundary vertices are metres apart, and the measured maximum on the
+// real Natural Earth file is half a degree. The closing edge is included,
+// because inRing walks it too -- a Ring does not repeat its first vertex.
+//
+// What a caller should do with a wrapped ring is its own decision, and the
+// two directions are not symmetric: dropping a wrapped OUTLINE loses an
+// answer, while dropping a wrapped HOLE fills the hole in and makes
+// containment say yes where it should say no.
+func Wraps(r Ring) bool {
+	for i := range r {
+		j := (i + 1) % len(r)
+		if math.Abs(r[j].Lon-r[i].Lon) > 180 {
 			return true
 		}
 	}
@@ -161,14 +246,14 @@ func (a *Area) contains(lat, lon float64) bool {
 // latitude resolves to the same crossing longitude whichever of its two edges
 // is credited with it. Both were checked over a dense grid on a non-convex
 // ring. Neither is worth a test, because no test can distinguish them.
-func inRing(ring []point, lat, lon float64) bool {
+func inRing(ring Ring, lat, lon float64) bool {
 	in := false
 	for i, j := 0, len(ring)-1; i < len(ring); j, i = i, i+1 {
 		pi, pj := ring[i], ring[j]
-		if (pi.lat > lat) == (pj.lat > lat) {
+		if (pi.Lat > lat) == (pj.Lat > lat) {
 			continue
 		}
-		x := (pj.lon-pi.lon)*(lat-pi.lat)/(pj.lat-pi.lat) + pi.lon
+		x := (pj.Lon-pi.Lon)*(lat-pi.Lat)/(pj.Lat-pi.Lat) + pi.Lon
 		if lon < x {
 			in = !in
 		}
@@ -324,20 +409,20 @@ func isShouted(s string) bool {
 }
 
 // readGeometry decodes the two shapes these files use into one form.
-func readGeometry(kind string, raw json.RawMessage) ([][][]point, error) {
+func readGeometry(kind string, raw json.RawMessage) ([][]Ring, error) {
 	switch kind {
 	case "Polygon":
 		var rings [][][2]float64
 		if err := json.Unmarshal(raw, &rings); err != nil {
 			return nil, fmt.Errorf("decoding a polygon: %w", err)
 		}
-		return [][][]point{toRings(rings)}, nil
+		return [][]Ring{toRings(rings)}, nil
 	case "MultiPolygon":
 		var polys [][][][2]float64
 		if err := json.Unmarshal(raw, &polys); err != nil {
 			return nil, fmt.Errorf("decoding a multipolygon: %w", err)
 		}
-		out := make([][][]point, 0, len(polys))
+		out := make([][]Ring, 0, len(polys))
 		for _, rings := range polys {
 			out = append(out, toRings(rings))
 		}
@@ -350,12 +435,12 @@ func readGeometry(kind string, raw json.RawMessage) ([][][]point, error) {
 	}
 }
 
-func toRings(rings [][][2]float64) [][]point {
-	out := make([][]point, 0, len(rings))
+func toRings(rings [][][2]float64) []Ring {
+	out := make([]Ring, 0, len(rings))
 	for _, ring := range rings {
-		pts := make([]point, len(ring))
+		pts := make(Ring, len(ring))
 		for i, c := range ring {
-			pts[i] = point{lat: c[1], lon: c[0]}
+			pts[i] = Coord{Lat: c[1], Lon: c[0]}
 		}
 		out = append(out, pts)
 	}
@@ -364,19 +449,18 @@ func toRings(rings [][][2]float64) [][]point {
 
 // newArea computes the bounding box once, at load, because it is what makes a
 // lookup cheap and it never changes.
-func newArea(name, kind string, polys [][][]point) Area {
+func newArea(name, kind string, polys [][]Ring) Area {
 	a := Area{Name: name, Kind: kind}
 	for _, rings := range polys {
-		p := polygon{
-			rings: rings,
-			west:  math.Inf(1), south: math.Inf(1),
-			east: math.Inf(-1), north: math.Inf(-1),
-		}
-		for _, ring := range rings {
-			for _, pt := range ring {
-				p.west, p.east = math.Min(p.west, pt.lon), math.Max(p.east, pt.lon)
-				p.south, p.north = math.Min(p.south, pt.lat), math.Max(p.north, pt.lat)
-			}
+		// Over the OUTLINE only, not the holes. A hole is inside its
+		// outline, so including them cannot widen the box -- but saying so
+		// is what makes the two former spellings of this agree on purpose
+		// rather than by luck.
+		p := polygon{rings: rings}
+		if len(rings) > 0 {
+			p.box = boxOf(rings[0])
+		} else {
+			p.box = boxOf(nil)
 		}
 		a.polygons = append(a.polygons, p)
 	}

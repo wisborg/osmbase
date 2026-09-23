@@ -399,12 +399,12 @@ func TestARealExtractSurvivesTheDerivedFile(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := boundary.WriteDerived(&buf, areas); err != nil {
+	if err := boundary.WriteDerived(&buf, boundary.NewSet(boundary.Provenance{}, areas)); err != nil {
 		t.Fatalf("WriteDerived: %v", err)
 	}
 	t.Logf("derived file: %.2f MB for %d areas", float64(buf.Len())/(1<<20), len(areas))
 
-	before := boundary.NewSet(areas)
+	before := boundary.NewSet(boundary.Provenance{}, areas)
 	after, err := boundary.ReadDerived(bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		t.Fatalf("ReadDerived: %v", err)
