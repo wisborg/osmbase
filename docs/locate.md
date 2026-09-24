@@ -462,6 +462,14 @@ as "Danmark", duplicating the answer Natural Earth had already given at its own 
 the region and the kommune appeared at no level at all. Anything wider than three deep is a
 region or a country, and something else answers those.
 
+That was not enough on its own, and took a third look. A stack *exactly* three deep —
+country, region, kommune — is most of Denmark, and there the three innermost still include
+the country. So `admin_level=2` is left out of the stack altogether: it is the national border
+in every country's tagging, unlike what any other number means, and the country level is
+Natural Earth's, whose outline follows the coast. OpenStreetMap's runs out to the
+territorial-waters limit — measured: a point in Aarhus Bay is inside "Danmark" and inside no
+kommune — so with the country left out, such a point is `NoData` and goes to the tiles.
+
 Two limits worth knowing when reading an answer. Which slot a name lands in depends on how
 many levels the extract actually *closed*, so a bounding-box cut that severs the council area
 leaves the suburb reported as a locality — the `Kind` is how a reader tells. And a hierarchy
@@ -544,16 +552,13 @@ is why it is written down here.
   at a time, so fixing it means changing that interface; a route of thousands of points pays
   three times.
 
-- **A three-deep stack still makes the country the locality.** Only the three innermost
-  areas are ranked, which drops the country when a point sits four or more levels deep —
-  but a file built at every level in Denmark holds country (2), region (4) and kommune (7)
-  for most of the land, and there the three innermost *are* those three. Measured against
-  the real extract: Horsens comes back as locality "Danmark", macrohood "Region
-  Midtjylland", neighbourhood "Horsens Kommune". Leaving out `admin_level=2`, which is the
-  national border in every country's OpenStreetMap tagging and is answered by Natural Earth
-  anyway, would fix that case without the per-country table the ranking refuses to be.
+Three items from earlier lists are now **resolved** and are recorded here so nobody goes
+looking. **A three-deep stack made the country the locality**: ranking the three innermost
+areas drops the country only four or more deep, and a Denmark file built at every level holds
+country, region and kommune for most of the land — Horsens came back as locality "Danmark".
+`admin_level=2` is now left out of the ranked stack; the country level stays Natural Earth's,
+whose outline follows the coast where OpenStreetMap's runs out to territorial waters.
 
-Two items from earlier lists are now **resolved** and are recorded here so nobody goes
-looking: "`Set` cannot be asked for one level" — the three-innermost rule is that filter, and
+The other two: "`Set` cannot be asked for one level" — the three-innermost rule is that filter, and
 `Provenance().Levels` says what the file was built for; and the naming rule's inverse, which
 is `boundary.RegionOf` and `DerivedRegions`.

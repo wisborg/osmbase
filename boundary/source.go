@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -604,10 +605,15 @@ type credited struct {
 // cut from it -- hold the same boundaries, and counting one twice spent two
 // of the three levels on it: the kommune came back as both macrohood and
 // neighbourhood. The copy from the file read first is kept, with its credit.
+//
+// And without the country. See isCountry.
 func (s *Source) derivedStack(lat, lon float64) []credited {
 	var stack []credited
 	for _, set := range s.derived() {
 		for _, a := range set.Containing(lat, lon) {
+			if isCountry(a) {
+				continue
+			}
 			if !slices.ContainsFunc(stack, func(c credited) bool { return sameArea(c.area, a) }) {
 				stack = append(stack, credited{a, set.Provenance().Attribution})
 			}
@@ -615,6 +621,26 @@ func (s *Source) derivedStack(lat, lon float64) []credited {
 	}
 	slices.SortStableFunc(stack, func(a, b credited) int { return outermostFirst(a.area, b.area) })
 	return stack
+}
+
+// isCountry reports whether an area is a national border, admin_level 2.
+//
+// Left out of the stack the levels below a region are ranked from. Ranking
+// the three innermost areas keeps it out only when a point sits four or more
+// deep, and a file built at every level in Denmark holds country, region and
+// kommune -- three -- for most of the land: Horsens came back as locality
+// "Danmark". Unlike what any other number means, admin_level 2 is the national
+// border in every country's tagging, so this is not the per-country table the
+// ranking refuses to be.
+//
+// The country LEVEL is Natural Earth's, and deliberately: its outline follows
+// the coast, where OpenStreetMap's national border runs out to the
+// territorial-waters limit, and for a route along a coast "at sea" is the
+// answer wanted. Leaving the area out also means a point inside only the
+// country -- that strip of water -- is NoData here and goes to the tiles.
+func isCountry(a Area) bool {
+	n, err := strconv.Atoi(a.Kind)
+	return err == nil && n == 2
 }
 
 // sameArea reports whether two areas are one boundary read from two files.
@@ -650,9 +676,9 @@ func sameArea(a, b Area) bool {
 // had already given at its own level. Anything wider than three deep is a
 // region or a country and is answered from elsewhere.
 //
-// It does not cover a stack EXACTLY three deep whose outermost is the
-// country, which is most of Denmark in a file built at every level -- see
-// "What stage two did not settle" in docs/locate.md.
+// The country itself never reaches this: derivedStack leaves it out, because
+// a stack exactly three deep -- country, region, kommune -- is most of
+// Denmark, and three innermost would have kept it.
 //
 // Of those three, the outermost is the locality and the innermost the
 // neighbourhood. One area is a locality and nothing else: the place has one

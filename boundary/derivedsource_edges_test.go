@@ -342,3 +342,44 @@ func retained(f func() any) int64 {
 	runtime.KeepAlive(held)
 	return int64(after.HeapAlloc) - int64(before.HeapAlloc)
 }
+
+// The country is not a candidate for locality, macrohood or neighbourhood.
+//
+// Ranking only the three innermost areas was meant to keep it out, and does
+// when a point sits four or more deep. But a file built at every level in
+// Denmark holds country (2), region (4) and kommune (7) for most of the land,
+// and there the three innermost ARE those three: measured against the real
+// extract, Horsens came back as locality "Danmark". admin_level 2 is the
+// national border in every country's tagging, and the country level is
+// answered by Natural Earth, whose outline follows the coast where OSM's runs
+// out to the territorial-waters limit.
+func TestTheCountryIsNotRankedBelowARegion(t *testing.T) {
+	root := t.TempDir()
+	writeDerived(t, root, "denmark", osmProv(),
+		NewArea("Danmark", "2", []Polygon{{Outer: square(0, 0, 8)}}),
+		NewArea("Region Midtjylland", "4", []Polygon{{Outer: square(1, 1, 4)}}),
+		NewArea("Horsens Kommune", "7", []Polygon{{Outer: square(2, 2, 1)}}))
+	src := Open(root, DefaultDetail)
+
+	for _, tc := range []struct {
+		level locate.Level
+		want  string
+		c     locate.Containment
+	}{
+		{locate.Locality, "Region Midtjylland", locate.Inside},
+		{locate.Macrohood, "", locate.Outside},
+		{locate.Neighbourhood, "Horsens Kommune", locate.Inside},
+	} {
+		name, _, _, c := src.Contains(tc.level, 2.5, 2.5)
+		if c != tc.c || name != tc.want {
+			t.Errorf("%s = (%q, %v), want (%q, %v)", tc.level, name, c, tc.want, tc.c)
+		}
+	}
+
+	// Inside the country only -- the territorial-waters strip OSM's national
+	// border includes -- no file knows anything below the country, so the
+	// tiles answer rather than the country being called a locality.
+	if _, _, _, c := src.Contains(locate.Locality, 7.5, 7.5); c != locate.NoData {
+		t.Errorf("a point inside only the country is %v, want NoData", c)
+	}
+}
