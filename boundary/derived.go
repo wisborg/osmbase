@@ -448,6 +448,13 @@ func quantise(deg float64) int64 { return int64(math.Round(deg * derivedScale)) 
 
 // ReadDerived reads a derived boundary file.
 func ReadDerived(r io.Reader) (*Set, error) {
+	b := newBudget()
+	return readDerived(r, &b)
+}
+
+// readDerived reads a file against a budget the caller owns, so that several
+// files can be made to share one. See Source.derived.
+func readDerived(r io.Reader, b *budget) (*Set, error) {
 	br := bufio.NewReader(r)
 
 	magic := make([]byte, len(derivedMagic))
@@ -476,7 +483,6 @@ func ReadDerived(r io.Reader) (*Set, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &budget{polygons: maxDerivedTotalPolygons, rings: maxDerivedTotalRings}
 	areas := make([]Area, 0, min(count, 1024))
 	for range count {
 		a, err := readArea(br, b)
@@ -539,8 +545,13 @@ func readHeader(br *bufio.Reader) (Provenance, error) {
 	return p, nil
 }
 
-// budget is what the file as a whole may spend.
+// budget is what a file as a whole may spend -- or, when Source.derived hands
+// the same one to every file in a store, what the store may.
 type budget struct{ polygons, rings int }
+
+func newBudget() budget {
+	return budget{polygons: maxDerivedTotalPolygons, rings: maxDerivedTotalRings}
+}
 
 func (b *budget) spend(what string, n int, left *int) error {
 	if n > *left {

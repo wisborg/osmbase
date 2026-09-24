@@ -656,26 +656,34 @@ type fakeBoundaries struct {
 	covers map[locate.Level]bool
 	name   string
 	inside bool
+	// noData makes a covered level say it knows nothing about the place,
+	// rather than that the place is outside every area.
+	noData bool
 	credit string
 }
 
 func (f fakeBoundaries) Covers(l locate.Level) bool { return f.covers[l] }
 
-func (f fakeBoundaries) Contains(l locate.Level, lat, lon float64) (string, string, string, bool) {
-	if !f.covers[l] || !f.inside {
-		return "", "", "", false
+func (f fakeBoundaries) Contains(l locate.Level, lat, lon float64) (string, string, string, locate.Containment) {
+	switch {
+	case !f.covers[l] || f.noData:
+		return "", "", "", locate.NoData
+	case !f.inside:
+		return "", "", "", locate.Outside
 	}
-	return f.name, "country", f.credit, true
+	return f.name, "country", f.credit, locate.Inside
 }
 
 // TestAt_ContainmentAnswersALevelInsteadOfTheTilesAndNotAsWell is the
 // precedence rule, and the second half is the one that matters.
 //
-// A source that covers a level answers it EXCLUSIVELY: the tiles are not
-// consulted, and a level the source covers but finds nothing for reports
-// nothing. Falling back to the nearest label would turn a correct answer into
-// a guess -- a point in the North Sea is outside every country, and "near
-// Denmark, 40 km" would be the program inventing a country for it.
+// A source that covers a level answers it EXCLUSIVELY wherever it knows the
+// place: the tiles are not consulted, and a point the source knows to be
+// outside every area reports nothing. Falling back to the nearest label would
+// turn a correct answer into a guess -- a point in the North Sea is outside
+// every country, and "near Denmark, 40 km" would be the program inventing a
+// country for it. A place the source holds no data for is the exception, and
+// has its own subtest below.
 func TestAt_ContainmentAnswersALevelInsteadOfTheTilesAndNotAsWell(t *testing.T) {
 	const lat, lon = 55.8623, 9.8451
 	// A country point in the tiles, so there IS a nearest answer to fall back
@@ -719,6 +727,31 @@ func TestAt_ContainmentAnswersALevelInsteadOfTheTilesAndNotAsWell(t *testing.T) 
 		}
 		if m, ok := got.Match(locate.Country); ok {
 			t.Errorf("a point outside every country was given %q from the tiles; containment answering nothing must mean nothing, not a nearest guess", m.Name)
+		}
+	})
+
+	// The other half of the rule, and the one the boolean this used to be
+	// could not express. A store holding boundaries for one country covers
+	// the level everywhere, and a point in another country is not OUTSIDE
+	// every area in it -- the file says nothing about that place at all.
+	// Answering it with nothing took "near Horsens" away from every
+	// coordinate outside a Sydney file.
+	t.Run("a place the source holds no data for is left to the tiles", func(t *testing.T) {
+		got, err := locate.At(context.Background(), src, locate.Coord{Lat: lat, Lon: lon}, locate.Options{
+			Boundaries: fakeBoundaries{
+				covers: map[locate.Level]bool{locate.Country: true},
+				noData: true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("At: %v", err)
+		}
+		m, ok := got.Match(locate.Country)
+		if !ok {
+			t.Fatal("a place the boundaries know nothing about was not answered from the tiles")
+		}
+		if m.Source != locate.Near || m.Name != "Tiles Say Denmark" {
+			t.Errorf("got %q (%v), want the tiles' nearest label", m.Name, m.Source)
 		}
 	})
 

@@ -112,7 +112,7 @@ first reported a trans-Tasman flight as being over the Pacific.
 Stage one therefore turns two broken levels into two correct ones, adds a third that had no
 answer at all, and carries no licence obligations.
 
-### Stage two — OSM administrative relations, for locality and suburb — **not built**
+### Stage two — OSM administrative relations, for locality and suburb — **built**
 
 This is the one that reaches the granularity the feature exists for.
 `boundary=administrative` relations carry an `admin_level` and a name, levels 8 to 10 are
@@ -194,7 +194,7 @@ None of them requires the one after it to be useful.
 | 5 | **Ring assembly** | ✅ committed — `boundary/osm.Assemble`. Ways joined on node id into closed rings, outers counterclockwise and inners clockwise per RFC 7946, unclosed chains reported with the node ids of the gap. Measured: Sydney closes 471 of 522 outlines, Hornsby's 46 ways into one ring of 450 points. |
 | 6 | **The derived file** | ✅ committed — `boundary.WriteDerived`/`ReadDerived`, magic, version, a length-prefixed provenance header, delta-coded varints at OSM's own resolution. `boundary.Polygons` pairs holes to outlines; `osm.Areas` converts and reports. Measured: Sydney's 471 areas are **0.41 MB**, and containment answers are identical on either side of the file. |
 | 7 | **`osmbase boundaries --osm`** | ✅ committed — a URL to fetch or a `.osm.pbf` to read, `--levels`, `--region`, `--keep-extract`. A fetched extract is deleted; one the user pointed at is left alone. The ODbL obligation is stated before the file exists, and travels inside it. |
-| 8 | **Wire into `locate`** | ✅ committed — `boundary.Source` loads every derived file in the store, ranks the containment stack onto Locality/Macrohood/Neighbourhood, and `CreditFor` reports which licence an answer owes. `locate` opens the tile store only for the levels boundaries do not cover. |
+| 8 | **Wire into `locate`** | ✅ committed — `boundary.Source` loads every derived file in the store, ranks the three innermost areas of the containment stack onto Locality/Macrohood/Neighbourhood, and each answer carries the credit of the file it came from. A point no derived file holds is `NoData`, and goes to the tiles; `locate` opens the tile store whenever there is one. |
 
 Parts 2 and 3 need no network and no real extract: synthetic fixtures in the style of
 `osmbasetest` are enough, and are better, because a real file cannot express a malformed one.
@@ -297,17 +297,17 @@ Stage one is **built and merged**: country, region and water answered by contain
 Natural Earth, everything below by nearest-feature from the tiles, with `Place.Source` and
 `Match.DistanceM` saying which and how far.
 
-Stage two is **through part 4**. Parts 1 to 4 are committed: the shared protobuf reader
-knows the signed encodings, `osmpbf` reads framing, blocks and elements, and `boundary/osm`
-runs the three passes to produce each boundary's member ways with their coordinates and
-node ids. Parts 5 to 8 are untouched.
+Stage two is **built and merged**, all eight parts: `osmbase boundaries --osm` derives a
+file of administrative outlines from an extract, and `locate` answers locality, macrohood
+and neighbourhood by containment from it wherever it knows the place, and from the tiles
+everywhere else.
 
-To resume: read this file, then the "Place names" section of `architecture.md`, then start
-at part 5 of the table. The three reviews are worth repeating per sub-part — across parts 1
-to 4 they have found a path traversal, an architectural violation, a concurrency crash, a
-required-features check nobody owned, two separate memory amplifications of four to five
-orders of magnitude, and a memory measurement taken on a workload that could not show the
-defect it was written to rule out.
+The three reviews were repeated per sub-part and were worth it every time — across the
+eight parts they found a path traversal, an architectural violation, a concurrency crash, a
+required-features check nobody owned, several memory amplifications of four to five orders
+of magnitude, and more than once a test that passed on both sides of the fix it was written
+for. Part 8's QA review ran last, after the other two, and found the largest behavioural
+defect of the stage: see "A file that covers a level does not cover the world" below.
 
 ### The gate: run, and passed by two orders of magnitude
 
@@ -467,10 +467,41 @@ many levels the extract actually *closed*, so a bounding-box cut that severs the
 leaves the suburb reported as a locality — the `Kind` is how a reader tells. And a hierarchy
 deeper than three reports its three innermost and drops the rest.
 
+### A file that covers a level does not cover the world
+
+`Covers` is asked once per level for a whole route; `Contains` is asked per point. So a
+store holding one Sydney file covers locality *everywhere*, and when containment answered
+only yes or no, a point in Horsens came back "outside every area" — and since a covered
+level is not asked of the tiles, "near Horsens, 134 m" became nothing at all. The same
+happened inside Sydney to every suburb the extract's bounding box cut open.
+
+The rule that made containment exclusive is right for Natural Earth, which covers the world:
+outside every country *is* at sea. It is wrong for a file cut from one extract, where outside
+every area usually means the file knows nothing about the place. `BoundarySource.Contains`
+therefore answers one of three things — `Inside`, `Outside`, or `NoData` — and `AtEach`
+sends the `NoData` points to the tiles. A derived file says `NoData` wherever no area in it
+holds the point, and `Outside` for a level the ranking leaves empty where some area does:
+two nested areas are a locality and a neighbourhood with nothing between, and a nearest
+label placed beside two facts would be a guess.
+
+Consequently the command opens the tile store whenever the store has one, not only when a
+level needs it, and credits the tiles only when they named something.
+
+Three smaller ranking defects came with it, all in how the merged stack is ordered: the same
+boundary in two overlapping files took two of the three levels; a suburb with its council
+area's exact outline was ordered by the file, not by `admin_level`; and a suburb in two parts
+outranked its own council because its parts' rectangles were *summed*. The stack is now
+de-duplicated, ties go to the lower `admin_level` (OpenStreetMap's convention everywhere,
+unlike the meaning of any one number), and an area's size is the rectangle around the union
+of its parts, which — unlike a sum — can only shrink under containment.
+
 ### The store directory is trusted, and the files in it are not
 
 `ReadDerived` treats every count in a file as untrusted, and `boundary.Source` is bounded in
-aggregate as well as per file — sixty-four files, sixty-five thousand areas between them. But
+aggregate as well as per file: its files share one geometry budget and one byte budget, so a
+directory costs at most what one maximal file does, however it is divided. (A cap on the
+number of AREAS was tried first and bounded nothing — four files of one area each held 420 MB
+from 26 MB on disk — because an area's cost is its geometry.) But
 the *directory* is the user's own, and `RegionOf` deliberately accepts any region a user
 chose, so a file copied in from elsewhere is a supported workflow (the `NOTICE` contemplates
 exactly that).
@@ -512,6 +543,15 @@ is why it is written down here.
   point**, keeping one of three answers and discarding the rest. The interface asks a level
   at a time, so fixing it means changing that interface; a route of thousands of points pays
   three times.
+
+- **A three-deep stack still makes the country the locality.** Only the three innermost
+  areas are ranked, which drops the country when a point sits four or more levels deep —
+  but a file built at every level in Denmark holds country (2), region (4) and kommune (7)
+  for most of the land, and there the three innermost *are* those three. Measured against
+  the real extract: Horsens comes back as locality "Danmark", macrohood "Region
+  Midtjylland", neighbourhood "Horsens Kommune". Leaving out `admin_level=2`, which is the
+  national border in every country's OpenStreetMap tagging and is answered by Natural Earth
+  anyway, would fix that case without the per-country table the ranking refuses to be.
 
 Two items from earlier lists are now **resolved** and are recorded here so nobody goes
 looking: "`Set` cannot be asked for one level" — the three-innermost rule is that filter, and

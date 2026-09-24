@@ -1,7 +1,6 @@
 package boundary
 
 import (
-	"cmp"
 	"fmt"
 	"io"
 	"os"
@@ -211,9 +210,12 @@ func Dir(storeRoot string) string { return filepath.Join(storeRoot, "boundaries"
 // to parse the world's coastlines, and a route of thousands of points should
 // not pay twice.
 type Source struct {
-	derivedSets    []*Set
-	derivedCredits []string
-	derivedDone    bool
+	derivedSets []*Set
+	derivedDone bool
+	// limits are what the derived files may cost between them. A field
+	// rather than the constants read directly so a test can shrink them to
+	// a size whose allocation it can afford to measure.
+	limits derivedLimits
 
 	dir    string
 	detail string
@@ -243,11 +245,24 @@ const NaturalEarthCredit = "Natural Earth (public domain)"
 // What the derived files in a store may cost between them.
 //
 // ReadDerived bounds each file, and the reasoning it records -- "measured at
-// 59 times the file live" -- was worked out for ONE file. Those budgets reset
-// for the next one, so a directory of them multiplies the figure by however
-// many there are: measured at four files sitting exactly at the per-file
-// budget, 16.8 MB on disk became a gigabyte of heap, and a hundred such files
-// would be twenty-five.
+// 59 times the file live" -- was worked out for ONE file. Reset for each file,
+// as they first were, those budgets multiply that figure by however many
+// files there are: measured at four files sitting exactly at the per-file
+// budget, 16.8 MB on disk became a gigabyte of heap.
+//
+// So the store shares ONE of each budget rather than resetting them per
+// file: the polygons and rings a file may declare, and the bytes it may
+// occupy -- which is what bounds its points, as the per-file reasoning
+// explains. A directory then costs at most what one maximal file does,
+// however it is divided between files.
+//
+// Counting files and areas is not a substitute, and was tried: a cap of
+// sixty-five thousand AREAS let four files of one area each turn 26 MB on
+// disk into 420 MB live, because an area's cost is its geometry and not the
+// fact of it. Both counts are kept, as the coarse judgement they are --
+// sixty-five thousand areas is two orders of magnitude above a country
+// (Sydney's extract comes to 471, all of Denmark's to 145), and sixty-four
+// files is the same judgement about how many regions a person keeps.
 //
 // A store is the user's own directory, so this is not an attack surface in
 // the way a download is. It is still a directory whose contents nothing
@@ -256,15 +271,23 @@ const NaturalEarthCredit = "Natural Earth (public domain)"
 // the process.
 const (
 	maxDerivedFiles      = 64
-	maxDerivedFileBytes  = 256 << 20
+	maxDerivedStoreBytes = 256 << 20
 	maxDerivedAreasTotal = 1 << 16
 )
 
-// Sixty-five thousand areas is two orders of magnitude above a country --
-// every administrative boundary in a Sydney extract comes to 471 and all of
-// Denmark's to 145 -- so a store reaching it is holding something other than
-// countries. Sixty-four files is the same judgement about how many regions a
-// person keeps.
+// derivedLimits are the budgets Source.derived spends across every file.
+type derivedLimits struct {
+	files, areas int
+	bytes        int64
+	geometry     budget
+}
+
+func defaultDerivedLimits() derivedLimits {
+	return derivedLimits{
+		files: maxDerivedFiles, areas: maxDerivedAreasTotal,
+		bytes: maxDerivedStoreBytes, geometry: newBudget(),
+	}
+}
 
 // derived loads every derived boundary file in the store, once.
 //
@@ -287,8 +310,7 @@ func (s *Source) derived() []*Set {
 	if err != nil {
 		return nil
 	}
-	seen := map[string]bool{}
-	areasLeft := maxDerivedAreasTotal
+	left := s.limits
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -296,16 +318,21 @@ func (s *Source) derived() []*Set {
 		if _, ok := RegionOf(e.Name()); !ok {
 			continue
 		}
-		if len(s.derivedSets) >= maxDerivedFiles {
+		if len(s.derivedSets) >= left.files {
 			break
 		}
 		f, err := os.Open(filepath.Join(s.dir, e.Name()))
 		if err != nil {
 			continue
 		}
-		// Bounded per file as well as in total, because one enormous file
-		// costs as much as many.
-		set, err := ReadDerived(io.LimitReader(f, maxDerivedFileBytes))
+		// Read against what is LEFT, and charged only if kept. A file that
+		// does not fit is refused as it is read, at the item that overruns,
+		// so what it allocated before that is bounded by the same budget; a
+		// file that is skipped for any reason leaves nothing behind to pay
+		// for.
+		geometry := left.geometry
+		lr := &io.LimitedReader{R: f, N: left.bytes}
+		set, err := readDerived(lr, &geometry)
 		f.Close()
 		if err != nil {
 			// Skipped, not fatal: one unreadable file in a directory must
@@ -313,18 +340,16 @@ func (s *Source) derived() []*Set {
 			// once either way -- derivedDone is what stops the retry.
 			continue
 		}
-		if set.Len() > areasLeft {
+		if set.Len() > left.areas {
 			// Skipped rather than truncated. A partial set answers some
 			// coordinates and silently not others, which is worse than a
 			// file that is not there.
 			continue
 		}
-		areasLeft -= set.Len()
+		left.areas -= set.Len()
+		left.bytes = lr.N
+		left.geometry = geometry
 		s.derivedSets = append(s.derivedSets, set)
-		if c := set.Provenance().Attribution; c != "" && !seen[c] {
-			seen[c] = true
-			s.derivedCredits = append(s.derivedCredits, c)
-		}
 	}
 	return s.derivedSets
 }
@@ -334,6 +359,7 @@ func (s *Source) derived() []*Set {
 // It does not verify the files exist. A store with no boundaries is the
 // ordinary case -- they are an optional download -- and the honest place to
 // report that is where a level is asked for, not here.
+//
 // A detail this does not know yields a source that answers nothing, rather
 // than one that reads a file somewhere unexpected. Refusing loudly would be
 // the other reasonable choice and is what the command does before it gets
@@ -348,7 +374,7 @@ func Open(storeRoot, detail string) *Source {
 		detail = DefaultDetail
 	}
 	return &Source{
-		dir: Dir(storeRoot), detail: detail,
+		dir: Dir(storeRoot), detail: detail, limits: defaultDerivedLimits(),
 		sets: map[Layer]*Set{}, loaded: map[string]error{},
 	}
 }
@@ -454,6 +480,11 @@ func (s *Source) Covers(l locate.Level) bool {
 		// took it away from the tiles and answered nothing -- which is the
 		// hazard the paragraph below describes, in the other half of the
 		// same function.
+		//
+		// The Len check cannot fire today -- Read refuses a Natural Earth
+		// file with no named areas -- and removing it is an equivalent
+		// mutant. It is kept because the rule it states is this function's,
+		// and the derived levels below need it for real.
 		set := s.set(layer)
 		return set != nil && set.Len() > 0
 	}
@@ -490,48 +521,6 @@ func derivedLevel(l locate.Level) bool {
 	return false
 }
 
-// rankDerived assigns the areas containing a point to levels.
-//
-// The rule is the nesting itself, because nothing else is available: an
-// admin_level is a number whose meaning differs by country -- seven is the
-// municipality in Denmark and nine is the suburb in Australia -- so a table
-// mapping levels to names would be asserting one country's scheme over every
-// other.
-//
-// Only the THREE INNERMOST areas are ranked, and that is the part that took a
-// second attempt. Ranking the whole stack sounds equivalent and is not: a
-// file built the way the command builds one by default keeps every
-// admin_level, so in Denmark the outermost containing area is the COUNTRY.
-// Locality then came back as "Danmark", duplicating the answer Natural Earth
-// had already given at its own level, and the two names a person would
-// actually have said -- the region and the kommune -- appeared at no level at
-// all. Anything wider than three deep is a region or a country and is
-// answered from elsewhere.
-//
-// Of those three, the outermost is the locality and the innermost the
-// neighbourhood. One area is a locality and nothing else: the place has one
-// administrative name at this range, and inventing two from it would be a
-// claim the data does not make.
-func rankDerived(areas []Area) map[locate.Level]Area {
-	out := map[locate.Level]Area{}
-	if len(areas) == 0 {
-		return out
-	}
-	if n := len(areas); n > 3 {
-		areas = areas[n-3:]
-	}
-	if len(areas) == 1 {
-		out[locate.Locality] = areas[0]
-		return out
-	}
-	out[locate.Locality] = areas[0]
-	out[locate.Neighbourhood] = areas[len(areas)-1]
-	if len(areas) == 3 {
-		out[locate.Macrohood] = areas[1]
-	}
-	return out
-}
-
 // layerFor maps a level to the file that answers it.
 func layerFor(l locate.Level) (Layer, bool) {
 	switch l {
@@ -545,56 +534,43 @@ func layerFor(l locate.Level) (Layer, bool) {
 	return 0, false
 }
 
-// Contains returns the area holding a coordinate.
+// Contains returns the area holding a coordinate at a level.
 //
-// A level this source covers but has no file for answers false, which sends
-// the caller no answer rather than a wrong one. That is the same outcome as a
-// point in the sea and deliberately so: both mean "no area contains this", and
-// a lookup has no business distinguishing "we do not know" from "there is
-// nothing there" when the caller can do nothing differently about either.
-func (s *Source) Contains(l locate.Level, lat, lon float64) (string, string, string, bool) {
+// For country, region and water it answers Inside or Outside and never
+// NoData: Natural Earth covers the world, so a point in no country is at sea,
+// and that is the answer. (A level whose file is missing is not covered, and
+// is never asked.)
+//
+// For the levels below a region it answers NoData wherever no derived file
+// holds any area containing the point. A derived file covers one extract, and
+// outside it the file says nothing -- the tiles answer there. Wherever some
+// area does contain the point the file knows the place, and a level the
+// ranking leaves empty is Outside: two nested areas are a locality and a
+// neighbourhood with nothing between them, and a nearest label from the
+// tiles would be a guess placed beside two facts.
+func (s *Source) Contains(l locate.Level, lat, lon float64) (name, kind, credit string, c locate.Containment) {
 	layer, ok := layerFor(l)
 	if !ok {
 		if !derivedLevel(l) {
-			return "", "", "", false
+			return "", "", "", locate.NoData
 		}
-		// The credit travels beside each area, because the answer owes what
-		// the file it came from owes -- and a store may hold one file
-		// derived from OpenStreetMap beside one that is public domain. A
-		// credit taken from the store as a whole attributes an answer to
-		// whichever file did not give it.
-		var stack []Area
-		var credits []string
-		for _, set := range s.derived() {
-			found := set.Containing(lat, lon)
-			stack = append(stack, found...)
-			for range found {
-				credits = append(credits, set.Provenance().Attribution)
-			}
+		stack := s.derivedStack(lat, lon)
+		if len(stack) == 0 {
+			return "", "", "", locate.NoData
 		}
-		order := make([]int, len(stack))
-		for i := range order {
-			order[i] = i
-		}
-		sortOutermostFirstIndexed(stack, order)
-		ranked := make([]Area, len(stack))
-		rankedCredits := make([]string, len(stack))
-		for i, j := range order {
-			ranked[i], rankedCredits[i] = stack[j], credits[j]
-		}
-		a, ok := rankDerivedAt(ranked, l)
+		i, ok := rankIndex(len(stack), l)
 		if !ok {
-			return "", "", "", false
+			return "", "", "", locate.Outside
 		}
-		return ranked[a].Name, ranked[a].Kind, rankedCredits[a], true
+		return stack[i].area.Name, stack[i].area.Kind, stack[i].credit, locate.Inside
 	}
 	set := s.set(layer)
 	if set == nil {
-		return "", "", "", false
+		return "", "", "", locate.NoData
 	}
 	a, ok := set.At(lat, lon)
 	if !ok {
-		return "", "", "", false
+		return "", "", "", locate.Outside
 	}
 	// Natural Earth is public domain, so this is a statement of where the
 	// answer came from rather than a credit that is owed -- and the string
@@ -602,37 +578,101 @@ func (s *Source) Contains(l locate.Level, lat, lon float64) (string, string, str
 	// obligation and would lose the reader the one thing they can act on,
 	// which is knowing that this name and the suburb below it came from
 	// different places under different terms.
-	return a.Name, a.Kind, NaturalEarthCredit, true
+	return a.Name, a.Kind, NaturalEarthCredit, locate.Inside
 }
 
-// sortOutermostFirstIndexed orders an index permutation by the areas it
-// points at, so that a parallel slice can be reordered with it.
-func sortOutermostFirstIndexed(areas []Area, order []int) {
-	slices.SortStableFunc(order, func(i, j int) int {
-		return cmp.Compare(areas[j].boxArea(), areas[i].boxArea())
-	})
+// credited is an area with the attribution of the file it came from.
+//
+// The credit travels beside each area because the answer owes what the file
+// it came from owes -- and a store may hold one file derived from
+// OpenStreetMap beside one that is public domain. A credit taken from the
+// store as a whole attributes an answer to whichever file did not give it.
+type credited struct {
+	area   Area
+	credit string
 }
 
-// rankDerivedAt returns the index in the ranked stack for a level.
-func rankDerivedAt(areas []Area, l locate.Level) (int, bool) {
-	base := 0
-	if n := len(areas); n > 3 {
-		base = n - 3
-		areas = areas[base:]
+// derivedStack is every area in every derived file that holds a point,
+// outermost first, with each area once.
+//
+// Sorted again after merging even though each file's stack arrives sorted:
+// a store may hold several regions, and sorting the merged stack is what
+// makes their nesting a fact about the data rather than about which file
+// was read first.
+//
+// And each area once. Two extracts that overlap -- a country and a province
+// cut from it -- hold the same boundaries, and counting one twice spent two
+// of the three levels on it: the kommune came back as both macrohood and
+// neighbourhood. The copy from the file read first is kept, with its credit.
+func (s *Source) derivedStack(lat, lon float64) []credited {
+	var stack []credited
+	for _, set := range s.derived() {
+		for _, a := range set.Containing(lat, lon) {
+			if !slices.ContainsFunc(stack, func(c credited) bool { return sameArea(c.area, a) }) {
+				stack = append(stack, credited{a, set.Provenance().Attribution})
+			}
+		}
 	}
-	switch {
-	case len(areas) == 0:
+	slices.SortStableFunc(stack, func(a, b credited) int { return outermostFirst(a.area, b.area) })
+	return stack
+}
+
+// sameArea reports whether two areas are one boundary read from two files.
+//
+// By name, kind and extent rather than by geometry: two files cut from
+// different extracts may close a shared boundary with different vertex
+// counts, and comparing points would call those two areas. Two different
+// boundaries with the same name, the same admin_level and the same rectangle
+// that both hold one point are not a case worth a slower rule.
+func sameArea(a, b Area) bool {
+	if a.Name != b.Name || a.Kind != b.Kind {
+		return false
+	}
+	ea, okA := a.extent()
+	eb, okB := b.extent()
+	return okA == okB && ea == eb
+}
+
+// rankIndex is where in a stack of n areas, outermost first, a level's answer
+// sits -- and false when the level has none.
+//
+// The rule is the nesting itself, because nothing else is available: an
+// admin_level is a number whose meaning differs by country -- seven is the
+// municipality in Denmark and nine is the suburb in Australia -- so a table
+// mapping levels to names would be asserting one country's scheme over every
+// other.
+//
+// Only the THREE INNERMOST areas are ranked, and that is the part that took a
+// second attempt. Ranking the whole stack sounds equivalent and is not: a
+// file built the way the command builds one by default keeps every
+// admin_level, so in Denmark the outermost containing area is the COUNTRY.
+// Locality then came back as "Danmark", duplicating the answer Natural Earth
+// had already given at its own level. Anything wider than three deep is a
+// region or a country and is answered from elsewhere.
+//
+// It does not cover a stack EXACTLY three deep whose outermost is the
+// country, which is most of Denmark in a file built at every level -- see
+// "What stage two did not settle" in docs/locate.md.
+//
+// Of those three, the outermost is the locality and the innermost the
+// neighbourhood. One area is a locality and nothing else: the place has one
+// administrative name at this range, and inventing two from it would be a
+// claim the data does not make.
+func rankIndex(n int, l locate.Level) (int, bool) {
+	base := max(n-3, 0)
+	switch n - base {
+	case 0:
 		return 0, false
-	case len(areas) == 1:
+	case 1:
 		return base, l == locate.Locality
 	}
 	switch l {
 	case locate.Locality:
 		return base, true
 	case locate.Neighbourhood:
-		return base + len(areas) - 1, true
+		return n - 1, true
 	case locate.Macrohood:
-		if len(areas) == 3 {
+		if n-base == 3 {
 			return base + 1, true
 		}
 	}

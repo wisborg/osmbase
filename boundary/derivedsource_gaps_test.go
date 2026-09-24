@@ -78,7 +78,7 @@ func TestTheMergedStackIsRankedBySizeAndNotByFileOrder(t *testing.T) {
 		{locate.Locality, "Outer"},
 		{locate.Neighbourhood, "Inner"},
 	} {
-		got, _, _, ok := src.Contains(tc.level, 0.5, 0.5)
+		got, _, _, ok := inside(src, tc.level, 0.5, 0.5)
 		if !ok || got != tc.want {
 			t.Errorf("%s = (%q, %v), want %q: the merged stack is in file order, not size order",
 				tc.level, got, ok, tc.want)
@@ -86,20 +86,6 @@ func TestTheMergedStackIsRankedBySizeAndNotByFileOrder(t *testing.T) {
 	}
 }
 
-// TestADeepHierarchyReportsTheTwoEndsAndTheStepAboveTheInnermost fixes which
-// area the macrohood is.
-//
-// rankDerived takes areas[len-2] -- the one just OUTSIDE the innermost. At
-// three areas that index is also areas[1], the one just inside the outermost,
-// so the three-area case in derivedsource_test.go cannot tell the two rules
-// apart. Measured: changing the code to areas[1] passes the whole suite.
-//
-// Four and five areas separate them. The expected values are read off the
-// rule rather than off the code: outermost is the locality, innermost the
-// neighbourhood, and the macrohood is the one immediately containing the
-// neighbourhood -- L3 of four, L4 of five. The areas in between belong to no
-// level, and that is asserted too, because a rule that reported everything it
-// found would pass the three positive checks alone.
 // A deep file reports the THREE INNERMOST areas and nothing wider.
 //
 // This used to rank the whole stack, so the outermost area became the
@@ -143,7 +129,7 @@ func TestADeepHierarchyReportsTheThreeInnermost(t *testing.T) {
 
 			named := map[string]bool{}
 			for _, level := range []locate.Level{locate.Locality, locate.Macrohood, locate.Neighbourhood} {
-				got, _, _, ok := src.Contains(level, 0.5, 0.5)
+				got, _, _, ok := inside(src, level, 0.5, 0.5)
 				if !ok {
 					t.Errorf("%s was not answered, want %q", level, tc.want[level])
 					continue
@@ -171,17 +157,12 @@ func TestADeepHierarchyReportsTheThreeInnermost(t *testing.T) {
 	}
 }
 
-// TestEveryDerivedFilesCreditIsOwedAndEachIsNamedOnce covers a store built
-// from more than one extract.
-//
-// Every test that reaches CreditFor uses one attribution, or two files
-// sharing one, so a source that kept only the first credit it saw passes.
-// Measured: it does. Two extracts with different licences is not exotic --
-// "osmbase boundaries --osm" is per region, and a user with Denmark and
-// Australia has run it twice -- and dropping one of two credits is a licence
-// failure rather than a cosmetic one.
-//
 // Each file's answer carries that file's own credit.
+//
+// Two extracts with different licences is not exotic -- "osmbase boundaries
+// --osm" is per region, and a user with Denmark and Australia has run it
+// twice -- and crediting one file's answer to another is a licence failure
+// rather than a cosmetic one.
 //
 // This used to ask the SOURCE what a level owed, which joined every
 // attribution in the store -- so an answer from one file was credited to
@@ -209,7 +190,7 @@ func TestEachFilesAnswerCarriesThatFilesOwnCredit(t *testing.T) {
 		// two files that do.
 		{20.5, 20.5, "C", ""},
 	} {
-		name, _, credit, ok := src.Contains(locate.Locality, tc.lat, tc.lon)
+		name, _, credit, ok := inside(src, locate.Locality, tc.lat, tc.lon)
 		if !ok || name != tc.name {
 			t.Errorf("at %v,%v got %q (%v), want %q", tc.lat, tc.lon, name, ok, tc.name)
 			continue
@@ -228,8 +209,8 @@ func TestEachFilesAnswerCarriesThatFilesOwnCredit(t *testing.T) {
 // presence of Natural Earth files suppress the derived ones -- passes them
 // all. The names are deliberately different per level so an answer from the
 // wrong file is visible rather than coincidental, and the credits are
-// asserted per level because that is the whole point of CreditFor: the two
-// obligations are different and the command has to be able to tell them
+// asserted per level because that is the whole point of a per-answer credit:
+// the two obligations are different and the command has to be able to tell them
 // apart.
 func TestNaturalEarthAndDerivedFilesEachAnswerTheirOwnLevels(t *testing.T) {
 	root := t.TempDir()
@@ -257,16 +238,16 @@ func TestNaturalEarthAndDerivedFilesEachAnswerTheirOwnLevels(t *testing.T) {
 			t.Errorf("%s is not covered by a store holding both kinds of file", tc.level)
 			continue
 		}
-		got, _, _, ok := src.Contains(tc.level, 0.25, 0.25)
+		got, _, _, ok := inside(src, tc.level, 0.25, 0.25)
 		if !ok || got != tc.want {
 			t.Errorf("%s = (%q, %v), want %q", tc.level, got, ok, tc.want)
 		}
-		if _, _, c, _ := src.Contains(tc.level, 0.25, 0.25); c != tc.credit {
+		if _, _, c, _ := inside(src, tc.level, 0.25, 0.25); c != tc.credit {
 			t.Errorf("%s is credited to %q, want %q", tc.level, c, tc.credit)
 		}
 	}
 	// Two areas is a locality and a neighbourhood and nothing between them.
-	if got, _, _, ok := src.Contains(locate.Macrohood, 0.25, 0.25); ok {
+	if got, _, _, ok := inside(src, locate.Macrohood, 0.25, 0.25); ok {
 		t.Errorf("macrohood = %q, want nothing: the file holds two nested areas", got)
 	}
 }
@@ -275,11 +256,10 @@ func TestNaturalEarthAndDerivedFilesEachAnswerTheirOwnLevels(t *testing.T) {
 // change added.
 //
 // The existing concurrency test goes through Contains on a Natural Earth
-// level, which reaches Source.set. Nothing exercises Source.derived, which is
-// a second lazy load with a second done-flag, reached from three exported
-// methods -- Covers, Contains and CreditFor -- two of which take the mutex
-// twice in one call. Source is documented as safe to share, and locate.AtEach
-// asks Covers once per level and Contains once per point.
+// level, which reaches Source.set. Nothing else exercises Source.derived,
+// which is a second lazy load with a second done-flag, reached from both
+// Covers and Contains. Source is documented as safe to share, and
+// locate.AtEach asks Covers once per level and Contains once per point.
 //
 // Only meaningful under -race, which "make race" runs; without it this checks
 // that nothing deadlocks and that the answers survive the traffic.
@@ -300,7 +280,7 @@ func TestADerivedSourceIsSafeToShareBetweenGoroutines(t *testing.T) {
 			l := levels[i%len(levels)]
 			for range 20 {
 				src.Covers(l)
-				src.Contains(l, 0.25, 0.25)
+				inside(src, l, 0.25, 0.25)
 			}
 		}(i)
 	}
@@ -309,10 +289,10 @@ func TestADerivedSourceIsSafeToShareBetweenGoroutines(t *testing.T) {
 	// And it still answers correctly afterwards, so a lock that serialised
 	// the load into nonsense -- or a done-flag set before the work -- shows
 	// up here rather than as a flake.
-	if got, _, _, ok := src.Contains(locate.Neighbourhood, 0.25, 0.25); !ok || got != "Suburb" {
+	if got, _, _, ok := inside(src, locate.Neighbourhood, 0.25, 0.25); !ok || got != "Suburb" {
 		t.Errorf("after concurrent use, neighbourhood = (%q, %v), want Suburb", got, ok)
 	}
-	if _, _, got, _ := src.Contains(locate.Locality, 0.25, 0.25); got != osmProv().Attribution {
+	if _, _, got, _ := inside(src, locate.Locality, 0.25, 0.25); got != osmProv().Attribution {
 		t.Errorf("after concurrent use, the derived credit = %q, want %q", got, osmProv().Attribution)
 	}
 }
@@ -343,7 +323,7 @@ func TestAnEmptyDerivedFileLeavesTheLevelsToTheTiles(t *testing.T) {
 		}
 	}
 	// And nothing is owed for an answer that cannot be given.
-	if _, _, c, ok := src.Contains(locate.Locality, 0.25, 0.25); ok || c != "" {
+	if _, _, c, ok := inside(src, locate.Locality, 0.25, 0.25); ok || c != "" {
 		t.Errorf("a file holding no areas answered %q with credit %q", locate.Locality, c)
 	}
 }

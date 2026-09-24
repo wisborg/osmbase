@@ -30,6 +30,14 @@ func writeDerived(t *testing.T, root, region string, p Provenance, areas ...Area
 	}
 }
 
+// inside is Contains with the answer folded to "an area holds the point".
+// Most tests here ask which area answered; the ones about what a source says
+// when none does call Contains and look at the state.
+func inside(src *Source, l locate.Level, lat, lon float64) (name, kind, credit string, ok bool) {
+	name, kind, credit, c := src.Contains(l, lat, lon)
+	return name, kind, credit, c == locate.Inside
+}
+
 func osmProv() Provenance {
 	return Provenance{Source: "x.osm.pbf", Attribution: "© OpenStreetMap contributors, ODbL"}
 }
@@ -81,7 +89,7 @@ func TestTheContainmentStackIsRankedOntoLevels(t *testing.T) {
 			src := Open(root, DefaultDetail)
 
 			for _, level := range []locate.Level{locate.Locality, locate.Macrohood, locate.Neighbourhood} {
-				name, kind, _, ok := src.Contains(level, tc.at.Lat, tc.at.Lon)
+				name, kind, _, ok := inside(src, level, tc.at.Lat, tc.at.Lon)
 				want, wanted := tc.want[level]
 				switch {
 				case wanted && !ok:
@@ -132,7 +140,7 @@ func TestTheCreditFollowsTheSourceThatAnswered(t *testing.T) {
 	writeDerived(t, root, "r", osmProv(), NewArea("A", "9", []Polygon{{Outer: square(0, 0, 1)}}))
 	src := Open(root, DefaultDetail)
 
-	_, _, got, ok := src.Contains(locate.Locality, 0.5, 0.5)
+	_, _, got, ok := inside(src, locate.Locality, 0.5, 0.5)
 	if !ok {
 		t.Fatal("the derived area was not found")
 	}
@@ -141,7 +149,7 @@ func TestTheCreditFollowsTheSourceThatAnswered(t *testing.T) {
 	}
 	// A level nothing here answers carries nothing, because there is no
 	// answer to attach it to.
-	if _, _, c, ok := src.Contains(locate.Street, 0.5, 0.5); ok || c != "" {
+	if _, _, c, ok := inside(src, locate.Street, 0.5, 0.5); ok || c != "" {
 		t.Errorf("street answered with credit %q", c)
 	}
 }
@@ -162,7 +170,7 @@ func TestSeveralRegionsAreAllConsulted(t *testing.T) {
 		{-33.5, 151.5, "South"},
 		{0, 0, ""},
 	} {
-		name, _, _, ok := src.Contains(locate.Locality, tc.lat, tc.lon)
+		name, _, _, ok := inside(src, locate.Locality, tc.lat, tc.lon)
 		if tc.want == "" && ok {
 			t.Errorf("a point in neither region answered %q", name)
 		}
@@ -186,7 +194,7 @@ func TestAStoreWithOnlyADerivedFileIsAvailable(t *testing.T) {
 	}
 	// And it still does not claim the levels it has no data for.
 	src := Open(root, DefaultDetail)
-	if _, _, _, ok := src.Contains(locate.Country, 0.5, 0.5); ok {
+	if _, _, _, ok := inside(src, locate.Country, 0.5, 0.5); ok {
 		t.Error("a country was answered from a store with no country outlines")
 	}
 }
@@ -208,7 +216,7 @@ func TestABrokenDerivedFileIsNotFatal(t *testing.T) {
 	if src.Covers(locate.Locality) {
 		t.Error("a level is claimed on the strength of a file that does not load")
 	}
-	if _, _, _, ok := src.Contains(locate.Locality, 0, 0); ok {
+	if _, _, _, ok := inside(src, locate.Locality, 0, 0); ok {
 		t.Error("a broken file answered a lookup")
 	}
 }

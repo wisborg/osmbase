@@ -103,8 +103,9 @@ func TestBoxAreaIgnoresAPartWithNoExtent(t *testing.T) {
 
 // A store is a directory nothing checked, holding files the NOTICE
 // contemplates being passed between people. Each file is bounded by the
-// format; the directory has to be bounded too, because those budgets reset
-// for every file.
+// format, and the directory by a budget its files share. These are the two
+// coarse counts kept beside it; TestAStoreHoldsNoMoreThanItsSharedBudget
+// measures what the budget actually holds.
 func TestADirectoryOfDerivedFilesIsBoundedInAggregate(t *testing.T) {
 	root := t.TempDir()
 	dir := Dir(root)
@@ -173,7 +174,7 @@ func TestOneUnreadableFileDoesNotCostTheOthers(t *testing.T) {
 	}
 
 	src := Open(root, DefaultDetail)
-	got, _, _, ok := src.Contains(locate.Locality, 0.5, 0.5)
+	got, _, _, ok := inside(src, locate.Locality, 0.5, 0.5)
 	if !ok || got != "Good" {
 		t.Errorf("got %q (%v), want the readable file's answer", got, ok)
 	}

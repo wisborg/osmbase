@@ -21,6 +21,7 @@ import (
 	"io"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -148,16 +149,35 @@ func (s *Set) Containing(lat, lon float64) []Area {
 }
 
 // sortOutermostFirst orders areas widest to narrowest.
-//
-// One function because the rule is one rule: the merged stack in
-// boundary/osm's source sorts again after combining several files, and a
-// comparator written twice is a comparator that can be refined once.
 func sortOutermostFirst(areas []Area) {
-	slices.SortStableFunc(areas, func(a, b Area) int {
-		// Stable, so two areas of the same extent keep the order the file
-		// gave them rather than an arbitrary one.
-		return cmp.Compare(b.boxArea(), a.boxArea())
-	})
+	// Stable, so two areas the comparison cannot tell apart keep the order
+	// the file gave them rather than an arbitrary one.
+	slices.SortStableFunc(areas, outermostFirst)
+}
+
+// outermostFirst compares two areas that both hold a point, wider first.
+//
+// One function because the rule is one rule: Source.Contains sorts the
+// merged stack of several files again, and a comparator written twice is a
+// comparator that can be refined once -- which this one has been.
+//
+// Two areas of the SAME extent are ordered by admin_level, lower first. That
+// happens: a suburb that is the whole of its council area has the council
+// area's outline, and before this the file's order decided which was the
+// locality and which the neighbourhood. Lower-is-wider is OpenStreetMap's own
+// convention in every country, unlike what any one number MEANS, so this is
+// not the per-country table the ranking refuses to be. A kind that is not a
+// number -- Natural Earth's "country", "state" -- leaves the tie to the file.
+func outermostFirst(a, b Area) int {
+	if c := cmp.Compare(b.boxArea(), a.boxArea()); c != 0 {
+		return c
+	}
+	la, errA := strconv.Atoi(a.Kind)
+	lb, errB := strconv.Atoi(b.Kind)
+	if errA != nil || errB != nil {
+		return 0
+	}
+	return cmp.Compare(la, lb)
 }
 
 // At returns the area containing a coordinate, and whether one did.
@@ -190,26 +210,50 @@ func (s *Set) At(lat, lon float64) (Area, bool) {
 	return s.areas[best], true
 }
 
-// Polygons with no extent are skipped rather than summed. A polygon with no
-// rings keeps the empty box its accumulation started from -- west +Inf, east
-// -Inf -- whose area is +Inf, and one of those beside a real polygon made the
-// WHOLE area infinite: larger than the world, so it won every outermost-first
-// ranking and lost to nothing in a smallest-first one. A single such area
-// then decided both ends of a lookup. It is the same shape as the
-// wrapped-coordinate case the derived format already refuses, with +Inf
-// instead of a large number.
+// boxArea is the extent of the rectangle around all of an area's parts, for
+// ordering areas that contain one another. Degrees squared: not a real area,
+// and never compared against anything but another of these.
 //
-// boxArea is how much ground an area's parts cover, for ordering areas that
-// contain one another. Degrees squared: not a real area, and never compared
-// against anything but another of these.
+// The rectangle around the UNION of the parts, not the sum of each part's
+// rectangle, and the difference decides rankings. Containment is what this
+// orders by, and only the union is guaranteed to shrink with it: an area
+// inside another has its whole outline inside the other's, so its rectangle
+// is too. A sum has no such property -- a suburb in two parts whose
+// rectangles overlap scored larger than the council area around it, and came
+// back as the locality with its own council as the neighbourhood.
+//
+// An area with parts either side of the antimeridian -- Natural Earth splits
+// such areas there -- gets a union as wide as the world. That makes it rank
+// wider than its true size, but never wider than something that contains
+// it: that area has parts either side of the seam too, so its union is just
+// as wide and at least as tall.
+//
+// Parts with no extent are skipped. A polygon with no rings keeps the empty
+// box its accumulation started from -- west +Inf, east -Inf -- and one of
+// those beside a real polygon made the WHOLE area infinite: larger than the
+// world, so it won every outermost-first ranking and lost to nothing in a
+// smallest-first one. It is the same shape as the wrapped-coordinate case
+// the derived format already refuses, with +Inf instead of a large number.
 func (a *Area) boxArea() float64 {
-	var total float64
-	for _, p := range a.polygons {
-		if a := p.box.area(); !math.IsInf(a, 0) && !math.IsNaN(a) {
-			total += a
-		}
+	u, ok := a.extent()
+	if !ok {
+		return 0
 	}
-	return total
+	return u.area()
+}
+
+// extent is the rectangle around every part of an area that has one, and
+// false for an area none of whose parts do.
+func (a *Area) extent() (box, bool) {
+	u := boxOf(nil)
+	for _, p := range a.polygons {
+		if b := p.box.area(); math.IsInf(b, 0) || math.IsNaN(b) {
+			continue
+		}
+		u.west, u.east = math.Min(u.west, p.box.west), math.Max(u.east, p.box.east)
+		u.south, u.north = math.Min(u.south, p.box.south), math.Max(u.north, p.box.north)
+	}
+	return u, !math.IsInf(u.west, 0)
 }
 
 // contains is the point-in-polygon test, holes included.

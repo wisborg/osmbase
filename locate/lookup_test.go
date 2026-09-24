@@ -35,6 +35,38 @@ func TestANilTileSourceIsFineWhenBoundariesCoverEverything(t *testing.T) {
 	}
 }
 
+// A boundary-only store and a route that leaves the boundaries: the points
+// they hold no data for are unanswered, as a point with no named feature near
+// it would be. Failing the whole route over them would lose every answer the
+// boundaries DID give.
+func TestANilTileSourceLeavesAPlaceTheBoundariesDoNotKnowUnanswered(t *testing.T) {
+	b := knowsOnlyNorth{}
+	places, err := locate.AtEach(context.Background(), nil,
+		[]locate.Coord{{Lat: 55, Lon: 9}, {Lat: -33, Lon: 151}},
+		locate.Options{Levels: []locate.Level{locate.Locality}, Boundaries: b})
+	if err != nil {
+		t.Fatalf("locate.AtEach: %v", err)
+	}
+	if m, ok := places[0].Match(locate.Locality); !ok || m.Name != "North" {
+		t.Errorf("the point inside the boundaries got %+v, want North", places[0].Matches)
+	}
+	if len(places[1].Matches) != 0 {
+		t.Errorf("the point the boundaries know nothing about got %+v, want nothing", places[1].Matches)
+	}
+}
+
+// knowsOnlyNorth covers locality and holds data only north of the equator.
+type knowsOnlyNorth struct{}
+
+func (knowsOnlyNorth) Covers(l locate.Level) bool { return l == locate.Locality }
+
+func (knowsOnlyNorth) Contains(l locate.Level, lat, lon float64) (string, string, string, locate.Containment) {
+	if l != locate.Locality || lat < 0 {
+		return "", "", "", locate.NoData
+	}
+	return "North", "7", "", locate.Inside
+}
+
 // coveringSource answers one level by containment and nothing else.
 type coveringSource struct {
 	level locate.Level
@@ -43,9 +75,9 @@ type coveringSource struct {
 
 func (c coveringSource) Covers(l locate.Level) bool { return l == c.level }
 
-func (c coveringSource) Contains(l locate.Level, lat, lon float64) (string, string, string, bool) {
+func (c coveringSource) Contains(l locate.Level, lat, lon float64) (string, string, string, locate.Containment) {
 	if l != c.level {
-		return "", "", "", false
+		return "", "", "", locate.NoData
 	}
-	return c.name, "country", "", true
+	return c.name, "country", "", locate.Inside
 }

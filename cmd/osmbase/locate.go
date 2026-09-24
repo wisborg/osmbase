@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"slices"
 	"strconv"
 	"strings"
@@ -146,24 +148,17 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 		opts.Boundaries = bounds
 	}
 
+	// The tiles are opened whenever the store has them, not only when a
+	// level needs them: a level the boundaries cover still goes to the tiles
+	// for every point the boundaries hold no data for -- a coordinate outside
+	// the extract a derived file was cut from. Only a store with no map at
+	// all is excused, and only when no level needs one.
 	var src osmlocate.TileSource
 	var chosen slice.Manifest
-	if need := tileLevels(wanted, bounds); len(need) > 0 {
-		st, err := slice.Open(root)
-		if err != nil {
-			if bounds != nil {
-				// The store holds boundaries and no map. Naming the levels
-				// that need one turns "there is no store" into something the
-				// user can act on: ask for fewer levels, or fetch tiles.
-				verb := "need"
-				if len(need) == 1 {
-					verb = "needs"
-				}
-				return fmt.Errorf("%s %s map tiles, and %s holds boundaries but no map: ask for fewer levels, or run \"osmbase fetch\"",
-					joinLevelNames(need), verb, root)
-			}
-			return fmt.Errorf("opening the store at %s: %w", root, err)
-		}
+	need := tileLevels(wanted, bounds)
+	st, err := slice.Open(root)
+	switch {
+	case err == nil:
 		sources, err := st.Sources()
 		if err != nil {
 			return err
@@ -174,6 +169,21 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 		if src, err = st.Source(chosen.ID); err != nil {
 			return err
 		}
+	case len(need) == 0 && errors.Is(err, iofs.ErrNotExist):
+		// A store holding boundaries and no map, asked only for levels the
+		// boundaries cover. Points they hold no data for go unanswered.
+	case bounds != nil && errors.Is(err, iofs.ErrNotExist):
+		// The store holds boundaries and no map. Naming the levels that
+		// need one turns "there is no store" into something the user can
+		// act on: ask for fewer levels, or fetch tiles.
+		verb := "need"
+		if len(need) == 1 {
+			verb = "needs"
+		}
+		return fmt.Errorf("%s %s map tiles, and %s holds boundaries but no map: ask for fewer levels, or run \"osmbase fetch\"",
+			joinLevelNames(need), verb, root)
+	default:
+		return fmt.Errorf("opening the store at %s: %w", root, err)
 	}
 
 	places, err := osmlocate.AtEach(context.Background(), src, pts, opts)
@@ -199,7 +209,14 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	// Empty when no tiles were read, which is a store holding boundaries and
 	// nothing else: there is no archive to credit, and the contained credit
 	// below is the whole obligation.
-	credit := render.PlainCredit(chosen.Attribution)
+	//
+	// And empty when the tiles were read and named nothing: the archive is
+	// opened whenever the store has one, as a fallback, and a lookup the
+	// boundaries answered entirely owes it nothing.
+	var credit string
+	if anyNear(places) {
+		credit = safeForTerminal(render.PlainCredit(chosen.Attribution))
+	}
 
 	// And which credit a CONTAINED answer owes is no longer a constant. It
 	// was Natural Earth, which is public domain and owes nothing; a derived
@@ -208,11 +225,33 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	// something only the source knows, so it is asked rather than assumed.
 	contained := containedCredits(places)
 
+	// Each contained answer carries its own credit into the JSON as well,
+	// through the same cleaner as the summary line, so the document does
+	// not hold markup in one field and plain text in the other.
+	for i := range places {
+		for j := range places[i].Matches {
+			m := &places[i].Matches[j]
+			m.Attribution = render.PlainCredit(m.Attribution)
+		}
+	}
+
 	if format == "json" {
 		return writeLocateJSON(stdout, places, credit, contained)
 	}
 	writeLocateText(stdout, places, credit, contained)
 	return nil
+}
+
+// anyNear reports whether any answer was taken from the tiles.
+func anyNear(places []osmlocate.Place) bool {
+	for _, p := range places {
+		for _, m := range p.Matches {
+			if m.Source != osmlocate.Contained {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // tileLevels are the levels asked for that have to come from the tiles.

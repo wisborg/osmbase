@@ -130,7 +130,9 @@ func At(ctx context.Context, src TileSource, at Coord, opts Options) (Place, err
 // answered: a store may hold a derived boundary file and no tiles, which is
 // what building suburb outlines without fetching a map leaves behind. A level
 // that needs tiles is an error in that case rather than a silent absence,
-// because the caller asked for it.
+// because the caller asked for it. A covered level is not: a point the
+// boundaries hold no data for is left unanswered, the way a point with no
+// named feature near it is.
 func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]Place, error) {
 	out := make([]Place, len(pts))
 	for i, p := range pts {
@@ -140,33 +142,52 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		return out, nil
 	}
 
+	all := make([]int, len(pts))
+	for i := range all {
+		all[i] = i
+	}
 	for _, level := range Levels {
 		if !opts.wants(level) {
 			continue
 		}
-		// Containment first, and exclusively: a source that covers a level
-		// answers it, and the tiles are not consulted for that level at all.
-		// Falling back to a nearest match when containment found nothing
-		// would be wrong -- a point in the sea is outside every country, and
-		// "near Denmark, 40 km" would turn that correct answer into a guess.
-		if opts.Boundaries != nil && opts.Boundaries.Covers(level) {
+		// Containment first, and exclusively WHERE THE SOURCE KNOWS THE
+		// PLACE: a point the source is inside or outside of is answered by
+		// it, and the tiles are not consulted for that point. Falling back
+		// to a nearest match there would be wrong -- a point in the sea is
+		// outside every country, and "near Denmark, 40 km" would turn that
+		// correct answer into a guess.
+		//
+		// A point the source holds no data for is a different thing, and
+		// goes to the tiles as though no source were there. A store may hold
+		// boundaries for one country and tiles for the world; covering the
+		// level everywhere because one file covers it somewhere took three
+		// levels away from every coordinate outside that file.
+		rest := all
+		covered := opts.Boundaries != nil && opts.Boundaries.Covers(level)
+		if covered {
 			// Checked here as well as on the tile path below. Containment is
 			// local file reads rather than network, but a route of thousands
 			// of points across several levels is still long enough that a
-			// caller cancelling it should be obeyed -- and a branch that ends
-			// in continue skips the check a few lines down.
+			// caller cancelling it should be obeyed.
 			if err := ctx.Err(); err != nil {
 				return nil, fmt.Errorf("locate: looking up %s: %w", level, err)
 			}
+			rest = nil
 			for i, p := range pts {
-				if name, kind, credit, ok := opts.Boundaries.Contains(level, p.Lat, p.Lon); ok {
+				name, kind, credit, c := opts.Boundaries.Contains(level, p.Lat, p.Lon)
+				switch c {
+				case Inside:
 					out[i].setMatch(Match{
 						Level: level, Name: name, Kind: kind, Attribution: credit,
 						Source: Contained,
 					})
+				case NoData:
+					rest = append(rest, i)
 				}
 			}
-			continue
+			if len(rest) == 0 {
+				continue
+			}
 		}
 
 		// No boundary source for this level, so the tiles answer it -- if
@@ -188,7 +209,13 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 			// A caller may hold boundary data and no tiles at all -- a store
 			// built by "osmbase boundaries --osm" and nothing else. That is
 			// a legitimate configuration for the levels those boundaries
-			// cover, and this is the point at which it stops being one.
+			// cover: a point they hold no data for is left unanswered, as a
+			// point with no tile data near it would be, rather than failing
+			// a route that is mostly inside them. A level they do not cover
+			// at all is where it stops being one.
+			if covered {
+				continue
+			}
 			return nil, fmt.Errorf("locate: %s needs map tiles and none were given; ask for fewer levels, or fetch tiles", level)
 		}
 		if err := ctx.Err(); err != nil {
@@ -199,7 +226,8 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		// kilometre apart share a country tile and not a street tile.
 		byTile := map[tileRef][]int{}
 		cap := opts.maxDistance(level)
-		for i, p := range pts {
+		for _, i := range rest {
+			p := pts[i]
 			x, y, err := mercator.TileAt(spec.zoom, p.Lon, p.Lat)
 			if err != nil {
 				// Not a coordinate. Reported per point by leaving it with no
@@ -280,18 +308,41 @@ type BoundarySource interface {
 	// unknown.
 	Covers(Level) bool
 
-	// Contains returns the name and kind of the area holding the coordinate.
-	// The boolean is false when no area does, which over the sea is the
-	// truth rather than a failure.
-	// Contains reports the area holding a coordinate at a level.
+	// Contains reports the area holding a coordinate at a level, and which
+	// of the three things a source can say about that place it is saying.
+	// name, kind and credit are set only when c is Inside.
 	//
 	// credit is the attribution that answer owes, empty when it owes none.
 	// It is returned PER ANSWER rather than per source because one source
 	// may hold data under several licences -- a store may hold a file
 	// derived from OpenStreetMap beside one that is public domain -- and
 	// crediting the wrong one is a claim about somebody else's work.
-	Contains(l Level, lat, lon float64) (name, kind, credit string, ok bool)
+	Contains(l Level, lat, lon float64) (name, kind, credit string, c Containment)
 }
+
+// Containment is what a boundary source can say about one coordinate.
+//
+// Three states rather than a boolean, because "no area holds this point" is
+// two different statements depending on whether the source knows the place.
+// Natural Earth covers the world, so outside every country is a fact about
+// the point: it is at sea. A derived file covers one extract, so outside
+// every area in it is usually a fact about the FILE -- a Sydney file says
+// nothing about Horsens -- and treating that as "nothing is there" took the
+// tiles' "near Horsens" away and put nothing in its place. Only the source
+// can tell the two apart, so it says which.
+type Containment uint8
+
+const (
+	// NoData: the source holds nothing about this place, and the tiles
+	// answer it as though the source were not there. The zero value, so a
+	// source that says nothing claims nothing.
+	NoData Containment = iota
+	// Outside: the source knows this place and no area it holds is the
+	// answer at this level. That is an answer, and the tiles are not asked.
+	Outside
+	// Inside: an area holds the point, and it is the answer.
+	Inside
+)
 
 type tileRef struct {
 	z    uint8

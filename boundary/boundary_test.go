@@ -135,7 +135,7 @@ func TestSource_AMissingFileIsNoAnswerRatherThanAFailure(t *testing.T) {
 		t.Fatal("an empty directory reports boundaries available")
 	}
 	s := boundary.Open(dir, "")
-	if _, _, _, ok := s.Contains(locate.Country, 56, 10); ok {
+	if _, _, _, ok := inside(s, locate.Country, 56, 10); ok {
 		t.Error("a store with no boundary files answered a containment question")
 	}
 }
@@ -302,18 +302,18 @@ func TestSource_AnswersCountryAndRegionIndependentlyFromDisk(t *testing.T) {
 	// Twice each, and interleaved, so the cached path is exercised as well as
 	// the first load -- the cache-key bug above only appears on the second.
 	for round := range 2 {
-		if name, kind, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" || kind != "country" {
+		if name, kind, _, ok := inside(s, locate.Country, 56, 10); !ok || name != "Denmark" || kind != "country" {
 			t.Errorf("round %d: country = (%q, %q, %v), want Denmark, country, true", round, name, kind, ok)
 		}
-		if name, kind, _, ok := s.Contains(locate.Region, 56, 10); !ok || name != "Midtjylland" || kind != "state" {
+		if name, kind, _, ok := inside(s, locate.Region, 56, 10); !ok || name != "Midtjylland" || kind != "state" {
 			t.Errorf("round %d: region = (%q, %q, %v), want Midtjylland, state, true", round, name, kind, ok)
 		}
 		// Inside the country and outside the region, which no single file can
 		// answer correctly if the two are being confused.
-		if _, _, _, ok := s.Contains(locate.Region, 54.5, 12.5); ok {
+		if _, _, _, ok := inside(s, locate.Region, 54.5, 12.5); ok {
 			t.Errorf("round %d: a point outside the region was reported inside it", round)
 		}
-		if _, _, _, ok := s.Contains(locate.Country, 54.5, 12.5); !ok {
+		if _, _, _, ok := inside(s, locate.Country, 54.5, 12.5); !ok {
 			t.Errorf("round %d: a point inside the country was reported outside it", round)
 		}
 	}
@@ -332,10 +332,10 @@ func TestSource_ACorruptFileLosesItsLevelAndNothingElse(t *testing.T) {
 		squareDoc("Kattegat", 10, 56, 12, 58))
 	s := boundary.Open(root, "50m")
 
-	if _, _, _, ok := s.Contains(locate.Region, 56, 10); ok {
+	if _, _, _, ok := inside(s, locate.Region, 56, 10); ok {
 		t.Error("a truncated region file answered a containment question")
 	}
-	if name, _, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
+	if name, _, _, ok := inside(s, locate.Country, 56, 10); !ok || name != "Denmark" {
 		t.Errorf("country = (%q, %v) with a broken region file alongside; one damaged file must not cost the other", name, ok)
 	}
 }
@@ -399,7 +399,7 @@ func TestValidDetail_RefusesAnythingThatCouldLeaveTheStore(t *testing.T) {
 	// And a refused detail yields a source that answers nothing rather than
 	// one pointed somewhere unexpected.
 	s := boundary.Open(t.TempDir(), "../..")
-	if _, _, _, ok := s.Contains(locate.Country, 0, 0); ok {
+	if _, _, _, ok := inside(s, locate.Country, 0, 0); ok {
 		t.Error("a source opened with an invalid detail answered a containment question")
 	}
 }
@@ -433,7 +433,7 @@ func TestSource_IsSafeToShareBetweenGoroutines(t *testing.T) {
 				level = locate.Region
 			}
 			for range 20 {
-				s.Contains(level, 56, 10)
+				inside(s, level, 56, 10)
 			}
 		}(i)
 	}
@@ -441,7 +441,7 @@ func TestSource_IsSafeToShareBetweenGoroutines(t *testing.T) {
 
 	// And it still answers correctly afterwards, so a lock that serialised
 	// everything into nonsense would show up too.
-	if name, _, _, ok := s.Contains(locate.Country, 56, 10); !ok || name != "Denmark" {
+	if name, _, _, ok := inside(s, locate.Country, 56, 10); !ok || name != "Denmark" {
 		t.Errorf("after concurrent use, country = (%q, %v), want Denmark, true", name, ok)
 	}
 }
@@ -550,4 +550,10 @@ func TestRead_TakesTheFeaturesOwnKindOnlyWhenAsked(t *testing.T) {
 	if a, _ := set.At(1, 1); a.Kind != "country" {
 		t.Errorf("Kind = %q, want country: an admin file's own class is Natural Earth's jargon", a.Kind)
 	}
+}
+
+// inside is Contains with the answer folded to "an area holds the point".
+func inside(s *boundary.Source, l locate.Level, lat, lon float64) (name, kind, credit string, ok bool) {
+	name, kind, credit, c := s.Contains(l, lat, lon)
+	return name, kind, credit, c == locate.Inside
 }
