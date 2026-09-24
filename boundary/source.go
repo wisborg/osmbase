@@ -213,6 +213,12 @@ func Dir(storeRoot string) string { return filepath.Join(storeRoot, "boundaries"
 type Source struct {
 	derivedSets []*Set
 	derivedDone bool
+	// derivedCountries counts the national borders among the derived
+	// files' areas, found as they load.
+	derivedCountries int
+
+	// countryFrom is where the country level is answered from.
+	countryFrom CountrySource
 	// limits are what the derived files may cost between them. A field
 	// rather than the constants read directly so a test can shrink them to
 	// a size whose allocation it can afford to measure.
@@ -351,8 +357,77 @@ func (s *Source) derived() []*Set {
 		left.bytes = lr.N
 		left.geometry = geometry
 		s.derivedSets = append(s.derivedSets, set)
+		for _, a := range set.areas {
+			if isCountry(a) {
+				s.derivedCountries++
+			}
+		}
 	}
 	return s.derivedSets
+}
+
+// CountrySource names where the country level is answered from.
+type CountrySource uint8
+
+const (
+	// CountryNaturalEarth answers the country from Natural Earth's outlines,
+	// and is the default: they follow the coast, so a point off it is at
+	// sea, which for a route along a coast is the answer wanted.
+	CountryNaturalEarth CountrySource = iota
+
+	// CountryOSM answers the country from the national borders
+	// (admin_level 2) in the store's derived files, and from Natural Earth
+	// wherever none of them holds the point.
+	//
+	// Not the default, because the two draw a country differently at sea.
+	// OpenStreetMap's national border runs out to the territorial-waters
+	// limit -- measured: a point in Aarhus Bay is inside "Danmark" and inside
+	// no kommune -- so a boat a few kilometres offshore is IN the country
+	// rather than at sea. On land OpenStreetMap is the more precise of the
+	// two, and a caller who wants that, or wants the legal answer at sea,
+	// can have it.
+	CountryOSM
+)
+
+// String is the name the command's flag takes.
+func (c CountrySource) String() string {
+	if c == CountryOSM {
+		return "osm"
+	}
+	return "natural-earth"
+}
+
+// ParseCountrySource is the inverse of String.
+func ParseCountrySource(s string) (CountrySource, bool) {
+	switch s {
+	case "natural-earth":
+		return CountryNaturalEarth, true
+	case "osm":
+		return CountryOSM, true
+	}
+	return 0, false
+}
+
+// Options configure a Source. The zero value is what Open gives.
+type Options struct {
+	// Detail is the Natural Earth resolution; see Open.
+	Detail string
+
+	// Country is where the country level is answered from.
+	Country CountrySource
+}
+
+// HasDerivedCountries reports whether any derived file in the store holds a
+// national border, which is what CountryOSM answers from.
+//
+// Exported so a caller that asked for CountryOSM can say so when the store
+// cannot give it -- a file built with "--levels 8,9,10" holds suburbs and no
+// country -- rather than every answer quietly coming from Natural Earth.
+func (s *Source) HasDerivedCountries() bool {
+	s.derived()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.derivedCountries > 0
 }
 
 // Open prepares to read boundary files from a store, without reading any yet.
@@ -368,15 +443,22 @@ func (s *Source) derived() []*Set {
 // nearest-feature when boundaries are unavailable, and an unknown detail is
 // a kind of unavailable.
 func Open(storeRoot, detail string) *Source {
-	if !ValidDetail(detail) {
+	return OpenWith(storeRoot, Options{Detail: detail})
+}
+
+// OpenWith is Open with the choices Open leaves at their defaults.
+func OpenWith(storeRoot string, o Options) *Source {
+	if !ValidDetail(o.Detail) {
 		return &Source{}
 	}
+	detail := o.Detail
 	if detail == "" {
 		detail = DefaultDetail
 	}
 	return &Source{
 		dir: Dir(storeRoot), detail: detail, limits: defaultDerivedLimits(),
-		sets: map[Layer]*Set{}, loaded: map[string]error{},
+		countryFrom: o.Country,
+		sets:        map[Layer]*Set{}, loaded: map[string]error{},
 	}
 }
 
@@ -465,7 +547,9 @@ func layerKind(layer Layer) string {
 
 // Covers reports whether this source can answer a level.
 //
-// Country, region and water, and nothing below. Natural Earth publishes no
+// Country, region and water from Natural Earth -- and country from a derived
+// file's national borders too, with CountryOSM -- and the levels below a
+// region from derived files. Natural Earth publishes no
 // suburb outlines, and reporting a locality as "contained" by the state that
 // holds it would be a true statement answering the wrong question.
 //
@@ -473,6 +557,9 @@ func layerKind(layer Layer) string {
 // point can be inside a country's outline and inside a named bay at once, and
 // both are worth saying.
 func (s *Source) Covers(l locate.Level) bool {
+	if l == locate.Country && s.countryFrom == CountryOSM && s.HasDerivedCountries() {
+		return true
+	}
 	if layer, ok := layerFor(l); ok {
 		// The FILE has to be there, not just the layer name. This was
 		// unconditional while Available guaranteed all three Natural Earth
@@ -540,7 +627,9 @@ func layerFor(l locate.Level) (Layer, bool) {
 // For country, region and water it answers Inside or Outside and never
 // NoData: Natural Earth covers the world, so a point in no country is at sea,
 // and that is the answer. (A level whose file is missing is not covered, and
-// is never asked.)
+// is never asked.) With CountryOSM, a national border in a derived file
+// answers the country first, and Natural Earth wherever none holds the
+// point.
 //
 // For the levels below a region it answers NoData wherever no derived file
 // holds any area containing the point. A derived file covers one extract, and
@@ -550,6 +639,14 @@ func layerFor(l locate.Level) (Layer, bool) {
 // neighbourhood with nothing between them, and a nearest label from the
 // tiles would be a guess placed beside two facts.
 func (s *Source) Contains(l locate.Level, lat, lon float64) (name, kind, credit string, c locate.Containment) {
+	if l == locate.Country && s.countryFrom == CountryOSM {
+		if a, credit, ok := s.derivedCountry(lat, lon); ok {
+			return a.Name, a.Kind, credit, locate.Inside
+		}
+		// No derived file holds the point, so Natural Earth answers as it
+		// would by default -- including "at sea", which past the
+		// territorial-waters limit is what both sources agree on.
+	}
 	layer, ok := layerFor(l)
 	if !ok {
 		if !derivedLevel(l) {
@@ -623,6 +720,29 @@ func (s *Source) derivedStack(lat, lon float64) []credited {
 	return stack
 }
 
+// derivedCountry is the national border holding a point, from the derived
+// files, with the credit of the file it came from.
+//
+// The innermost if several do, as Set.At takes the smallest: two files cut
+// from different extracts can both hold a border, and a country's border can
+// sit inside a wider one's where a territory is tagged at level 2 too.
+func (s *Source) derivedCountry(lat, lon float64) (Area, string, bool) {
+	var found []credited
+	for _, set := range s.derived() {
+		for _, a := range set.Containing(lat, lon) {
+			if isCountry(a) {
+				found = append(found, credited{a, set.Provenance().Attribution})
+			}
+		}
+	}
+	if len(found) == 0 {
+		return Area{}, "", false
+	}
+	slices.SortStableFunc(found, func(a, b credited) int { return outermostFirst(a.area, b.area) })
+	last := found[len(found)-1]
+	return last.area, last.credit, true
+}
+
 // isCountry reports whether an area is a national border, admin_level 2.
 //
 // Left out of the stack the levels below a region are ranked from. Ranking
@@ -633,11 +753,13 @@ func (s *Source) derivedStack(lat, lon float64) []credited {
 // border in every country's tagging, so this is not the per-country table the
 // ranking refuses to be.
 //
-// The country LEVEL is Natural Earth's, and deliberately: its outline follows
-// the coast, where OpenStreetMap's national border runs out to the
-// territorial-waters limit, and for a route along a coast "at sea" is the
-// answer wanted. Leaving the area out also means a point inside only the
-// country -- that strip of water -- is NoData here and goes to the tiles.
+// The country LEVEL is Natural Earth's by default, and deliberately: its
+// outline follows the coast, where OpenStreetMap's national border runs out
+// to the territorial-waters limit, and for a route along a coast "at sea" is
+// the answer wanted. CountryOSM answers it from these areas instead -- but
+// from the country level, never by ranking one into the levels below.
+// Leaving the area out here also means a point inside only the country --
+// that strip of water -- is NoData for those levels and goes to the tiles.
 func isCountry(a Area) bool {
 	n, err := strconv.Atoi(a.Kind)
 	return err == nil && n == 2

@@ -32,6 +32,16 @@ locality point is a label anchor near the middle of a town, so "near Horsens"
 is what the data supports and "in Horsens" is not. The distance is printed for
 exactly that reason.
 
+A store holding boundaries answers by CONTAINMENT instead, and says "contained":
+country, region and sea from Natural Earth ("osmbase boundaries"), and the areas
+below a region from OpenStreetMap files ("osmbase boundaries --osm") wherever
+those files reach. Everywhere else the tiles answer.
+
+The country is Natural Earth's by default, whose outline follows the coast, so
+a point offshore is at sea. --country-from osm takes it from the OpenStreetMap
+files' national borders instead: more precise on land, but those run out to the
+territorial-waters limit, so a boat a few kilometres offshore is IN the country.
+
 examples:
   osmbase locate --store ~/Library/Caches/osmbase --lat 55.8623 --lon 9.8451
       one point, as a table
@@ -88,13 +98,14 @@ func (c *coordList) pairs() ([]osmlocate.Coord, error) {
 
 func runLocate(args []string, stdout, stderr io.Writer) error {
 	var (
-		coords   coordList
-		store    string
-		archive  string
-		language string
-		levels   string
-		detail   string
-		format   string
+		coords      coordList
+		store       string
+		archive     string
+		language    string
+		levels      string
+		detail      string
+		format      string
+		countryFrom string
 	)
 	fs := newFlagSet("locate", locateUsage)
 	fs.Func("lat", "latitude in degrees, north positive; repeat with --lon for more points", coords.addLat)
@@ -110,6 +121,10 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&detail, "detail", "",
 		"which boundary outlines to use, if the store has them: "+strings.Join(boundary.Details, ", ")+" (default: "+boundary.DefaultDetail+")")
 	fs.StringVar(&format, "format", "text", "how to print the answer: text or json")
+	fs.StringVar(&countryFrom, "country-from", boundary.CountryNaturalEarth.String(),
+		"where the country comes from: natural-earth, whose outline follows the coast, or osm, the national "+
+			"borders in the store's OpenStreetMap boundary files, which reach out to territorial waters; "+
+			"osm falls back to natural-earth wherever those files do not reach")
 
 	if _, err := parseArgs(fs, args, stdout); err != nil {
 		return err
@@ -124,6 +139,11 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	}
 	if format != "text" && format != "json" {
 		return usageErrorf("--format %q is not one this command knows; it has text and json", format)
+	}
+	country, ok := boundary.ParseCountrySource(countryFrom)
+	if !ok {
+		return usageErrorf("--country-from %q is not one this command knows; it has %s and %s",
+			countryFrom, boundary.CountryNaturalEarth, boundary.CountryOSM)
 	}
 
 	root := store
@@ -144,8 +164,17 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 	opts := osmlocate.Options{Language: language, Levels: wanted}
 	var bounds *boundary.Source
 	if boundary.Available(root, detail) {
-		bounds = boundary.Open(root, detail)
+		bounds = boundary.OpenWith(root, boundary.Options{Detail: detail, Country: country})
 		opts.Boundaries = bounds
+	}
+	// Asked for, and impossible, is said rather than answered from Natural
+	// Earth anyway: every country would carry Natural Earth's credit and the
+	// reader would have to notice that to learn the flag did nothing. A
+	// store that has files but no national border in them is the likely
+	// case -- one built with --levels 8,9,10 holds suburbs only.
+	if country == boundary.CountryOSM && (bounds == nil || !bounds.HasDerivedCountries()) {
+		return fmt.Errorf("--country-from osm needs an OpenStreetMap boundary file holding national borders, and %s has none: "+
+			"run \"osmbase boundaries --osm\" without leaving admin_level 2 out of --levels", root)
 	}
 
 	// The tiles are opened whenever the store has them, not only when a

@@ -503,6 +503,41 @@ de-duplicated, ties go to the lower `admin_level` (OpenStreetMap's convention ev
 unlike the meaning of any one number), and an area's size is the rectangle around the union
 of its parts, which — unlike a sum — can only shrink under containment.
 
+### Which source answers the country — `--country-from`
+
+Natural Earth by default, and OpenStreetMap on request. The two draw a country differently at
+sea, and that decides the default rather than precision does. OpenStreetMap's national border
+(`admin_level=2`) runs out to the territorial-waters limit: measured against the Denmark
+extract, a point in Aarhus Bay is inside "Danmark" and inside no kommune. Natural Earth's
+outline follows the coast, so the same point is at sea — which for a route along a coast, what
+osmbase is used for, is the answer wanted. On land OpenStreetMap is the more precise of the
+two, and a caller who wants that, or wants the legal answer at sea, passes
+`--country-from osm` (`boundary.OpenWith` with `Options.Country: boundary.CountryOSM`).
+
+With `osm` chosen, a national border in a derived file answers the country — the innermost, if
+several hold the point — and Natural Earth answers wherever no derived file does: a Denmark
+file says nothing about Kiel, which is still "Germany". Asking for `osm` from a store whose
+files hold no national border is an error rather than a silent Natural Earth answer, because
+a file built with `--levels 8,9,10` is the likely way to have one.
+
+The option is the country LEVEL's source only. The national border stays out of the ranking
+for the levels below a region under either setting.
+
+Measured on the Denmark extract with a real store, both ways:
+
+| point | `natural-earth` | `osm` |
+|---|---|---|
+| Horsens | Denmark | Danmark (2) |
+| Aarhus Bay | — (at sea) | Danmark (2) |
+| Kiel | Germany | Germany (Natural Earth; no file reaches it) |
+
+Region is not offered the same choice yet. `admin_level=4` is the state or region in most
+countries but not in every one, so it is less clean a swap than level 2, and nobody has asked.
+
+The derived Denmark file at every level is 4.5 MB, against 53 MB for Natural Earth's three
+world files at 10m — heavier per area covered, lighter in total, but only where you have built
+one.
+
 ### The store directory is trusted, and the files in it are not
 
 `ReadDerived` treats every count in a file as untrusted, and `boundary.Source` is bounded in
