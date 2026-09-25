@@ -89,8 +89,8 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	)
 	fs := newFlagSet("render", renderUsage)
 	coords.bind(fs)
-	fs.IntVar(&width, "width", 1024, "width of the output image in pixels")
-	fs.IntVar(&height, "height", 768, "height of the output image in pixels")
+	fs.IntVar(&width, "width", defaultWidth, "width of the output image in pixels")
+	fs.IntVar(&height, "height", defaultHeight, "height of the output image in pixels")
 	fs.StringVar(&palette, "palette", "light", "colours to draw with: light, dark, or dark-linework -- the dark map with its landuse fills dropped, leaving roads, rail and boundaries over near-black with water as the only fill")
 	fs.StringVar(&store, "store", "", "draw from a store filled by \"osmbase fetch\" instead of from an archive; nothing reaches the network")
 	fs.StringVar(&archive, "archive", "", "which archive in the store to draw from, by ID or by part of its name; only needed when the store holds more than one")
@@ -299,6 +299,13 @@ func checkRectangle(b slice.Bounds) error {
 	}
 	return nil
 }
+
+// defaultWidth and defaultHeight are a render's size when none is given, and
+// what "fetch --place" fetches for.
+const (
+	defaultWidth  = 1024
+	defaultHeight = 768
+)
 
 // maxFitZoom is the deepest zoom a fitted view is drawn at. The public builds
 // stop at 15, so a rectangle small enough to want more is drawn at 15 with

@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/wisborg/osmbase/boundary"
+	"github.com/wisborg/osmbase/slice"
 )
 
 // nePlace is one Natural Earth feature: properties, and parts as squares of
@@ -57,6 +59,14 @@ func placeStore(t *testing.T) string {
 	if r := runCLI(t, "fetch", archive, "--world", "--max-zoom", "0", "--store", store, "--yes"); r.code != 0 {
 		t.Fatalf("fetch: exit %d\n%s", r.code, r.stderr)
 	}
+	writePlaceOutlines(t, store)
+	return store
+}
+
+// writePlaceOutlines writes the Natural Earth outlines placeStore holds into
+// any store.
+func writePlaceOutlines(t *testing.T, store string) {
+	t.Helper()
 	dir := boundary.Dir(store)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -78,7 +88,6 @@ func placeStore(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	return store
 }
 
 func TestRenderPlaceDrawsTheOnePlaceANameMeans(t *testing.T) {
@@ -181,8 +190,8 @@ func TestRenderPlaceWithNoOutlinesSaysWhereToGetThem(t *testing.T) {
 	}
 }
 
-// fetch takes the same flag and fetches the place's extent -- the main part,
-// not the rectangle around every part.
+// fetch takes the same flag and fetches what a default render of the place
+// shows -- the view of its main part, not the rectangle around every part.
 func TestFetchPlacePlansThePlacesExtent(t *testing.T) {
 	store := placeStore(t)
 	archive := fixtureArchive(t, 0, 0, 0, worldTile())
@@ -195,7 +204,75 @@ func TestFetchPlacePlansThePlacesExtent(t *testing.T) {
 	if line, ok := lineContaining(r.stdout, "place"); !ok || !strings.Contains(line, "Atlantis (country)") {
 		t.Errorf("the plan does not name the place:\n%s", r.stdout)
 	}
-	if line, ok := lineContaining(r.stdout, "area"); !ok || !strings.Contains(line, "west 10.0000, south 10.0000, east 33.0000, north 30.0000") {
-		t.Errorf("the area is not the main part and its neighbour:\n%s", r.stdout)
+	// The view a default render of it shows: the main part and its
+	// neighbour, with the render's margin and the image's shape around them.
+	v, _ := fitView(slice.Bounds{West: 10, South: 10, East: 33, North: 30}, defaultWidth, defaultHeight)
+	want := fmt.Sprintf("west %.4f, south %.4f, east %.4f, north %.4f", v.Bounds.West, v.Bounds.South, v.Bounds.East, v.Bounds.North)
+	if line, ok := lineContaining(r.stdout, "area"); !ok || !strings.Contains(line, want) {
+		t.Errorf("the area is not the view of the main part and its neighbour, want %s:\n%s", want, r.stdout)
+	}
+}
+
+// fetch --place with no --max-zoom fetches what render --place draws at its
+// default size: the same view, at the zoom that view is drawn from. A country
+// used to fall in the planner's whole-world band -- zooms 0 to 5 of every
+// tile on earth -- which is neither the country nor deep enough to draw it.
+func TestFetchPlaceWithoutADepthTakesWhatARenderOfItNeeds(t *testing.T) {
+	// Outlines and no map yet, so the fetch below is the store's one archive.
+	store := filepath.Join(t.TempDir(), "store")
+	writePlaceOutlines(t, store)
+	archive := deepArchive(t, 5, "Deep Credit")
+
+	r := runCLI(t, "fetch", archive, "--place", "Atlantis", "--store", store, "--yes")
+	if r.code != 0 {
+		t.Fatalf("exit %d\n%s", r.code, r.stderr)
+	}
+	if line, _ := lineContaining(r.stdout, "area"); strings.Contains(line, "every tile on earth") {
+		t.Errorf("a country was fetched as the whole world:\n%s", r.stdout)
+	}
+	if line, ok := lineContaining(r.stdout, "depth"); !ok || !strings.Contains(line, "render --place") {
+		t.Errorf("the plan does not say where its depth came from:\n%s", r.stdout)
+	}
+
+	// The proof: a render of it at the default size has nothing to ask for.
+	saved := stdinAnswerable
+	stdinAnswerable = func() bool { return false }
+	t.Cleanup(func() { stdinAnswerable = saved })
+	out := filepath.Join(t.TempDir(), "atlantis.png")
+	r = runCLI(t, "render", "--store", store, "--place", "Atlantis", "--out", out)
+	if r.code != 0 {
+		t.Fatalf("render: exit %d\n%s", r.code, r.stderr)
+	}
+	if strings.Contains(r.stderr, "this view needs") {
+		t.Errorf("the render after fetch --place still lacks tiles:\n%s", r.stderr)
+	}
+}
+
+// A place that renders deeper than the archive goes is fetched to the
+// archive's deepest zoom: past that a render overzooms and there is nothing
+// more to take. Asking the planner for more is refused as a zoom the archive
+// does not have.
+func TestFetchPlaceStopsAtTheArchivesDeepestZoom(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "store")
+	writePlaceOutlines(t, store)
+	r := runCLI(t, "fetch", deepArchive(t, 3, "Shallow"), "--place", "Atlantis", "--store", store, "--dry-run")
+	if r.code != 0 {
+		t.Fatalf("exit %d\n%s", r.code, r.stderr)
+	}
+	if line, _ := lineContaining(r.stdout, "depth"); !strings.Contains(line, "zoom 3,") {
+		t.Errorf("the depth is not the archive's deepest: %q", line)
+	}
+}
+
+// --max-zoom given is kept: the place chooses the depth only when nobody did.
+func TestFetchPlaceKeepsAGivenMaxZoom(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "store")
+	writePlaceOutlines(t, store)
+	r := runCLI(t, "fetch", deepArchive(t, 5, "Deep"), "--place", "Atlantis", "--max-zoom", "1", "--store", store, "--dry-run")
+	if r.code != 0 {
+		t.Fatalf("exit %d\n%s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "zooms 0 to 1") || strings.Contains(r.stdout, "render --place") {
+		t.Errorf("the given --max-zoom 1 was not the depth:\n%s", r.stdout)
 	}
 }

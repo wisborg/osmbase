@@ -148,6 +148,18 @@ fetch planner used to reach those shallow tiles through the cells beneath them, 
 Denmark is several thousand cells and past the planner's limit; a shallow request now lists its
 tiles directly from the bounds.
 
+## Fetching a place
+
+`fetch --place` fetches what `render --place` shows at its default 1024 by 768: the same view —
+the place, its margin and what the image's shape adds — at the zoom that view is drawn from,
+capped at the archive's deepest. So the render that follows has nothing left to ask for.
+`--max-zoom` still decides the depth when given; `--max-zoom 10` or deeper over a country also
+makes its towns findable by name.
+
+It first took the planner's depth bands like `--bbox` does, and they put anything over 250 km in
+the whole-world band: `fetch --place Denmark` planned every tile on earth at zooms 0 to 5, which is
+neither Denmark nor deep enough to draw it at zoom 7.
+
 ## Parts
 
 | # | part | status |
@@ -167,10 +179,6 @@ from shallower tiles and reported 83% of the image overzoomed.
 
 ## What this did not settle
 
-- **`fetch --place` of a country plans the whole world**, at zooms 0 to 5, because the
-  planner's depth bands put anything over 250 km there — the same as a `--bbox` of it would.
-  `--max-zoom` asks for the area itself. A render's offer does not have the problem: it asks
-  for the view's own zoom.
 - **Overview tiles an archive lacks are offered again on every render.** A complete cell
   records that its fetch finished, so a tile missing from it is known to be absent; the
   overview has no such record. Protomaps' builds hold every shallow tile, so this has not been

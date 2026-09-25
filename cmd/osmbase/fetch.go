@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wisborg/osmbase/acquire"
+	osmlocate "github.com/wisborg/osmbase/locate"
 	"github.com/wisborg/osmbase/slice"
 )
 
@@ -34,6 +35,8 @@ examples:
   osmbase fetch --lat -33.8568 --lon 151.2153 --radius 3
   osmbase fetch --lat 51.5081 --lon -0.0759 --radius 2 --dry-run
   osmbase fetch --world --max-zoom 5      # every tile on earth, shallow
+  osmbase fetch --place Denmark           # what "render --place Denmark" draws
+  osmbase fetch --place Denmark --max-zoom 10   # deep enough to find its towns by name
 
 `)
 	printFlags(w, fs)
@@ -49,6 +52,10 @@ type fetchFlags struct {
 	dryRun   bool
 	yes      bool
 	place    placeFlags
+
+	// placeZoom is the zoom a default render of --place is drawn from,
+	// when --place chose the depth; -1 otherwise.
+	placeZoom int
 }
 
 func fetchCommand(args []string, stdout, stderr io.Writer) error {
@@ -91,6 +98,13 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 	defer a.Close()
 	if err := a.requireVectorTiles(); err != nil {
 		return err
+	}
+	if f.placeZoom >= 0 {
+		// No deeper than the archive goes: past that a render overzooms,
+		// and there is nothing more to fetch.
+		f.maxZoom = min(f.placeZoom, int(a.Reader().Header().MaxZoom))
+		fmt.Fprintf(stdout, "%-12s zoom %d, what \"render --place\" draws it from at %d by %d; --max-zoom %d or deeper finds its towns by name too\n",
+			"depth", f.maxZoom, defaultWidth, defaultHeight, osmlocate.LocalityZoom())
 	}
 
 	// The store is created rather than opened, because fetching into one that
@@ -150,7 +164,10 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func (f fetchFlags) bounds(fs *flag.FlagSet, root string, stdout io.Writer) (slice.Bounds, error) {
+// bounds settles what to fetch. With --place and no --max-zoom it also sets
+// placeZoom, so the depth follows the place rather than the planner's bands.
+func (f *fetchFlags) bounds(fs *flag.FlagSet, root string, stdout io.Writer) (slice.Bounds, error) {
+	f.placeZoom = -1
 	given := 0
 	for _, g := range []bool{f.world, f.bbox != "", f.place.name != "", flagGiven(fs, "lat") || flagGiven(fs, "lon")} {
 		if g {
@@ -172,7 +189,21 @@ func (f fetchFlags) bounds(fs *flag.FlagSet, root string, stdout io.Writer) (sli
 			return slice.Bounds{}, err
 		}
 		fmt.Fprintf(stdout, "%-12s %s\n", "place", placeReport(c))
-		return placeBounds(c), nil
+		// The ground a default render of it shows -- the place, its margin,
+		// and whatever the image's shape adds -- so the render that follows
+		// has nothing left to ask for. And the zoom that render is drawn
+		// from, unless --max-zoom says otherwise: a country used to fall in
+		// the planner's whole-world band, every tile on earth at zooms 0 to
+		// 5, which is neither the country nor deep enough to draw it.
+		v, _ := fitView(placeBounds(c), defaultWidth, defaultHeight)
+		if !flagGiven(fs, "max-zoom") {
+			z, _, err := v.Zoom()
+			if err != nil {
+				return slice.Bounds{}, err
+			}
+			f.placeZoom = int(z)
+		}
+		return slice.Bounds{West: v.Bounds.West, South: v.Bounds.South, East: v.Bounds.East, North: v.Bounds.North}, nil
 	}
 	if f.bbox != "" {
 		return parseBBox(f.bbox)
