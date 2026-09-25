@@ -208,13 +208,19 @@ func candidateOf(a Area, l locate.Level) Candidate {
 // Not the rectangle around every part. France's outline has 21 parts from
 // longitude -61.8 to +55.9, because the overseas departments are France; the
 // rectangle around all of them is the Atlantic, and a map of it is a map of
-// nothing. So the extent starts from the largest part and takes in every
-// other part that comes within half its size of what has been taken so far,
-// until nothing more does: Denmark gathers Funen, Zealand and then Bornholm
-// one step at a time, France gathers Corsica and stops, and a part an ocean
-// away is left out and counted.
+// nothing. So the extent starts from the largest part and takes in every part
+// within maxPartGapKM of a part already taken, until nothing more is: Denmark
+// gathers its islands one crossing at a time, Bornholm included, France
+// gathers Corsica, Australia gathers Tasmania across Bass Strait.
 //
-// The same rule keeps Alaska and Hawaii in the United States, which is a
+// The reach is a distance on the ground, fixed, and that took a second
+// attempt. It was first half the size of what had been taken so far, which
+// snowballed: once Australia's mainland was in, the reach was twenty degrees,
+// and it took Macquarie Island, 1,500 km south of Tasmania, and centred a map
+// of Australia on the Southern Ocean with the Top End cut off. A strait is a
+// strait whatever the size of the country on either side of it.
+//
+// The same rule leaves Alaska and Hawaii out of the United States -- a
 // judgement a cartographer might make either way; --bbox is there for anyone
 // who wants the other one.
 func mainExtent(a Area) (Extent, int) {
@@ -227,34 +233,66 @@ func mainExtent(a Area) (Extent, int) {
 	if len(parts) == 0 {
 		return Extent{}, 0
 	}
-	main := slices.MaxFunc(parts, func(x, y box) int {
-		switch {
-		case x.area() < y.area():
-			return -1
-		case x.area() > y.area():
-			return 1
+	largest := 0
+	for i, p := range parts {
+		if p.area() > parts[largest].area() {
+			largest = i
 		}
-		return 0
-	})
-	u, taken := main, make([]bool, len(parts))
-	shown := 0
+	}
+	taken := make([]bool, len(parts))
+	taken[largest] = true
+	u, shown := parts[largest], 1
 	for grew := true; grew; {
 		grew = false
-		margin := math.Max(u.east-u.west, u.north-u.south) / 2
-		reach := box{west: u.west - margin, south: u.south - margin, east: u.east + margin, north: u.north + margin}
 		for i, p := range parts {
-			if taken[i] || !overlaps(reach, p) {
+			if taken[i] {
 				continue
 			}
-			taken[i], grew = true, true
-			shown++
-			u.west, u.east = math.Min(u.west, p.west), math.Max(u.east, p.east)
-			u.south, u.north = math.Min(u.south, p.south), math.Max(u.north, p.north)
+			for j, q := range parts {
+				if taken[j] && gapKM(p, q) <= maxPartGapKM {
+					taken[i], grew = true, true
+					shown++
+					u.west, u.east = math.Min(u.west, p.west), math.Max(u.east, p.east)
+					u.south, u.north = math.Min(u.south, p.south), math.Max(u.north, p.north)
+					break
+				}
+			}
 		}
 	}
 	return Extent{West: u.west, South: u.south, East: u.east, North: u.north}, shown
 }
 
-func overlaps(a, b box) bool {
-	return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north
+// maxPartGapKM is the widest sea crossing that keeps two parts of an area on
+// one map. Bass Strait, between Victoria and Tasmania, is about 240 km;
+// Bornholm is about 130 km from Zealand; Lord Howe is 600 km off the coast
+// and Hawaii nearly 4,000.
+const maxPartGapKM = 300
+
+// gapKM is the distance on the ground between two boxes, zero where they
+// touch or overlap.
+//
+// Measured at the latitude where the two face each other: within the band
+// both span when they share one, and between their facing edges when they do
+// not -- in either case nearest the equator, where a degree of longitude is
+// widest. Taking the latitude nearest the equator of either WHOLE box was the
+// first attempt, and overstated the gap between Russia's mainland, which
+// reaches 41 degrees north, and Kaliningrad at 54: 335 km, and Kaliningrad was
+// left off a map of Russia.
+func gapKM(a, b box) float64 {
+	dLon := math.Max(0, math.Max(b.west-a.east, a.west-b.east))
+	dLat := math.Max(0, math.Max(b.south-a.north, a.south-b.north))
+	lo, hi := math.Max(a.south, b.south), math.Min(a.north, b.north)
+	if lo > hi {
+		// No shared band: the gap runs between the facing edges.
+		lo, hi = hi, lo
+	}
+	lat := 0.0
+	switch {
+	case lo > 0:
+		lat = lo
+	case hi < 0:
+		lat = hi
+	}
+	const kmPerDegree = 111.32
+	return math.Hypot(dLon*kmPerDegree*math.Cos(lat*math.Pi/180), dLat*kmPerDegree)
 }

@@ -168,34 +168,33 @@ func TestFindOffersAPartialMatchWithoutTakingIt(t *testing.T) {
 // every part: France's includes Corsica and not Guiana.
 func TestTheExtentLeavesOutPartsAnOceanAway(t *testing.T) {
 	a := NewArea("France", "country", []Polygon{
-		{Outer: square(42, -5, 9)},    // the mainland, the largest part
-		{Outer: square(41.3, 8.5, 1)}, // Corsica, near it
-		{Outer: square(2, -54, 3)},    // Guiana, an ocean away
-		{Outer: square(-21, 55, 0.5)}, // Réunion
+		{Outer: rect(42.3, 51.1, -4.8, 8.2)}, // the mainland, the largest part
+		{Outer: rect(41.3, 43.0, 8.5, 9.6)},  // Corsica, 170 km off it
+		{Outer: square(2, -54, 3)},           // Guiana, an ocean away
+		{Outer: square(-21, 55, 0.5)},        // Réunion
 	})
 	e, shown := mainExtent(a)
 	if shown != 2 {
 		t.Errorf("showed %d parts, want the mainland and Corsica", shown)
 	}
-	want := Extent{West: -5, South: 41.3, East: 9.5, North: 51}
+	want := Extent{West: -4.8, South: 41.3, East: 9.6, North: 51.1}
 	if e != want {
 		t.Errorf("extent = %+v, want %+v", e, want)
 	}
 }
 
-// Parts are taken in one step at a time, so a chain of islands each near the
-// last comes in whole even where the far end is not near the main part:
-// Bornholm is not within reach of Jutland, but it is of Jutland and Zealand.
+// Parts are taken one crossing at a time, so a chain of islands each within
+// reach of the last comes in whole even where its far end is not within reach
+// of the main part. On the equator a degree is 111 km: each gap below is about
+// 245 km, and the far island is 520 km from the mainland.
 func TestTheExtentGathersAChainOfPartsOneStepAtATime(t *testing.T) {
-	a := NewArea("Denmark", "country", []Polygon{
-		{Outer: square(54.8, 8, 3)},       // Jutland, the largest
-		{Outer: square(55, 11, 1.6)},      // Zealand
-		{Outer: square(54.95, 14.7, 0.4)}, // Bornholm
-	})
-	if _, direct := mainExtent(NewArea("x", "", []Polygon{{Outer: square(54.8, 8, 3)}, {Outer: square(54.95, 14.7, 0.4)}})); direct != 1 {
-		t.Fatalf("precondition: Bornholm is within reach of Jutland alone, so this proves nothing")
+	main := rect(-1, 1, 0, 2)
+	near := rect(-0.1, 0.1, 4.2, 4.5)
+	far := rect(-0.1, 0.1, 6.7, 7.0)
+	if _, direct := mainExtent(NewArea("x", "", []Polygon{{Outer: main}, {Outer: far}})); direct != 1 {
+		t.Fatalf("precondition: the far island is within reach of the mainland alone, so this proves nothing")
 	}
-	if _, shown := mainExtent(a); shown != 3 {
+	if _, shown := mainExtent(NewArea("x", "", []Polygon{{Outer: main}, {Outer: near}, {Outer: far}})); shown != 3 {
 		t.Errorf("showed %d of 3 parts, want the chain whole", shown)
 	}
 }
@@ -211,5 +210,45 @@ func TestACandidateCarriesItsExtentAndPartCount(t *testing.T) {
 	}
 	if (c.Extent != Extent{West: 8, South: 54.8, East: 11, North: 57.8}) {
 		t.Errorf("extent = %+v", c.Extent)
+	}
+}
+
+// Australia's outline has 94 parts, among them Macquarie Island, 1,500 km
+// south of Tasmania, and Lord Howe, 600 km off the coast. A reach that grew
+// with what had been taken snowballed: once the mainland was in it reached
+// 20 degrees, took both, and centred a map of Australia on the Southern Ocean
+// with the Top End cut off. A sea crossing is a gap on the ground, not a
+// fraction of the country.
+func TestTheExtentDoesNotSnowballAcrossAnOcean(t *testing.T) {
+	a := NewArea("Australia", "country", []Polygon{
+		{Outer: rect(-39.1, -10.7, 113.2, 153.6)}, // the mainland
+		{Outer: rect(-43.6, -40.6, 144.6, 148.4)}, // Tasmania, across Bass Strait
+		{Outer: rect(-54.8, -54.5, 158.8, 159.0)}, // Macquarie Island
+		{Outer: rect(-31.6, -31.5, 159.0, 159.1)}, // Lord Howe Island
+	})
+	e, shown := mainExtent(a)
+	if shown != 2 {
+		t.Errorf("showed %d parts, want the mainland and Tasmania", shown)
+	}
+	if want := (Extent{West: 113.2, South: -43.6, East: 153.6, North: -10.7}); e != want {
+		t.Errorf("extent = %+v, want %+v", e, want)
+	}
+}
+
+// The gap is measured where two parts face each other. Russia's mainland
+// reaches 41 degrees north and Kaliningrad sits at 54 to 55; measured at 41
+// the 4 degrees of longitude between them came to 335 km, past the reach,
+// and Kaliningrad was left off a map of Russia. At 54 they are about 260 km.
+func TestTheGapIsMeasuredWhereThePartsFaceEachOther(t *testing.T) {
+	mainland := box{west: 27.0, south: 41.2, east: 180, north: 81.9}
+	kaliningrad := box{west: 19.6, south: 54.3, east: 22.9, north: 55.3}
+	if got := gapKM(mainland, kaliningrad); got > maxPartGapKM || got < 240 {
+		t.Errorf("gap = %.0f km, want about 260", got)
+	}
+	// Boxes sharing no band of latitude are measured between facing edges.
+	north := box{west: 0, south: 10, east: 1, north: 11}
+	south := box{west: 0, south: -11, east: 1, north: -10}
+	if got := gapKM(north, south); got < 2200 || got > 2240 {
+		t.Errorf("gap across the equator = %.0f km, want 20 degrees of latitude", got)
 	}
 }
