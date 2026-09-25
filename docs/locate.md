@@ -560,15 +560,21 @@ is why it is written down here.
   seam and leaves it out rather than handing it to `inRing`, which treats longitude as
   linear. Neither extract produces one. Handling them — unwrapping, or splitting at the seam
   — is a design decision for whoever first needs Fiji.
-- **The protobuf fixture primitives still exist twice**: `osmbasetest` (shared by `Extract`
-  and the tile builder) and `osmpbf/fixture_test.go`. The latter should keep only what
-  expresses *malformed* files — `truncatedZlibBlob`, `zlibBlobDeclaring`, `paddedHeader`,
-  `framedWith` — which `Extract` cannot and should not express.
-- **`Header` does not carry the bounding box**, which would let a caller reject an extract
-  that does not cover the area before reading an element.
-- **`osm.Read` returns everything in memory.** A `func(Boundary) error` form would let the
-  build stream and roughly halve peak, since a boundary way shared between two neighbours
-  currently has its coordinates held twice.
+
+Three items were **considered and left**, each for a reason worth keeping so nobody reopens them
+without one:
+
+- **The protobuf encoders in `osmpbf`'s tests stay.** The duplication is seven one-line encoders
+  (`pbTag`, `pbVarint`, `pbBytes` and the rest). `osmpbf`'s tests build some 500 precise element
+  encodings — plain nodes, hand-chosen field layouts, malformed variants — that `Extract` cannot
+  express and should not. Sharing the encoders would mean exporting them from `osmbasetest`, a
+  public package, to save forty lines.
+- **`Header` still skips the bounding box.** It would let a caller reject an extract that does
+  not cover an area, and nothing in this module asks that question. It is a few lines when
+  something does.
+- **`osm.Read` still returns everything in memory.** Measured on all of Denmark: the boundary
+  data retained is 4.5 MB, and the 47.6 MB peak is the block buffers. Streaming would halve the
+  small part and leave the peak where it is.
 
 **Synthetic extracts come in more than one layout.** `osmbasetest.ExtractLayout` writes an
 extract as many blocks, with every kind in each block, unsorted, and at another granularity with
