@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"math"
+	"slices"
 )
 
 // Extract builds a synthetic OpenStreetMap PBF extract.
@@ -25,6 +26,40 @@ type Extract struct {
 	nodes     []extractNode
 	ways      []extractWay
 	relations []extractRelation
+	layout    ExtractLayout
+}
+
+// ExtractLayout is how an Extract's elements are laid out in the file.
+//
+// The zero value is one block per element kind, in the order a planet dump
+// sorts them -- nodes, ways, relations -- at the format's default
+// granularity with no offsets. Real files differ on every one of those: a
+// country extract is thousands of blocks, some producers put several kinds
+// in one block, a file need not be sorted, and a block may scale and shift
+// its coordinates. A reader tested only against the zero value has had none
+// of that asked of it.
+type ExtractLayout struct {
+	// PerBlock is the most elements of one kind a block holds; zero is all
+	// of them in one.
+	PerBlock int
+	// Mixed puts a group of each kind in every block, rather than giving
+	// each kind blocks of its own.
+	Mixed bool
+	// Reversed writes relations first and nodes last: a file in no sorted
+	// order.
+	Reversed bool
+	// Granularity is nanodegrees per coordinate unit; zero is the format's
+	// default of 100. LatOffset and LonOffset shift every coordinate in a
+	// block, in nanodegrees.
+	Granularity          int32
+	LatOffset, LonOffset int64
+}
+
+// Layout sets how the extract is laid out. The elements are unchanged, so an
+// extract written two ways must read back the same.
+func (e *Extract) Layout(l ExtractLayout) *Extract {
+	e.layout = l
+	return e
 }
 
 type extractNode struct {
@@ -85,43 +120,120 @@ const extractGranularity = 100
 // compare bytes and a failure is reproducible.
 func (e *Extract) Bytes() []byte {
 	out := blobFrame("OSMHeader", pbString(4, "OsmSchema-V0.6"))
-	if len(e.nodes) > 0 {
-		out = append(out, e.dataBlock(e.nodeGroup)...)
+	nodes := chunks(e.nodes, e.layout.PerBlock)
+	ways := chunks(e.ways, e.layout.PerBlock)
+	relations := chunks(e.relations, e.layout.PerBlock)
+
+	type group = func(*stringTable) []byte
+	var blocks [][]group
+	if e.layout.Mixed {
+		for k := range max(len(nodes), len(ways), len(relations)) {
+			var gs []group
+			if k < len(nodes) {
+				gs = append(gs, e.nodeGroup(nodes[k]))
+			}
+			if k < len(ways) {
+				gs = append(gs, wayGroup(ways[k]))
+			}
+			if k < len(relations) {
+				gs = append(gs, relationGroup(relations[k]))
+			}
+			if e.layout.Reversed {
+				slices.Reverse(gs)
+			}
+			blocks = append(blocks, gs)
+		}
+	} else {
+		var byKind [3][][]group
+		for _, c := range nodes {
+			byKind[0] = append(byKind[0], []group{e.nodeGroup(c)})
+		}
+		for _, c := range ways {
+			byKind[1] = append(byKind[1], []group{wayGroup(c)})
+		}
+		for _, c := range relations {
+			byKind[2] = append(byKind[2], []group{relationGroup(c)})
+		}
+		if e.layout.Reversed {
+			byKind[0], byKind[2] = byKind[2], byKind[0]
+		}
+		for _, k := range byKind {
+			blocks = append(blocks, k...)
+		}
 	}
-	if len(e.ways) > 0 {
-		out = append(out, e.dataBlock(e.wayGroup)...)
-	}
-	if len(e.relations) > 0 {
-		out = append(out, e.dataBlock(e.relationGroup)...)
+	for _, gs := range blocks {
+		out = append(out, e.dataBlock(gs...)...)
 	}
 	return out
 }
 
+// chunks splits a run into pieces of at most n, or leaves it whole for n of
+// zero; an empty run is no pieces at all, so a kind with no elements writes
+// no block.
+func chunks[T any](all []T, n int) [][]T {
+	if len(all) == 0 {
+		return nil
+	}
+	if n <= 0 {
+		return [][]T{all}
+	}
+	var out [][]T
+	for len(all) > n {
+		out = append(out, all[:n])
+		all = all[n:]
+	}
+	return append(out, all)
+}
+
 // dataBlock builds one OSMData block around a group, with the string table
 // the group's contents need.
-func (e *Extract) dataBlock(group func(*stringTable) []byte) []byte {
+func (e *Extract) dataBlock(groups ...func(*stringTable) []byte) []byte {
 	st := newStringTable()
-	body := group(st)
+	var bodies [][]byte
+	for _, g := range groups {
+		bodies = append(bodies, g(st))
+	}
 
 	block := pbBytes(1, st.encode())
-	block = append(block, pbBytes(2, body)...)
-	block = append(block, pbVarint(17, extractGranularity)...)
+	for _, body := range bodies {
+		block = append(block, pbBytes(2, body)...)
+	}
+	block = append(block, pbVarint(17, uint64(e.granularity()))...)
+	if e.layout.LatOffset != 0 {
+		// A plain int64 varint, not zigzag: a negative offset is ten bytes
+		// of two's complement, which is its own path through a reader.
+		block = append(block, pbVarint(19, uint64(e.layout.LatOffset))...)
+	}
+	if e.layout.LonOffset != 0 {
+		block = append(block, pbVarint(20, uint64(e.layout.LonOffset))...)
+	}
 	return blobFrame("OSMData", block)
 }
 
-// nodeGroup encodes every node as one dense run, which is how a real extract
+func (e *Extract) granularity() int64 {
+	if e.layout.Granularity > 0 {
+		return int64(e.layout.Granularity)
+	}
+	return extractGranularity
+}
+
+// nodeGroup encodes nodes as one dense run, which is how a real extract
 // stores them.
-func (e *Extract) nodeGroup(st *stringTable) []byte {
-	ids := make([]int64, len(e.nodes))
-	lats := make([]int64, len(e.nodes))
-	lons := make([]int64, len(e.nodes))
+func (e *Extract) nodeGroup(nodes []extractNode) func(*stringTable) []byte {
+	return func(st *stringTable) []byte { return e.encodeNodes(st, nodes) }
+}
+
+func (e *Extract) encodeNodes(st *stringTable, nodes []extractNode) []byte {
+	ids := make([]int64, len(nodes))
+	lats := make([]int64, len(nodes))
+	lons := make([]int64, len(nodes))
 	var keysVals []int32
 	var tagged bool
 
-	for i, n := range e.nodes {
+	for i, n := range nodes {
 		ids[i] = n.id
-		lats[i] = degreesToUnits(n.lat)
-		lons[i] = degreesToUnits(n.lon)
+		lats[i] = e.units(n.lat, e.layout.LatOffset)
+		lons[i] = e.units(n.lon, e.layout.LonOffset)
 		for j := 0; j+1 < len(n.tags); j += 2 {
 			keysVals = append(keysVals, st.index(n.tags[j]), st.index(n.tags[j+1]))
 			tagged = true
@@ -140,9 +252,13 @@ func (e *Extract) nodeGroup(st *stringTable) []byte {
 	return pbBytes(2, dense)
 }
 
-func (e *Extract) wayGroup(st *stringTable) []byte {
+func wayGroup(ways []extractWay) func(*stringTable) []byte {
+	return func(st *stringTable) []byte { return encodeWays(st, ways) }
+}
+
+func encodeWays(st *stringTable, ways []extractWay) []byte {
 	var out []byte
-	for _, w := range e.ways {
+	for _, w := range ways {
 		body := pbVarint(1, uint64(w.id)) // a way's id is a plain int64
 		body = append(body, st.tagFields(w.tags)...)
 		body = append(body, packedSint(8, w.refs...)...)
@@ -151,9 +267,13 @@ func (e *Extract) wayGroup(st *stringTable) []byte {
 	return out
 }
 
-func (e *Extract) relationGroup(st *stringTable) []byte {
+func relationGroup(relations []extractRelation) func(*stringTable) []byte {
+	return func(st *stringTable) []byte { return encodeRelations(st, relations) }
+}
+
+func encodeRelations(st *stringTable, relations []extractRelation) []byte {
 	var out []byte
-	for _, r := range e.relations {
+	for _, r := range relations {
 		body := pbVarint(1, uint64(r.id))
 		body = append(body, st.tagFields(r.tags)...)
 
@@ -183,13 +303,13 @@ func memberType(s string) int32 {
 	return 0 // node
 }
 
-// degreesToUnits converts degrees to the block's integer scale.
+// units converts degrees to the block's integer scale, after its offset.
 //
 // Rounded rather than truncated: a coordinate that truncates loses up to a
 // unit in one direction only, which biases a whole fixture south and west and
 // would make an exact round-trip assertion impossible to write.
-func degreesToUnits(d float64) int64 {
-	return int64(math.Round(d * 1e9 / extractGranularity))
+func (e *Extract) units(d float64, offset int64) int64 {
+	return int64(math.Round((d*1e9 - float64(offset)) / float64(e.granularity())))
 }
 
 // stringTable accumulates the strings a block's elements refer to.
