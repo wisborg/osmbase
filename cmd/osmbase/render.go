@@ -59,7 +59,11 @@ not. Both are reported below the image.
 
 examples:
   osmbase render --lat -33.8568 --lon 151.2153 --out sydney.png
-      the default archive, over the network, at zoom 14
+      from the default store if "osmbase fetch" has filled it, offering to
+      fetch what it lacks; from the default archive over the network if not
+
+  osmbase render --place Denmark --out denmark.png
+      a country or region by name, fitted to the image
 
   osmbase render ./sydney.pmtiles --lat -33.8568 --lon 151.2153 --zoom 15 \
       --width 1920 --height 1080 --palette dark --out sydney.png
@@ -108,7 +112,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		return usageErrorf("--width %d --height %d is %d megapixels, and this command draws at most %d",
 			width, height, width*height>>20, maxRenderPixels>>20)
 	}
-	fitted, err := renderTarget(fs, &coords, bbox, place, store, width, height)
+	view, fitted, err := renderTarget(fs, &coords, bbox, place, store, width, height)
 	if err != nil {
 		return err
 	}
@@ -124,6 +128,20 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// With neither named, the default store is used when it holds a map, and
+	// the default archive only when it does not. Reading the archive every
+	// time was the old default, and it meant rendering the same place twice
+	// fetched it twice over the network while the tiles sat in the cache --
+	// and told the host about it twice. A store the user filled is the more
+	// private choice and the one they already made; what it lacks, the offer
+	// below asks about. Naming a SOURCE still reads that archive.
+	if store == "" && source == "" {
+		if root, ok := defaultStoreWithAMap(); ok {
+			fmt.Fprintf(stderr, "osmbase: drawing from the store at %s; name a SOURCE to read an archive instead\n", root)
+			store = root
+		}
+	}
+
 	// A store and an archive are two different things to draw from, and the
 	// difference is the point of the store existing: reading one contacts
 	// nobody. They are separate flags rather than one SOURCE that guesses,
@@ -133,7 +151,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		if source != "" {
 			return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
 		}
-		return renderFromStore(store, archive, coords, width, height, colours, style, palette, out, yes, stdout, stderr)
+		return renderFromStore(store, archive, view, colours, style, palette, out, yes, stdout, stderr)
 	}
 
 	a, err := openArchive(source, stderr)
@@ -146,8 +164,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	z := uint8(coords.zoom)
-	view, err := viewAround(z, coords.lon, coords.lat, width, height)
+	z, _, err := view.Zoom()
 	if err != nil {
 		return err
 	}
@@ -158,7 +175,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	// how much of the picture came out that way. Saying so in advance is what
 	// stops the report reading like a fault.
 	if h := a.Reader().Header(); z > h.MaxZoom {
-		fmt.Fprintf(stderr, "osmbase: --zoom %d is deeper than the %d this archive holds, so the map is drawn from zoom %d and overzoomed\n", z, h.MaxZoom, h.MaxZoom)
+		fmt.Fprintf(stderr, "osmbase: zoom %d is deeper than the %d this archive holds, so the map is drawn from zoom %d and overzoomed\n", z, h.MaxZoom, h.MaxZoom)
 	}
 
 	r, err := render.New(a.Reader(), render.Options{
@@ -175,8 +192,9 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	res, err := r.Render(context.Background(), view)
 	if err != nil {
 		if errors.Is(err, render.ErrNoCoverage) {
+			lat, lon := viewCentre(view)
 			return fmt.Errorf("%w. %s holds no tile anywhere near latitude %s, longitude %s; try a coordinate inside the area it covers, which \"osmbase inspect\" prints",
-				err, a.Name(), formatCoord(coords.lat), formatCoord(coords.lon))
+				err, a.Name(), formatCoord(lat), formatCoord(lon))
 		}
 		return err
 	}
@@ -188,11 +206,10 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// renderTarget settles where a render looks: --lat/--lon, or a rectangle to
-// fit. It fills coords either way, so everything after it has one shape of
-// question, and it returns a line for the report when the zoom was chosen
-// rather than given.
-func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, place placeFlags, store string, width, height int) (string, error) {
+// renderTarget settles where a render looks: the ground around --lat/--lon at
+// --zoom, or a rectangle -- --bbox, or the extent of --place -- fitted to the
+// image. It returns the view and, for a fitted one, a line for the report.
+func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, place placeFlags, store string, width, height int) (render.View, string, error) {
 	given := 0
 	for _, g := range []bool{bbox != "", place.name != "", flagGiven(fs, "lat") || flagGiven(fs, "lon")} {
 		if g {
@@ -200,19 +217,23 @@ func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, place place
 		}
 	}
 	if given > 1 {
-		return "", usageErrorf("--place, --bbox and --lat/--lon are three ways to say where to look; give one")
+		return render.View{}, "", usageErrorf("--place, --bbox and --lat/--lon are three ways to say where to look; give one")
 	}
 	if bbox == "" && place.name == "" {
 		if place.level != "" {
-			return "", usageErrorf("--place-level narrows --place, which was not given")
+			return render.View{}, "", usageErrorf("--place-level narrows --place, which was not given")
 		}
-		return "", coords.check(fs, "render")
+		if err := coords.check(fs, "render"); err != nil {
+			return render.View{}, "", err
+		}
+		v, err := viewAround(uint8(coords.zoom), coords.lon, coords.lat, width, height)
+		return v, "", err
 	}
 
 	var (
-		b    slice.Bounds
-		what string
-		err  error
+		b          slice.Bounds
+		what, note string
+		err        error
 	)
 	if place.name != "" {
 		// The names are in the store's boundary files, whichever store the
@@ -221,39 +242,131 @@ func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, place place
 		root := store
 		if root == "" {
 			if root, err = slice.DefaultRoot(); err != nil {
-				return "", fmt.Errorf("finding the default store for --place: %w; pass --store to say where the boundaries are", err)
+				return render.View{}, "", fmt.Errorf("finding the default store for --place: %w; pass --store to say where the boundaries are", err)
 			}
 		}
 		c, err := place.resolve(root)
 		if err != nil {
-			return "", err
+			return render.View{}, "", err
 		}
-		b, what = placeBounds(c), placeReport(c)
+		b, what, note = placeBounds(c), safeForTerminal(c.Describe()), partsNote(c)
 	} else {
 		if b, err = parseBBox(bbox); err != nil {
-			return "", err
+			return render.View{}, "", err
 		}
 		what = "--bbox"
 	}
-	z, lat, lon, cropped, err := fitZoom(b, width, height)
-	if err != nil {
-		return "", err
+	if err := checkRectangle(b); err != nil {
+		return render.View{}, "", err
 	}
-	coords.lat, coords.lon = lat, lon
+
 	if flagGiven(fs, "zoom") {
-		// Given, so kept -- a rectangle at a deeper zoom than fits is a
-		// crop, which is a reasonable thing to ask for -- but checked as a
-		// zoom the way check would have.
+		// Given, so kept: a rectangle at a deeper zoom than fits is a crop
+		// about its centre, which is a reasonable thing to ask for.
 		if coords.zoom < 0 || coords.zoom > mercator.MaxZoom {
-			return "", usageErrorf("--zoom %d is not a zoom level; they run from 0 to %d", coords.zoom, mercator.MaxZoom)
+			return render.View{}, "", usageErrorf("--zoom %d is not a zoom level; they run from 0 to %d", coords.zoom, mercator.MaxZoom)
 		}
-		return fmt.Sprintf("%s, centred at %s, %s, at the --zoom given", what, formatCoord(lat), formatCoord(lon)), nil
+		x0, y0 := mercator.Project(b.West, b.North)
+		x1, y1 := mercator.Project(b.East, b.South)
+		lon, lat := mercator.Unproject((x0+x1)/2, (y0+y1)/2)
+		v, err := viewAround(uint8(coords.zoom), lon, lat, width, height)
+		return v, fmt.Sprintf("%s, centred at %s, %s, at the --zoom given%s", what, formatCoord(lat), formatCoord(lon), note), err
 	}
-	coords.zoom = z
+
+	v, cropped := fitView(b, width, height)
+	_, cont, err := v.Zoom()
+	if err != nil {
+		return render.View{}, "", err
+	}
+	zoom := strconv.FormatFloat(cont, 'f', 2, 64)
 	if cropped {
-		return fmt.Sprintf("%s, at zoom %d, cropped: it is wider or taller than the world is at the zoom that would hold it", what, z), nil
+		return v, fmt.Sprintf("%s, at zoom %s, cropped: it is wider or taller than the world at the zoom that would hold it%s", what, zoom, note), nil
 	}
-	return fmt.Sprintf("%s, at zoom %d, the deepest that holds all of it", what, z), nil
+	return v, fmt.Sprintf("%s, at zoom %s to fit the image%s", what, zoom, note), nil
+}
+
+// checkRectangle refuses what is not a rectangle on the earth.
+func checkRectangle(b slice.Bounds) error {
+	switch {
+	case b.West < -180 || b.East > 180 || b.South < -90 || b.North > 90 ||
+		b.West != b.West || b.East != b.East || b.South != b.South || b.North != b.North:
+		return usageErrorf("--bbox %g,%g,%g,%g is not a rectangle on the earth; longitudes run -180 to 180 and latitudes -90 to 90",
+			b.West, b.South, b.East, b.North)
+	case b.East < b.West:
+		return usageErrorf("--bbox has its east edge (%g) west of its west edge (%g); a rectangle across the antimeridian has to be drawn as two", b.East, b.West)
+	case b.North < b.South:
+		return usageErrorf("--bbox has its north edge (%g) south of its south edge (%g)", b.North, b.South)
+	}
+	return nil
+}
+
+// maxFitZoom is the deepest zoom a fitted view is drawn at. The public builds
+// stop at 15, so a rectangle small enough to want more is drawn at 15 with
+// ground around it rather than overzoomed into a smear.
+const maxFitZoom = 15
+
+// fitMargin is the ground left around a fitted rectangle, as a fraction of
+// its size on each side, so a coastline does not run along the image's edge.
+const fitMargin = 0.04
+
+// fitView is the view that holds a rectangle as closely as the image allows.
+//
+// At a CONTINUOUS zoom, not the deepest whole one. The renderer draws any
+// scale -- it picks the nearest tile zoom and stretches -- so rounding the fit
+// down to a whole zoom only threw ground away: up to twice the rectangle's
+// size in each direction, which is why New South Wales came with half of
+// Victoria and South Australia around it.
+//
+// The view has the image's own aspect ratio, so there is nothing for the
+// renderer to extend or crop; the rectangle fills the image along one axis
+// and is centred along the other. Centred in the PROJECTION, not on the
+// average of its degrees: Mercator stretches the north more, and centring
+// Denmark on 56.15 degrees leaves more margin below it than above.
+//
+// Three limits, each reported rather than silent. No deeper than zoom 15,
+// where the public builds stop. No shallower than the image allows -- the
+// whole world at 1024 by 768 would fit at zoom 1.3, where the world is
+// narrower than the image -- which crops, and cropped says so. And never over
+// the antimeridian or past the Mercator cut: the view is slid back inside the
+// world, since the renderer cannot draw across the seam. A rectangle near the
+// seam -- Fiji, or Australia at zoom 4, which was refused as "wider than the
+// whole world" -- then has its ground on one side rather than centred.
+func fitView(b slice.Bounds, width, height int) (render.View, bool) {
+	x0, y0 := mercator.Project(b.West, b.North)
+	x1, y1 := mercator.Project(b.East, b.South)
+	cx, cy := (x0+x1)/2, (y0+y1)/2
+	dx, dy := (x1-x0)*(1+2*fitMargin), (y1-y0)*(1+2*fitMargin)
+
+	// Pixels per world unit: the world is scale pixels across.
+	scale := 256 * math.Exp2(maxFitZoom)
+	if dx > 0 {
+		scale = math.Min(scale, float64(width)/dx)
+	}
+	if dy > 0 {
+		scale = math.Min(scale, float64(height)/dy)
+	}
+	cropped := false
+	if floor := float64(max(width, height)); scale < floor {
+		scale, cropped = floor, true
+	}
+
+	w, h := float64(width)/scale, float64(height)/scale
+	cx = min(max(cx, w/2), 1-w/2)
+	cy = min(max(cy, h/2), 1-h/2)
+	west, north := mercator.Unproject(cx-w/2, cy-h/2)
+	east, south := mercator.Unproject(cx+w/2, cy+h/2)
+	return render.View{
+		Bounds: render.Bounds{West: west, South: south, East: east, North: north},
+		Width:  width, Height: height,
+	}, cropped
+}
+
+// viewCentre is the coordinate at the middle of a view.
+func viewCentre(v render.View) (lat, lon float64) {
+	x0, y0 := mercator.Project(v.Bounds.West, v.Bounds.North)
+	x1, y1 := mercator.Project(v.Bounds.East, v.Bounds.South)
+	lon, lat = mercator.Unproject((x0+x1)/2, (y0+y1)/2)
+	return lat, lon
 }
 
 // paletteNamed resolves --palette.
@@ -298,9 +411,17 @@ func viewAround(z uint8, lon, lat float64, width, height int) (render.View, erro
 	// world is at this zoom. The library refuses such a rectangle -- it would
 	// have to be drawn as two views -- and the useful thing to say here is
 	// which two numbers are in conflict.
-	if west < -180 || east > 180 {
+	if float64(width) > world {
 		return render.View{}, usageErrorf("--width %d at --zoom %d is wider than the whole world, which is %.0f pixels across at that zoom; use a deeper --zoom or a narrower image",
 			width, z, world)
+	}
+	// Narrower than the world and still off its edge: the view runs over the
+	// antimeridian, which the renderer cannot draw across. This used to be
+	// reported as wider than the world -- false, and for Australia at zoom 4
+	// it sent the user looking for the wrong thing.
+	if west < -180 || east > 180 {
+		return render.View{}, usageErrorf("the view at --lon %g --zoom %d runs over longitude 180, and a map cannot be drawn across it as one image; move --lon away from 180, use a deeper --zoom or a narrower image",
+			lon, z)
 	}
 
 	// The same question on the other axis, and it has to be asked HERE rather
@@ -437,9 +558,9 @@ func percent(f float64) string {
 // here, no URL, and nothing that could contact anyone. slice imports neither
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
-func renderFromStore(root, archive string, coords coordFlags, width, height int, colours render.Palette, style render.Style, palette, out string, yes bool, stdout, stderr io.Writer) error {
-	z := uint8(coords.zoom)
-	view, err := viewAround(z, coords.lon, coords.lat, width, height)
+func renderFromStore(root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, stdout, stderr io.Writer) error {
+	// The zoom the renderer will ask the store for, from the renderer.
+	z, _, err := view.Zoom()
 	if err != nil {
 		return err
 	}
@@ -492,8 +613,9 @@ func renderFromStore(root, archive string, coords coordFlags, width, height int,
 	res, err := r.Render(context.Background(), view)
 	if err != nil {
 		if errors.Is(err, render.ErrNoCoverage) {
+			lat, lon := viewCentre(view)
 			return fmt.Errorf("%w. The store at %s holds nothing near latitude %s, longitude %s; fetch that area first",
-				err, root, formatCoord(coords.lat), formatCoord(coords.lon))
+				err, root, formatCoord(lat), formatCoord(lon))
 		}
 		return err
 	}
@@ -503,6 +625,21 @@ func renderFromStore(root, archive string, coords coordFlags, width, height int,
 	fmt.Fprintf(stdout, "%-12s %s\n", "store", root)
 	writeRenderReport(stdout, out, view, res, palette)
 	return nil
+}
+
+// defaultStoreWithAMap is the default store, when it exists and holds at
+// least one archive.
+func defaultStoreWithAMap() (string, bool) {
+	root, err := slice.DefaultRoot()
+	if err != nil {
+		return "", false
+	}
+	st, err := slice.Open(root)
+	if err != nil {
+		return "", false
+	}
+	sources, err := st.Sources()
+	return root, err == nil && len(sources) > 0
 }
 
 // openStoreSource opens the archive in a store that a render draws from.

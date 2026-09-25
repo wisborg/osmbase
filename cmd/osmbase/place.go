@@ -117,9 +117,14 @@ func placeBounds(c boundary.Candidate) slice.Bounds {
 // placeReport is the line a command prints about the place it resolved,
 // saying what of it is shown.
 func placeReport(c boundary.Candidate) string {
-	s := safeForTerminal(c.Describe())
-	if c.Shown < c.Parts {
-		s += fmt.Sprintf(", %d of its %d parts -- the rest are too far from the main one to share a map with it", c.Shown, c.Parts)
+	return safeForTerminal(c.Describe()) + partsNote(c)
+}
+
+// partsNote says how much of an area a map of it holds, when not all of it:
+// a map of France without Guiana should not claim to be all of France.
+func partsNote(c boundary.Candidate) string {
+	if c.Shown >= c.Parts {
+		return ""
 	}
-	return s
+	return fmt.Sprintf("; %d of its %d parts -- the rest are too far from the main one to share a map with it", c.Shown, c.Parts)
 }

@@ -56,15 +56,39 @@ aliases are dropped.
 
 France's Natural Earth outline has 21 parts from longitude −61.8 to +55.9: the overseas
 departments are part of it. The box around all of them is the Atlantic. So the view is fitted to
-the **main part** — the largest polygon by box area — together with every other part whose box
-lies within a margin of it, and the parts left out are reported. Denmark keeps Bornholm; France
-keeps Corsica and loses Guiana, Réunion and the rest, and says so.
+the **main part** — the largest polygon — and every part within **300 km** of a part already
+taken, one crossing at a time. Bass Strait is about 240 km, so Australia keeps Tasmania; Bornholm
+is 130 km from Zealand; Corsica 170 km from the mainland. The parts left out are counted and
+reported.
 
-An area crossing the antimeridian is detected and refused for now, as `locate` does.
+The reach is a fixed distance on the ground, and that was a second attempt. It was first half
+the size of what had been taken so far, which snowballed: once Australia's mainland was in, the
+reach was twenty degrees, it took Macquarie Island 1,500 km south of Tasmania, and a map of
+Australia was centred on the Southern Ocean with the Top End cut off. The gap is measured where
+the two parts face each other — measured anywhere nearer the equator, Kaliningrad fell off Russia.
+
+Against the real 10m outlines: Australia is the mainland and Tasmania, Denmark keeps Bornholm,
+France keeps Corsica and not Guiana, the United States is the contiguous states, Russia keeps
+Kaliningrad.
+
+## Fitting the view
+
+At a **continuous** zoom, not the deepest whole one. The renderer draws any scale — it reads the
+nearest tile zoom and stretches — so rounding the fit down threw away up to half the image: New
+South Wales came with half of Victoria and South Australia around it. The view is the place and a
+4% margin, at the image's own aspect ratio, centred in the projection.
+
+It is slid back inside the world rather than run over the antimeridian or the Mercator cut, which
+cannot be drawn. Australia at zoom 4 used to be refused as "wider than the whole world" — at a
+zoom where the world is four times wider than the image; the view simply reached past 180°. An
+explicit `--lat/--lon` that does that now says so.
 
 ## When the store does not hold the tiles at that zoom
 
 `render --store` never touches the network, and that stays true unless the user says otherwise.
+With no SOURCE and no `--store`, `render` draws from the default store when it holds a map — it
+used to read the default archive over the network every time, so rendering one place twice
+fetched it twice while the tiles sat in the cache.
 When the store lacks the tiles a view needs at its zoom, render **offers** to fetch them,
 following what the same offer in fitdash learned:
 
@@ -112,6 +136,5 @@ from shallower tiles and reported 83% of the image overzoomed.
   seen, but an archive with gaps above the cell zoom would meet it.
 - **Names are English or codes.** Natural Earth's `name` is sometimes local, but `Danmark`
   finds nothing. Derived files carry OpenStreetMap's local names and are part 6.
-- **The United States includes Alaska and Hawaii**, because the main-part rule gathers parts
-  one step at a time and each is within reach of the last. A cartographer might do either;
-  `--bbox` is the way to the other.
+- **The United States is the contiguous states**, because Alaska is more than 300 km from them
+  and Hawaii nearly 4,000. A cartographer might do either; `--bbox` is the way to the other.

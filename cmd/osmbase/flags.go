@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"strings"
 
 	"github.com/wisborg/osmbase/mercator"
@@ -142,60 +141,4 @@ func parseBBox(s string) (slice.Bounds, error) {
 		return slice.Bounds{}, usageErrorf("--bbox wants four numbers, west,south,east,north, and got %q", s)
 	}
 	return slice.Bounds{West: w, South: so, East: e, North: n}, nil
-}
-
-// maxFitZoom is the deepest zoom a fitted view is drawn at. The public builds
-// stop at 15, so a rectangle small enough to want more is drawn at 15 with
-// ground around it rather than overzoomed into a smear.
-const maxFitZoom = 15
-
-// fitZoom is the deepest zoom at which a rectangle fits in an image, and the
-// coordinate at the middle of it.
-//
-// The middle is taken in the PROJECTION, not in degrees: halfway between 54.5
-// and 57.8 degrees north is not the middle of the picture, because Mercator
-// stretches the north more, and centring on the degree average leaves more
-// margin below than above.
-func fitZoom(b slice.Bounds, width, height int) (z int, lat, lon float64, cropped bool, err error) {
-	switch {
-	case b.West < -180 || b.East > 180 || b.South < -90 || b.North > 90 ||
-		b.West != b.West || b.East != b.East || b.South != b.South || b.North != b.North:
-		return 0, 0, 0, false, usageErrorf("--bbox %g,%g,%g,%g is not a rectangle on the earth; longitudes run -180 to 180 and latitudes -90 to 90",
-			b.West, b.South, b.East, b.North)
-	case b.East < b.West:
-		return 0, 0, 0, false, usageErrorf("--bbox has its east edge (%g) west of its west edge (%g); a rectangle across the antimeridian has to be drawn as two", b.East, b.West)
-	case b.North < b.South:
-		return 0, 0, 0, false, usageErrorf("--bbox has its north edge (%g) south of its south edge (%g)", b.North, b.South)
-	}
-	x0, y0 := mercator.Project(b.West, b.North)
-	x1, y1 := mercator.Project(b.East, b.South)
-	fit := math.Inf(1)
-	if dx := x1 - x0; dx > 0 {
-		fit = math.Log2(float64(width) / (256 * dx))
-	}
-	if dy := y1 - y0; dy > 0 {
-		fit = math.Min(fit, math.Log2(float64(height)/(256*dy)))
-	}
-	z = maxFitZoom
-	if fit < maxFitZoom {
-		z = max(int(math.Floor(fit)), 0)
-	}
-	// And no shallower than the image allows: at zoom z the world is
-	// 256*2^z pixels across, and an image wider or taller than the world
-	// cannot be drawn as one view. The whole world at 1024 by 768 fits at
-	// zoom 1, where the world is 512 pixels wide. Deeper than the fit means
-	// part of the rectangle is cut off, which is the only way to draw it
-	// at all, and cropped says so.
-	if floor := int(math.Ceil(math.Log2(float64(max(width, height)) / 256))); z < floor {
-		z, cropped = floor, true
-	}
-	cx, cy := (x0+x1)/2, (y0+y1)/2
-	if cropped {
-		// Kept inside the world vertically, so the image does not reach
-		// past the Mercator cut -- which viewAround refuses.
-		half := float64(height) / (2 * 256 * math.Exp2(float64(z)))
-		cy = min(max(cy, half), 1-half)
-	}
-	lon, lat = mercator.Unproject(cx, cy)
-	return z, lat, lon, cropped, nil
 }

@@ -79,6 +79,22 @@ type View struct {
 	Width, Height int
 }
 
+// Zoom is the tile zoom a view will be drawn from and the continuous zoom its
+// scale corresponds to -- what Render reports as Result.Zoom and
+// ContinuousZoom, available before rendering.
+//
+// For a caller that has to ask something about the tiles first, such as
+// whether a store holds them. Working the zoom out again from the bounds
+// would be a second statement of the rounding rule, and the first time the
+// two disagreed the question would be asked about the wrong zoom.
+func (v View) Zoom() (tile uint8, continuous float64, err error) {
+	p, err := resolve(v)
+	if err != nil {
+		return 0, 0, err
+	}
+	return p.tileZoom, p.zoom, nil
+}
+
 // projection is a resolved View: everything the rest of the renderer needs to
 // turn a tile-local integer into a pixel, computed once.
 //
