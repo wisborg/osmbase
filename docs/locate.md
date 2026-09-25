@@ -575,10 +575,12 @@ is why it is written down here.
   currently has its coordinates held twice.
 - **`osmbasetest.Extract` emits one block per element kind**, so a multi-block file, a block
   mixing kinds, a non-default granularity and a coordinate origin are all unexercised.
-- **`Source.Contains` rebuilds and ranks the whole containment stack once per level per
-  point**, keeping one of three answers and discarding the rest. The interface asks a level
-  at a time, so fixing it means changing that interface; a route of thousands of points pays
-  three times.
+**A point's containment stack is built once, not once per level.** `BoundarySource` still asks
+a level at a time, and a source that can do better implements the optional
+`locate.LevelsSource`; `AtEach` asks it once per point for every covered level. `boundary.Source`
+does, and a 1,000-point route over the three derived levels went from 6.85 ms to 2.54 ms, with
+18,409 allocations down to 10,606. A test holds its answers equal to `Contains` over a grid that
+reaches every containment state.
 
 **The decompression-bomb guard is in one place**, `internal/inflate`: the bound enforced while
 expanding, with sentinel errors each caller words in its own vocabulary. `pmtiles`, `slice` and

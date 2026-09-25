@@ -146,6 +146,40 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 	for i := range all {
 		all[i] = i
 	}
+
+	// A source that can answer every level for a point at once is asked
+	// once per point, not once per level per point. See LevelsSource.
+	contains := func(level Level, i int) (string, string, string, Containment) {
+		p := pts[i]
+		return opts.Boundaries.Contains(level, p.Lat, p.Lon)
+	}
+	if ls, ok := opts.Boundaries.(LevelsSource); ok {
+		var covered []Level
+		for _, l := range Levels {
+			if opts.wants(l) && ls.Covers(l) {
+				covered = append(covered, l)
+			}
+		}
+		if len(covered) > 1 {
+			at := map[Level]int{}
+			for j, l := range covered {
+				at[l] = j
+			}
+			answers := make([][]Answer, len(pts))
+			for i, p := range pts {
+				if i%1024 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, fmt.Errorf("locate: looking up boundaries: %w", err)
+					}
+				}
+				answers[i] = ls.ContainsLevels(p.Lat, p.Lon, covered)
+			}
+			contains = func(level Level, i int) (string, string, string, Containment) {
+				a := answers[i][at[level]]
+				return a.Name, a.Kind, a.Credit, a.Containment
+			}
+		}
+	}
 	for _, level := range Levels {
 		if !opts.wants(level) {
 			continue
@@ -173,8 +207,8 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 				return nil, fmt.Errorf("locate: looking up %s: %w", level, err)
 			}
 			rest = nil
-			for i, p := range pts {
-				name, kind, credit, c := opts.Boundaries.Contains(level, p.Lat, p.Lon)
+			for i := range pts {
+				name, kind, credit, c := contains(level, i)
 				switch c {
 				case Inside:
 					out[i].setMatch(Match{
@@ -343,6 +377,31 @@ const (
 	// Inside: an area holds the point, and it is the answer.
 	Inside
 )
+
+// Answer is what a boundary source says about one coordinate at one level:
+// Contains's four results as one value.
+type Answer struct {
+	Name, Kind, Credit string
+	Containment        Containment
+}
+
+// LevelsSource is a BoundarySource that can answer several levels for one
+// coordinate in one call. It is optional, and AtEach uses it when a source
+// offers it.
+//
+// It exists because Contains asks a level at a time, and the answer to one
+// level is often most of the work of the others: the levels below a region
+// are three slots ranked from one containment stack, and asking three times
+// built and ranked that stack three times to keep one answer from each. A
+// separate interface rather than a change to BoundarySource, so an
+// implementation that has nothing to share need not pretend to.
+//
+// ContainsLevels returns one Answer per level, in the order given, and each
+// must equal what Contains would say for that level.
+type LevelsSource interface {
+	BoundarySource
+	ContainsLevels(lat, lon float64, levels []Level) []Answer
+}
 
 type tileRef struct {
 	z    uint8

@@ -10,7 +10,7 @@ import (
 )
 
 // writeDerived puts a derived file in a store and returns the store root.
-func writeDerived(t *testing.T, root, region string, p Provenance, areas ...Area) {
+func writeDerived(t testing.TB, root, region string, p Provenance, areas ...Area) {
 	t.Helper()
 	dir := Dir(root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

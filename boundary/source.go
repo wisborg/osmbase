@@ -652,15 +652,8 @@ func (s *Source) Contains(l locate.Level, lat, lon float64) (name, kind, credit 
 		if !derivedLevel(l) {
 			return "", "", "", locate.NoData
 		}
-		stack := s.derivedStack(lat, lon)
-		if len(stack) == 0 {
-			return "", "", "", locate.NoData
-		}
-		i, ok := rankIndex(len(stack), l)
-		if !ok {
-			return "", "", "", locate.Outside
-		}
-		return stack[i].area.Name, stack[i].area.Kind, stack[i].credit, locate.Inside
+		a := answerFromStack(s.derivedStack(lat, lon), l)
+		return a.Name, a.Kind, a.Credit, a.Containment
 	}
 	set := s.set(layer)
 	if set == nil {
@@ -677,6 +670,42 @@ func (s *Source) Contains(l locate.Level, lat, lon float64) (name, kind, credit 
 	// which is knowing that this name and the suburb below it came from
 	// different places under different terms.
 	return a.Name, a.Kind, NaturalEarthCredit, locate.Inside
+}
+
+// ContainsLevels answers several levels for one coordinate, building the
+// derived files' containment stack once for all the levels below a region
+// rather than once for each. Each answer is what Contains says for its level.
+func (s *Source) ContainsLevels(lat, lon float64, levels []locate.Level) []locate.Answer {
+	out := make([]locate.Answer, len(levels))
+	var stack []credited
+	built := false
+	for i, l := range levels {
+		_, natural := layerFor(l)
+		if natural || !derivedLevel(l) {
+			name, kind, credit, c := s.Contains(l, lat, lon)
+			out[i] = locate.Answer{Name: name, Kind: kind, Credit: credit, Containment: c}
+			continue
+		}
+		if !built {
+			stack, built = s.derivedStack(lat, lon), true
+		}
+		out[i] = answerFromStack(stack, l)
+	}
+	return out
+}
+
+// answerFromStack is a derived level's answer from a point's containment
+// stack: NoData where no derived area holds the point, Outside where one
+// does and the ranking leaves the level empty.
+func answerFromStack(stack []credited, l locate.Level) locate.Answer {
+	if len(stack) == 0 {
+		return locate.Answer{Containment: locate.NoData}
+	}
+	i, ok := rankIndex(len(stack), l)
+	if !ok {
+		return locate.Answer{Containment: locate.Outside}
+	}
+	return locate.Answer{Name: stack[i].area.Name, Kind: stack[i].area.Kind, Credit: stack[i].credit, Containment: locate.Inside}
 }
 
 // credited is an area with the attribution of the file it came from.

@@ -81,3 +81,50 @@ func (c coveringSource) Contains(l locate.Level, lat, lon float64) (string, stri
 	}
 	return c.name, "country", "", locate.Inside
 }
+
+// countingLevels answers from a table and counts how it was asked.
+type countingLevels struct {
+	levels, single int
+}
+
+func (c *countingLevels) Covers(l locate.Level) bool {
+	return l == locate.Locality || l == locate.Neighbourhood
+}
+
+func (c *countingLevels) Contains(l locate.Level, lat, lon float64) (string, string, string, locate.Containment) {
+	c.single++
+	return l.String() + " name", "9", "", locate.Inside
+}
+
+func (c *countingLevels) ContainsLevels(lat, lon float64, levels []locate.Level) []locate.Answer {
+	c.levels++
+	out := make([]locate.Answer, len(levels))
+	for i, l := range levels {
+		out[i] = locate.Answer{Name: l.String() + " name", Kind: "9", Containment: locate.Inside}
+	}
+	return out
+}
+
+// A source that can answer every level at once is asked once per point, and
+// never level by level -- which is the whole saving -- and the answers land
+// at the levels they were for.
+func TestAtEachAsksALevelsSourceOncePerPoint(t *testing.T) {
+	src := &countingLevels{}
+	pts := []locate.Coord{{Lat: 1, Lon: 1}, {Lat: 2, Lon: 2}, {Lat: 3, Lon: 3}}
+	places, err := locate.AtEach(context.Background(), nil, pts, locate.Options{
+		Boundaries: src, Levels: []locate.Level{locate.Locality, locate.Neighbourhood},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.levels != len(pts) || src.single != 0 {
+		t.Errorf("ContainsLevels %d times and Contains %d, want %d and 0", src.levels, src.single, len(pts))
+	}
+	for _, p := range places {
+		for _, l := range []locate.Level{locate.Locality, locate.Neighbourhood} {
+			if m, ok := p.Match(l); !ok || m.Name != l.String()+" name" {
+				t.Errorf("%s = %+v, want its own answer", l, m)
+			}
+		}
+	}
+}
