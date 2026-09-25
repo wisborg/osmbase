@@ -85,14 +85,33 @@ tiles directly from the bounds.
 
 ## Parts
 
-| # | part | done when |
+| # | part | status |
 |---|---|---|
-| 1 | Shallow fetch plans | a request whose depth is above the cell zoom plans its tiles from the bounds, with no cell limit |
-| 2 | `render --bbox` | a rectangle fits the deepest zoom that holds it, centred |
-| 3 | Natural Earth names | `boundary.Find` returns candidates with their level, context and main-part extent |
-| 4 | `--place` | on `render` and `fetch`, refusing an ambiguous name with the list |
-| 5 | The offer | `render --store` fetches what the view lacks at its zoom, when asked |
-| 6 | Derived files | suburbs and councils where a file was built, context by containment |
-| 7 | Tile points | cities no outline covers, zoom from the kind — the weakest source, last |
+| 1 | Shallow fetch plans | ✅ a request above the cell zoom lists its tiles from the bounds; bounded by `MaxOverviewTiles`, not by cells |
+| 2 | `render --bbox` | ✅ the deepest zoom that holds the rectangle, centred in the projection; cropped and said so when wider than the world |
+| 3 | Natural Earth names | ✅ `boundary.Source.Find`: candidates with level, type, country and main-part extent |
+| 4 | `--place` | ✅ on `render` and `fetch`, with `--place-level`; ambiguity refused with the list and a suggestion that works |
+| 5 | The offer | ✅ `render --store` asks to fetch what the view lacks at its zoom, measured by `slice.Source.HeldAt`; `--yes` answers in advance |
+| 6 | Derived files | not started: suburbs and councils where a file was built, context by containment |
+| 7 | Tile points | not started: cities no outline covers, zoom from the kind — the weakest source, last |
 
-Parts 1 to 5 are this change. 6 and 7 are not started.
+Measured on a copy of a real store holding tiles around Horsens: `render --place Denmark`
+fits Denmark, Bornholm included, at zoom 7, where the store held 2 of the 20 tiles the view
+needs. The offer said so before anything was read, and declined, the render drew the rest
+from shallower tiles and reported 83% of the image overzoomed.
+
+## What this did not settle
+
+- **`fetch --place` of a country plans the whole world**, at zooms 0 to 5, because the
+  planner's depth bands put anything over 250 km there — the same as a `--bbox` of it would.
+  `--max-zoom` asks for the area itself. A render's offer does not have the problem: it asks
+  for the view's own zoom.
+- **Overview tiles an archive lacks are offered again on every render.** A complete cell
+  records that its fetch finished, so a tile missing from it is known to be absent; the
+  overview has no such record. Protomaps' builds hold every shallow tile, so this has not been
+  seen, but an archive with gaps above the cell zoom would meet it.
+- **Names are English or codes.** Natural Earth's `name` is sometimes local, but `Danmark`
+  finds nothing. Derived files carry OpenStreetMap's local names and are part 6.
+- **The United States includes Alaska and Hawaii**, because the main-part rule gathers parts
+  one step at a time and each is within reach of the last. A cartographer might do either;
+  `--bbox` is the way to the other.

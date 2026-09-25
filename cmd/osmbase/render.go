@@ -81,6 +81,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		labels        string
 		bbox          string
 		place         placeFlags
+		yes           bool
 	)
 	fs := newFlagSet("render", renderUsage)
 	coords.bind(fs)
@@ -94,6 +95,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&bbox, "bbox", "", "draw this rectangle instead of the ground around --lat/--lon, as west,south,east,north in degrees; "+
 		"the zoom is the deepest that holds all of it, unless --zoom says otherwise")
 	place.bind(fs)
+	fs.BoolVar(&yes, "yes", false, "with --store, fetch what the view lacks at its zoom without asking first")
 
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil {
@@ -131,7 +133,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		if source != "" {
 			return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
 		}
-		return renderFromStore(store, archive, coords, width, height, colours, style, palette, out, stdout, stderr)
+		return renderFromStore(store, archive, coords, width, height, colours, style, palette, out, yes, stdout, stderr)
 	}
 
 	a, err := openArchive(source, stderr)
@@ -435,37 +437,52 @@ func percent(f float64) string {
 // here, no URL, and nothing that could contact anyone. slice imports neither
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
-func renderFromStore(root, archive string, coords coordFlags, width, height int, colours render.Palette, style render.Style, palette, out string, stdout, stderr io.Writer) error {
-	st, err := slice.Open(root)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("there is no store at %s; fill one first with \"osmbase fetch --store %s\"", root, root)
-		}
-		return fmt.Errorf("opening the store at %s: %w", root, err)
-	}
-	sources, err := st.Sources()
-	if err != nil {
-		return err
-	}
-	chosen, err := chooseSource(root, sources, archive)
-	if err != nil {
-		return err
-	}
-	src, err := st.Source(chosen.ID)
-	if err != nil {
-		return err
-	}
-
+func renderFromStore(root, archive string, coords coordFlags, width, height int, colours render.Palette, style render.Style, palette, out string, yes bool, stdout, stderr io.Writer) error {
 	z := uint8(coords.zoom)
 	view, err := viewAround(z, coords.lon, coords.lat, width, height)
 	if err != nil {
 		return err
 	}
+	b := slice.Bounds{West: view.Bounds.West, South: view.Bounds.South, East: view.Bounds.East, North: view.Bounds.North}
+
+	// Measured before drawing and from the disk alone, so the question of
+	// whether to fetch comes before anything is read. See offerToFill.
+	chosen, src, noMap, err := openStoreSource(root, archive)
+	switch {
+	case err == nil:
+		// No deeper than the archive this store was filled from goes;
+		// past that, overzoom is the answer and there is nothing to fetch.
+		zoom := z
+		if sz := chosen.SourceZoom; !sz.Empty() && zoom > sz.Max {
+			zoom = sz.Max
+		}
+		held, wanted, herr := src.HeldAt(b, zoom)
+		if herr == nil && held < wanted &&
+			offerToFill(stderr, shortfall{root: root, source: chosen.Source, bounds: b, zoom: zoom, held: held, wanted: wanted}, yes) {
+			if chosen, src, _, err = openStoreSource(root, archive); err != nil {
+				return err
+			}
+		}
+	case noMap:
+		// No store, or one holding nothing: the same offer, from the
+		// default archive, and the old refusal if it is declined.
+		if !offerToFill(stderr, shortfall{root: root, bounds: b, zoom: z, empty: true}, yes) {
+			return err
+		}
+		if chosen, src, _, err = openStoreSource(root, archive); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
 
 	r, err := render.New(src, render.Options{
-		Style:        style,
-		Palette:      colours,
-		Attribution:  sources[0].Attribution,
+		Style:   style,
+		Palette: colours,
+		// The archive drawn from, not the first one listed: a store may hold
+		// several, and crediting another's data is a claim about somebody
+		// else's work.
+		Attribution:  chosen.Attribution,
 		LabelFace:    labelFace(),
 		LabelFaceFor: labelFaceFor,
 	})
@@ -486,6 +503,34 @@ func renderFromStore(root, archive string, coords coordFlags, width, height int,
 	fmt.Fprintf(stdout, "%-12s %s\n", "store", root)
 	writeRenderReport(stdout, out, view, res, palette)
 	return nil
+}
+
+// openStoreSource opens the archive in a store that a render draws from.
+//
+// noMap is true when there is no map to draw from at all -- no store, or one
+// holding no archive -- which is the case a render can offer to fix, as
+// against a damaged store or an ambiguous --archive, which it cannot.
+func openStoreSource(root, archive string) (chosen slice.Manifest, src *slice.Source, noMap bool, err error) {
+	st, err := slice.Open(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return slice.Manifest{}, nil, true, fmt.Errorf("there is no store at %s; fill one first with \"osmbase fetch --store %s\"", root, root)
+		}
+		return slice.Manifest{}, nil, false, fmt.Errorf("opening the store at %s: %w", root, err)
+	}
+	sources, err := st.Sources()
+	if err != nil {
+		return slice.Manifest{}, nil, false, err
+	}
+	if len(sources) == 0 {
+		_, err := chooseSource(root, sources, archive)
+		return slice.Manifest{}, nil, true, err
+	}
+	if chosen, err = chooseSource(root, sources, archive); err != nil {
+		return slice.Manifest{}, nil, false, err
+	}
+	src, err = st.Source(chosen.ID)
+	return chosen, src, false, err
 }
 
 // chooseSource picks which archive in a store to draw from.

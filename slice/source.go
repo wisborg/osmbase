@@ -94,6 +94,56 @@ func (s *Source) Has(t TileRef) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// HeldAt reports how many of the tiles covering a rectangle at one zoom the
+// store holds, out of how many there are.
+//
+// It is the question a render asks before drawing -- will this view come out
+// with the detail its zoom promises -- and it is answered from the disk alone,
+// so asking it contacts nobody. Coverage answers a different question, about
+// cells, and a view shallower than the cell zoom touches none: a map of a
+// country at zoom 7 is all overview tiles.
+//
+// A tile at or below the cell zoom counts as held when its cell is complete
+// over a range that includes the zoom, whether or not the tile itself is on
+// disk: a complete cell is one a fetch finished, and a tile it does not hold
+// is one the archive did not have. Counting the tile's file instead would call
+// every stretch of open ocean missing, for ever. A tile above the cell zoom has
+// no cell and no such record, so it is held when it is on disk.
+//
+// A drawn view that reports full coverage can still be all overzoom -- the
+// renderer counts tiles drawn, not the detail in them -- which is why this
+// counts at the view's own zoom.
+func (s *Source) HeldAt(b Bounds, zoom uint8) (held, wanted int, err error) {
+	tiles, err := cellsFor(b, zoom)
+	if err != nil {
+		return 0, 0, err
+	}
+	cells := map[Cell]bool{}
+	for _, t := range tiles {
+		ref := TileRef{Z: zoom, X: t.X, Y: t.Y}
+		c, inCell := cellOf(ref, s.store.cellZoom)
+		if !inCell {
+			if s.Has(ref) {
+				held++
+			}
+			continue
+		}
+		ok, seen := cells[c]
+		if !seen {
+			info, complete, err := s.Cell(c)
+			if err != nil {
+				return 0, 0, err
+			}
+			ok = complete && info.Zoom.contains(zoom)
+			cells[c] = ok
+		}
+		if ok {
+			held++
+		}
+	}
+	return held, len(tiles), nil
+}
+
 // Cell returns what the store records about one cell, and whether there is a
 // complete one there at all.
 //
