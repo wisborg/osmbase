@@ -41,11 +41,13 @@ const maxRenderPixels = 64 << 20
 
 func renderUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, `usage: osmbase render [SOURCE] --lat LAT --lon LON [--zoom N] [--width N] [--height N] [--palette NAME] [--out FILE]
+       osmbase render [SOURCE] --bbox W,S,E,N [...]
 
 Draw the map around a coordinate and write it to a PNG. The image is centred on
 --lat/--lon and covers whatever ground --width by --height pixels hold at
 --zoom, which is the ordinary slippy-map zoom: one tile is 256 pixels, so at
-zoom 14 a 1024 by 768 image is four tiles by three.
+zoom 14 a 1024 by 768 image is four tiles by three. --bbox names a rectangle
+instead, and the zoom is chosen to hold all of it.
 
 Tiles the archive does not hold are drawn from a shallower tile where there is
 one, which is a sharp map with less detail in it, and hatched where there is
@@ -73,6 +75,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		archive       string
 		out           string
 		labels        string
+		bbox          string
 	)
 	fs := newFlagSet("render", renderUsage)
 	coords.bind(fs)
@@ -83,12 +86,11 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&archive, "archive", "", "which archive in the store to draw from, by ID or by part of its name; only needed when the store holds more than one")
 	fs.StringVar(&labels, "labels", "normal", labelHelp())
 	fs.StringVar(&out, "out", "map.png", "file to write the PNG to")
+	fs.StringVar(&bbox, "bbox", "", "draw this rectangle instead of the ground around --lat/--lon, as west,south,east,north in degrees; "+
+		"the zoom is the deepest that holds all of it, unless --zoom says otherwise")
 
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil {
-		return err
-	}
-	if err := coords.check(fs, "render"); err != nil {
 		return err
 	}
 	if width <= 0 || height <= 0 {
@@ -97,6 +99,13 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	if width*height > maxRenderPixels {
 		return usageErrorf("--width %d --height %d is %d megapixels, and this command draws at most %d",
 			width, height, width*height>>20, maxRenderPixels>>20)
+	}
+	fitted, err := renderTarget(fs, &coords, bbox, width, height)
+	if err != nil {
+		return err
+	}
+	if fitted != "" {
+		fmt.Fprintf(stdout, "%-12s %s\n", "fitted", fitted)
 	}
 	colours, err := paletteNamed(palette)
 	if err != nil {
@@ -169,6 +178,42 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	writeRenderReport(stdout, out, view, res, palette)
 	return nil
+}
+
+// renderTarget settles where a render looks: --lat/--lon, or a rectangle to
+// fit. It fills coords either way, so everything after it has one shape of
+// question, and it returns a line for the report when the zoom was chosen
+// rather than given.
+func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, width, height int) (string, error) {
+	if bbox == "" {
+		return "", coords.check(fs, "render")
+	}
+	if flagGiven(fs, "lat") || flagGiven(fs, "lon") {
+		return "", usageErrorf("--bbox and --lat/--lon are two ways to say where to look; give one")
+	}
+	b, err := parseBBox(bbox)
+	if err != nil {
+		return "", err
+	}
+	z, lat, lon, cropped, err := fitZoom(b, width, height)
+	if err != nil {
+		return "", err
+	}
+	coords.lat, coords.lon = lat, lon
+	if flagGiven(fs, "zoom") {
+		// Given, so kept -- a rectangle at a deeper zoom than fits is a
+		// crop, which is a reasonable thing to ask for -- but checked as a
+		// zoom the way check would have.
+		if coords.zoom < 0 || coords.zoom > mercator.MaxZoom {
+			return "", usageErrorf("--zoom %d is not a zoom level; they run from 0 to %d", coords.zoom, mercator.MaxZoom)
+		}
+		return fmt.Sprintf("--bbox centred at %s, %s, at the --zoom given", formatCoord(lat), formatCoord(lon)), nil
+	}
+	coords.zoom = z
+	if cropped {
+		return fmt.Sprintf("--bbox at zoom %d, cropped: it is wider or taller than the world is at the zoom that would hold it", z), nil
+	}
+	return fmt.Sprintf("--bbox at zoom %d, the deepest that holds all of it", z), nil
 }
 
 // paletteNamed resolves --palette.

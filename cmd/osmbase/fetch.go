@@ -152,11 +152,7 @@ func (f fetchFlags) bounds(fs *flag.FlagSet) (slice.Bounds, error) {
 		return acquire.WorldBounds(), nil
 	}
 	if f.bbox != "" {
-		var w, s, e, n float64
-		if _, err := fmt.Sscanf(f.bbox, "%g,%g,%g,%g", &w, &s, &e, &n); err != nil {
-			return slice.Bounds{}, usageErrorf("--bbox wants four numbers, west,south,east,north, and got %q", f.bbox)
-		}
-		return slice.Bounds{West: w, South: s, East: e, North: n}, nil
+		return parseBBox(f.bbox)
 	}
 	if !flagGiven(fs, "lat") || !flagGiven(fs, "lon") {
 		return slice.Bounds{}, usageErrorf("fetch needs --lat and --lon, or --bbox, or --world")
