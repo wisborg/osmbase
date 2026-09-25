@@ -42,12 +42,16 @@ const maxRenderPixels = 64 << 20
 func renderUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprint(w, `usage: osmbase render [SOURCE] --lat LAT --lon LON [--zoom N] [--width N] [--height N] [--palette NAME] [--out FILE]
        osmbase render [SOURCE] --bbox W,S,E,N [...]
+       osmbase render [SOURCE] --place NAME [--place-level country|region] [...]
 
 Draw the map around a coordinate and write it to a PNG. The image is centred on
 --lat/--lon and covers whatever ground --width by --height pixels hold at
 --zoom, which is the ordinary slippy-map zoom: one tile is 256 pixels, so at
 zoom 14 a 1024 by 768 image is four tiles by three. --bbox names a rectangle
-instead, and the zoom is chosen to hold all of it.
+instead, and the zoom is chosen to hold all of it. --place names a country or
+region, looked up in the Natural Earth outlines in the store ("osmbase
+boundaries" fetches them, once); a name that could mean several places is
+refused with the list, never guessed.
 
 Tiles the archive does not hold are drawn from a shallower tile where there is
 one, which is a sharp map with less detail in it, and hatched where there is
@@ -76,6 +80,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		out           string
 		labels        string
 		bbox          string
+		place         placeFlags
 	)
 	fs := newFlagSet("render", renderUsage)
 	coords.bind(fs)
@@ -88,6 +93,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&out, "out", "map.png", "file to write the PNG to")
 	fs.StringVar(&bbox, "bbox", "", "draw this rectangle instead of the ground around --lat/--lon, as west,south,east,north in degrees; "+
 		"the zoom is the deepest that holds all of it, unless --zoom says otherwise")
+	place.bind(fs)
 
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil {
@@ -100,7 +106,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		return usageErrorf("--width %d --height %d is %d megapixels, and this command draws at most %d",
 			width, height, width*height>>20, maxRenderPixels>>20)
 	}
-	fitted, err := renderTarget(fs, &coords, bbox, width, height)
+	fitted, err := renderTarget(fs, &coords, bbox, place, store, width, height)
 	if err != nil {
 		return err
 	}
@@ -184,16 +190,48 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 // fit. It fills coords either way, so everything after it has one shape of
 // question, and it returns a line for the report when the zoom was chosen
 // rather than given.
-func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, width, height int) (string, error) {
-	if bbox == "" {
+func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, place placeFlags, store string, width, height int) (string, error) {
+	given := 0
+	for _, g := range []bool{bbox != "", place.name != "", flagGiven(fs, "lat") || flagGiven(fs, "lon")} {
+		if g {
+			given++
+		}
+	}
+	if given > 1 {
+		return "", usageErrorf("--place, --bbox and --lat/--lon are three ways to say where to look; give one")
+	}
+	if bbox == "" && place.name == "" {
+		if place.level != "" {
+			return "", usageErrorf("--place-level narrows --place, which was not given")
+		}
 		return "", coords.check(fs, "render")
 	}
-	if flagGiven(fs, "lat") || flagGiven(fs, "lon") {
-		return "", usageErrorf("--bbox and --lat/--lon are two ways to say where to look; give one")
-	}
-	b, err := parseBBox(bbox)
-	if err != nil {
-		return "", err
+
+	var (
+		b    slice.Bounds
+		what string
+		err  error
+	)
+	if place.name != "" {
+		// The names are in the store's boundary files, whichever store the
+		// render then draws from: --store if given, the default store
+		// otherwise, which is where "osmbase boundaries" puts them.
+		root := store
+		if root == "" {
+			if root, err = slice.DefaultRoot(); err != nil {
+				return "", fmt.Errorf("finding the default store for --place: %w; pass --store to say where the boundaries are", err)
+			}
+		}
+		c, err := place.resolve(root)
+		if err != nil {
+			return "", err
+		}
+		b, what = placeBounds(c), placeReport(c)
+	} else {
+		if b, err = parseBBox(bbox); err != nil {
+			return "", err
+		}
+		what = "--bbox"
 	}
 	z, lat, lon, cropped, err := fitZoom(b, width, height)
 	if err != nil {
@@ -207,13 +245,13 @@ func renderTarget(fs *flag.FlagSet, coords *coordFlags, bbox string, width, heig
 		if coords.zoom < 0 || coords.zoom > mercator.MaxZoom {
 			return "", usageErrorf("--zoom %d is not a zoom level; they run from 0 to %d", coords.zoom, mercator.MaxZoom)
 		}
-		return fmt.Sprintf("--bbox centred at %s, %s, at the --zoom given", formatCoord(lat), formatCoord(lon)), nil
+		return fmt.Sprintf("%s, centred at %s, %s, at the --zoom given", what, formatCoord(lat), formatCoord(lon)), nil
 	}
 	coords.zoom = z
 	if cropped {
-		return fmt.Sprintf("--bbox at zoom %d, cropped: it is wider or taller than the world is at the zoom that would hold it", z), nil
+		return fmt.Sprintf("%s, at zoom %d, cropped: it is wider or taller than the world is at the zoom that would hold it", what, z), nil
 	}
-	return fmt.Sprintf("--bbox at zoom %d, the deepest that holds all of it", z), nil
+	return fmt.Sprintf("%s, at zoom %d, the deepest that holds all of it", what, z), nil
 }
 
 // paletteNamed resolves --palette.

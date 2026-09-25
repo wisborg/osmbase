@@ -96,7 +96,7 @@ func TestRenderBBoxDrawsAndSaysWhatItChose(t *testing.T) {
 	if r.code != 0 {
 		t.Fatalf("exit %d\n%s", r.code, r.stderr)
 	}
-	if !strings.Contains(r.stdout, "--bbox at zoom") {
+	if line, ok := lineContaining(r.stdout, "fitted"); !ok || !strings.Contains(line, "--bbox") || !strings.Contains(line, "at zoom 3") {
 		t.Errorf("the report does not say the zoom was fitted:\n%s", r.stdout)
 	}
 

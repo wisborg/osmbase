@@ -20,6 +20,7 @@ usage:
   osmbase fetch [SOURCE] --lat L --lon L [--radius KM] [flags]
   osmbase fetch [SOURCE] --bbox W,S,E,N [flags]
   osmbase fetch [SOURCE] --world [flags]
+  osmbase fetch [SOURCE] --place NAME [flags]
 
 Afterwards "osmbase render --store DIR" draws from the copy and contacts
 nobody. That pairing is the point of this command: this is the one moment the
@@ -47,6 +48,7 @@ type fetchFlags struct {
 	store    string
 	dryRun   bool
 	yes      bool
+	place    placeFlags
 }
 
 func fetchCommand(args []string, stdout, stderr io.Writer) error {
@@ -61,14 +63,10 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&f.store, "store", "", "directory to keep the copy in (default: an osmbase folder under your user cache directory)")
 	fs.BoolVar(&f.dryRun, "dry-run", false, "say exactly what would be downloaded, then stop")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask before downloading")
+	f.place.bind(fs)
 
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil || fs.Parsed() && isHelpRequest(args) {
-		return err
-	}
-
-	bounds, err := f.bounds(fs)
-	if err != nil {
 		return err
 	}
 
@@ -79,6 +77,11 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 			return usageErrorf("there is no user cache directory on this machine, so --store must say where to keep the copy: %v", err)
 		}
 		root = d
+	}
+
+	bounds, err := f.bounds(fs, root, stdout)
+	if err != nil {
+		return err
 	}
 
 	a, err := openArchive(source, stderr)
@@ -147,15 +150,35 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func (f fetchFlags) bounds(fs *flag.FlagSet) (slice.Bounds, error) {
+func (f fetchFlags) bounds(fs *flag.FlagSet, root string, stdout io.Writer) (slice.Bounds, error) {
+	given := 0
+	for _, g := range []bool{f.world, f.bbox != "", f.place.name != "", flagGiven(fs, "lat") || flagGiven(fs, "lon")} {
+		if g {
+			given++
+		}
+	}
+	if given > 1 {
+		return slice.Bounds{}, usageErrorf("--world, --place, --bbox and --lat/--lon are four ways to say what to fetch; give one")
+	}
+	if f.place.level != "" && f.place.name == "" {
+		return slice.Bounds{}, usageErrorf("--place-level narrows --place, which was not given")
+	}
 	if f.world {
 		return acquire.WorldBounds(), nil
+	}
+	if f.place.name != "" {
+		c, err := f.place.resolve(root)
+		if err != nil {
+			return slice.Bounds{}, err
+		}
+		fmt.Fprintf(stdout, "%-12s %s\n", "place", placeReport(c))
+		return placeBounds(c), nil
 	}
 	if f.bbox != "" {
 		return parseBBox(f.bbox)
 	}
 	if !flagGiven(fs, "lat") || !flagGiven(fs, "lon") {
-		return slice.Bounds{}, usageErrorf("fetch needs --lat and --lon, or --bbox, or --world")
+		return slice.Bounds{}, usageErrorf("fetch needs --lat and --lon, or --bbox, --place or --world")
 	}
 	if f.radius <= 0 {
 		return slice.Bounds{}, usageErrorf("--radius %g is not a distance", f.radius)
@@ -193,7 +216,9 @@ func writePlan(w io.Writer, p *acquire.Plan, root string) {
 	fmt.Fprintf(w, "%-12s %s\n", "source", p.Archive)
 	fmt.Fprintf(w, "%-12s %s\n", "store", root)
 	if p.Depth.World {
-		fmt.Fprintf(w, "%-12s every tile on earth, zooms %d to %d\n", "area", p.Zoom.Min, p.Zoom.Max)
+		// The overview's range, not Zoom: a world plan fills no cells, so
+		// Zoom is the empty range and printed as "zooms 1 to 0".
+		fmt.Fprintf(w, "%-12s every tile on earth, zooms %d to %d\n", "area", p.Overview.Min, p.Overview.Max)
 	} else {
 		fmt.Fprintf(w, "%-12s west %.4f, south %.4f, east %.4f, north %.4f\n",
 			"area", p.Bounds.West, p.Bounds.South, p.Bounds.East, p.Bounds.North)
