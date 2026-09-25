@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -100,7 +101,7 @@ examples:
 	printFlags(w, fs)
 }
 
-func boundariesCommand(args []string, stdout, stderr io.Writer) error {
+func boundariesCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		store   string
 		detail  string
@@ -161,6 +162,7 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 
 	if osmFrom != "" {
 		return osmBoundaries(osmOptions{
+			ctx:    ctx,
 			source: osmFrom, region: region, levels: levels,
 			dir: dir, keep: keep, yes: yes,
 			stdin: os.Stdin, stdout: stdout, stderr: stderr,
@@ -194,7 +196,7 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("creating %s: %w", dir, err)
 	}
 	for _, name := range files {
-		n, err := downloadBoundary(dir, name)
+		n, err := downloadBoundary(ctx, dir, name)
 		if err != nil {
 			return err
 		}
@@ -214,9 +216,9 @@ func boundariesCommand(args []string, stdout, stderr io.Writer) error {
 // centralises: the User-Agent that says who is calling, the redirect policy
 // that refuses a host change or a scheme downgrade, and any bound at all on
 // what a response may write to the disk.
-func downloadBoundary(dir, name string) (int64, error) {
+func downloadBoundary(ctx context.Context, dir, name string) (int64, error) {
 	return saveThroughTemp(dir, name, func(w io.Writer) (int64, error) {
-		return acquire.Download(boundarySourceURL+name, w, maxBoundaryBytes)
+		return acquire.DownloadContext(ctx, boundarySourceURL+name, w, maxBoundaryBytes, 0)
 	})
 }
 

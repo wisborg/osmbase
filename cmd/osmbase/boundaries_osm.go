@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,7 @@ const extractTimeout = 2 * time.Hour
 // package's own boundary.Layer records the lesson: "a second bool beside the
 // first would be a parameter list nobody can read at the call site".
 type osmOptions struct {
+	ctx    context.Context
 	source string
 	region string
 	levels string
@@ -104,7 +106,7 @@ func osmBoundaries(o osmOptions) error {
 
 	extract := o.source
 	if remote {
-		path, n, err := downloadExtract(o.dir, region, o.source)
+		path, n, err := downloadExtract(o.ctx, o.dir, region, o.source)
 		if err != nil {
 			return err
 		}
@@ -120,7 +122,7 @@ func osmBoundaries(o osmOptions) error {
 		}
 	}
 
-	set, rep, err := buildFromExtract(extract, o.source, levels, o.stderr)
+	set, rep, err := buildFromExtract(o.ctx, extract, o.source, levels, o.stderr)
 	if err != nil {
 		if errors.Is(err, osm.ErrNoBoundaries) {
 			// Not a failure, and the error alone does not say so. It is the
@@ -169,8 +171,18 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // source rather than path in the errors and the provenance: path may be a
 // working copy this command is about to delete, and naming a file the user
 // cannot go and look at is worse than naming nothing.
-func buildFromExtract(path, source string, levels []int, stderr io.Writer) (*boundary.Set, osm.Report, error) {
-	open := osm.Open(func() (io.ReadCloser, error) { return os.Open(path) })
+func buildFromExtract(ctx context.Context, path, source string, levels []int, stderr io.Writer) (*boundary.Set, osm.Report, error) {
+	// Read through ctx, so Ctrl-C stops the three passes at the next block
+	// rather than after them: 25 seconds for Denmark, and a planet would be
+	// hours. The osm package needs no context of its own for this -- a read
+	// that fails is a read that fails, and it stops there.
+	open := osm.Open(func() (io.ReadCloser, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		return ctxReader{ctx: ctx, ReadCloser: f}, nil
+	})
 
 	start := time.Now()
 	fmt.Fprintf(stderr, "osmbase: reading the extract three times; a country takes about half a minute\n")
@@ -354,13 +366,13 @@ func isLeftover(name string) bool {
 }
 
 // downloadExtract fetches an extract into dir and returns where it landed.
-func downloadExtract(dir, region, source string) (string, int64, error) {
+func downloadExtract(ctx context.Context, dir, region, source string) (string, int64, error) {
 	name, err := boundary.ExtractFile(region)
 	if err != nil {
 		return "", 0, err
 	}
 	written, err := saveThroughTemp(dir, name, func(w io.Writer) (int64, error) {
-		return acquire.DownloadWithin(source, w, maxExtractBytes, extractTimeout)
+		return acquire.DownloadContext(ctx, source, w, maxExtractBytes, extractTimeout)
 	})
 	if err != nil {
 		return "", 0, err
@@ -444,4 +456,18 @@ func joinLevels(levels []int) string {
 		parts[i] = strconv.Itoa(l)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// ctxReader is a reader that fails once ctx is done, with ctx's error, so an
+// interruption surfaces through whatever is reading as that error.
+type ctxReader struct {
+	ctx context.Context
+	io.ReadCloser
+}
+
+func (r ctxReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.ReadCloser.Read(p)
 }

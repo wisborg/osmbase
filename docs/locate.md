@@ -579,13 +579,16 @@ is why it is written down here.
   currently has its coordinates held twice.
 - **`osmbasetest.Extract` emits one block per element kind**, so a multi-block file, a block
   mixing kinds, a non-default granularity and a coordinate origin are all unexercised.
-- **Nothing handles a signal.** An interrupted run's temporary files are swept by the *next*
-  run rather than by the interrupted one; a `signal.NotifyContext` would do it properly and
-  would also let a long download be cancelled cleanly.
 - **`Source.Contains` rebuilds and ranks the whole containment stack once per level per
   point**, keeping one of three answers and discarding the rest. The interface asks a level
   at a time, so fixing it means changing that interface; a route of thousands of points pays
   three times.
+
+**Signals are handled.** The first Ctrl-C or SIGTERM cancels the context every command runs
+under: a download stops (`acquire.DownloadContext`), the extract passes stop at the next read,
+the temporary file and a fetched extract are removed by the clean-up already beside them, and the
+command exits 130 saying so. A second Ctrl-C kills at once. The next run's sweep stays, for a
+process killed harder than that.
 
 Three items from earlier lists are now **resolved** and are recorded here so nobody goes
 looking. **A three-deep stack made the country the locality**: ranking the three innermost

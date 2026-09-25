@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -45,7 +46,7 @@ tags the archive actually holds there.
 	fmt.Fprint(w, "\n"+sourceHelp)
 }
 
-func geojsonCommand(args []string, stdout, stderr io.Writer) error {
+func geojsonCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		coords coordFlags
 		layer  string

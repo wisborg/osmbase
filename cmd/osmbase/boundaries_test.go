@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -18,7 +19,7 @@ import (
 // crafted value read a file outside the store.
 func TestBoundariesCommand_RefusesADetailItDoesNotKnow(t *testing.T) {
 	for _, bad := range []string{"1m", "10", "10M", "../.."} {
-		err := boundariesCommand([]string{"--detail", bad, "--store", t.TempDir()}, io.Discard, io.Discard)
+		err := boundariesCommand(context.Background(), []string{"--detail", bad, "--store", t.TempDir()}, io.Discard, io.Discard)
 		if err == nil {
 			t.Errorf("--detail %q was accepted", bad)
 			continue
@@ -43,7 +44,7 @@ func TestBoundariesCommand_SilenceIsNotConsent(t *testing.T) {
 
 	dir := t.TempDir()
 	var out strings.Builder
-	if err := boundariesCommand([]string{"--store", dir}, &out, io.Discard); err != nil {
+	if err := boundariesCommand(context.Background(), []string{"--store", dir}, &out, io.Discard); err != nil {
 		t.Fatalf("a declined download returned an error: %v", err)
 	}
 	if !strings.Contains(out.String(), "stopped") {

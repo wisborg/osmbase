@@ -15,15 +15,33 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	// The first Ctrl-C, or a SIGTERM, cancels the context every command runs
+	// under, so a download stops, a build stops reading its extract, and the
+	// clean-up already written beside each -- a temporary file removed, a
+	// fetched extract deleted -- runs. Before this nothing handled a signal:
+	// the process died where it stood, and those files were swept by the NEXT
+	// run instead.
+	//
+	// A second one kills at once, as it always did: stop restores the default
+	// behaviour as soon as the first has been seen, so a clean-up that hangs
+	// can still be got out of.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // run is the whole program, with its output injected so that a test can drive
@@ -33,7 +51,15 @@ func main() {
 // being asked for something that is not a command. Keeping the last two apart
 // is what lets a script tell "you typed it wrong" from "the archive has no
 // tile there".
+// run is runContext with nothing to interrupt it, which is what a test
+// wants.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runContext(context.Background(), args, stdout, stderr)
+}
+
+// runContext runs one command under ctx and turns its outcome into an exit
+// status.
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -45,19 +71,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	case "inspect":
-		err = inspectCommand(args[1:], stdout, stderr)
+		err = inspectCommand(ctx, args[1:], stdout, stderr)
 	case "tile":
-		err = tileCommand(args[1:], stdout, stderr)
+		err = tileCommand(ctx, args[1:], stdout, stderr)
 	case "geojson":
-		err = geojsonCommand(args[1:], stdout, stderr)
+		err = geojsonCommand(ctx, args[1:], stdout, stderr)
 	case "render":
-		err = renderCommand(args[1:], stdout, stderr)
+		err = renderCommand(ctx, args[1:], stdout, stderr)
 	case "fetch":
-		err = fetchCommand(args[1:], stdout, stderr)
+		err = fetchCommand(ctx, args[1:], stdout, stderr)
 	case "locate":
-		err = runLocate(args[1:], stdout, stderr)
+		err = runLocate(ctx, args[1:], stdout, stderr)
 	case "boundaries":
-		err = boundariesCommand(args[1:], stdout, stderr)
+		err = boundariesCommand(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "osmbase: there is no %q command\n\n", args[0])
 		usage(stderr)
@@ -67,6 +93,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case err == nil:
 		return 0
+	case ctx.Err() != nil && errors.Is(err, ctx.Err()):
+		// Interrupted, which is not the command failing. 130 is what a shell
+		// reports for a process ended by Ctrl-C, so a script can tell the
+		// two apart.
+		fmt.Fprintf(stderr, "osmbase: interrupted; stopped, and removed what was only partly written\n")
+		return 130
 	case errors.Is(err, flag.ErrHelp):
 		// The command printed its own help to stdout. Asking for help is not
 		// a failure.

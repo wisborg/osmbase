@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -28,7 +29,7 @@ examples:
 	fmt.Fprint(w, "\n"+sourceHelp)
 }
 
-func inspectCommand(args []string, stdout, stderr io.Writer) error {
+func inspectCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("inspect", inspectUsage)
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil {

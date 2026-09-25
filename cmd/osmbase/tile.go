@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ examples:
 	fmt.Fprint(w, "\n"+sourceHelp)
 }
 
-func tileCommand(args []string, stdout, stderr io.Writer) error {
+func tileCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		coords coordFlags
 		tags   bool

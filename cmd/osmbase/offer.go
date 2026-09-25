@@ -64,7 +64,7 @@ type shortfall struct {
 // A no, a pipe, or a failed download is not an error. The render carries on
 // with what the store holds -- overzoomed or hatched, and its own report says
 // which -- because somebody who declined a download still asked for a map.
-func offerToFill(w io.Writer, s shortfall, yes bool) bool {
+func offerToFill(ctx context.Context, w io.Writer, s shortfall, yes bool) bool {
 	host := defaultSource
 	if s.source != "" {
 		host = s.source
@@ -97,7 +97,7 @@ func offerToFill(w io.Writer, s shortfall, yes bool) bool {
 		}
 	}
 
-	if err := fillFor(w, s); err != nil {
+	if err := fillFor(ctx, w, s); err != nil {
 		// Reported, not returned: a download that failed is a reason to draw
 		// a worse map, not a reason to draw none.
 		fmt.Fprintf(w, "osmbase: %v\nosmbase: carrying on with what the store holds\n", err)
@@ -109,7 +109,7 @@ func offerToFill(w io.Writer, s shortfall, yes bool) bool {
 // fillFor carries out the fetch offerToFill got consent for: the same
 // sequence "osmbase fetch" runs, with the area and depth taken from the view
 // rather than from flags, and the question already asked.
-func fillFor(w io.Writer, s shortfall) error {
+func fillFor(ctx context.Context, w io.Writer, s shortfall) error {
 	a, err := openArchive(s.source, w)
 	if err != nil {
 		return err
@@ -129,7 +129,7 @@ func fillFor(w io.Writer, s shortfall) error {
 	// No deeper than the archive goes: a render at zoom 17 overzooms from
 	// 15, and asking the planner for 17 is refused as a zoom it cannot have.
 	zoom := min(s.zoom, a.Reader().Header().MaxZoom)
-	plan, err := a.Plan(context.Background(), src, acquire.Request{
+	plan, err := a.Plan(ctx, src, acquire.Request{
 		Bounds: s.bounds, MaxZoom: int(zoom), CellZoom: st.CellZoom(),
 	})
 	if err != nil {
@@ -141,7 +141,7 @@ func fillFor(w io.Writer, s shortfall) error {
 		return nil
 	}
 	a.Silence()
-	res, err := a.Fetch(context.Background(), plan, src, progressTo(w))
+	res, err := a.Fetch(ctx, plan, src, progressTo(w))
 	if err != nil {
 		return err
 	}

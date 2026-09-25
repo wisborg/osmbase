@@ -58,7 +58,7 @@ type fetchFlags struct {
 	placeZoom int
 }
 
-func fetchCommand(args []string, stdout, stderr io.Writer) error {
+func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var f fetchFlags
 	fs := newFlagSet("fetch", fetchUsage)
 	fs.Float64Var(&f.lat, "lat", 0, "latitude at the centre of the area")
@@ -122,7 +122,7 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 
 	// SourceZoom is not passed: the archive fills it in from its own header,
 	// which is where that fact lives. See fetch.Archive.Plan.
-	plan, err := a.Plan(context.Background(), src, acquire.Request{
+	plan, err := a.Plan(ctx, src, acquire.Request{
 		Bounds: bounds, World: f.world, MaxZoom: f.maxZoom,
 		CellZoom: st.CellZoom(),
 	})
@@ -155,7 +155,7 @@ func fetchCommand(args []string, stdout, stderr io.Writer) error {
 	// before there is a progress line to fight with and is the slowest silent
 	// part.
 	a.Silence()
-	res, err := a.Fetch(context.Background(), plan, src, progressTo(stderr))
+	res, err := a.Fetch(ctx, plan, src, progressTo(stderr))
 	if err != nil {
 		return err
 	}

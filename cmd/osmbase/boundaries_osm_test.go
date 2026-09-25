@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,7 +40,7 @@ func extractFile(t *testing.T, dir, name string) string {
 func runBoundaries(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	err = boundariesCommand(args, &out, &errb)
+	err = boundariesCommand(context.Background(), args, &out, &errb)
 	return out.String(), errb.String(), err
 }
 

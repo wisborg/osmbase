@@ -96,7 +96,7 @@ func (c *coordList) pairs() ([]osmlocate.Coord, error) {
 	return out, nil
 }
 
-func runLocate(args []string, stdout, stderr io.Writer) error {
+func runLocate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		coords      coordList
 		store       string
@@ -215,7 +215,7 @@ func runLocate(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("opening the store at %s: %w", root, err)
 	}
 
-	places, err := osmlocate.AtEach(context.Background(), src, pts, opts)
+	places, err := osmlocate.AtEach(ctx, src, pts, opts)
 	if err != nil {
 		return err
 	}

@@ -74,7 +74,7 @@ examples:
 	fmt.Fprint(w, "\n"+sourceHelp)
 }
 
-func renderCommand(args []string, stdout, stderr io.Writer) error {
+func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		coords        coordFlags
 		width, height int
@@ -151,7 +151,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		if source != "" {
 			return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
 		}
-		return renderFromStore(store, archive, view, colours, style, palette, out, yes, stdout, stderr)
+		return renderFromStore(ctx, store, archive, view, colours, style, palette, out, yes, stdout, stderr)
 	}
 
 	a, err := openArchive(source, stderr)
@@ -189,7 +189,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	res, err := r.Render(context.Background(), view)
+	res, err := r.Render(ctx, view)
 	if err != nil {
 		if errors.Is(err, render.ErrNoCoverage) {
 			lat, lon := viewCentre(view)
@@ -565,7 +565,7 @@ func percent(f float64) string {
 // here, no URL, and nothing that could contact anyone. slice imports neither
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
-func renderFromStore(root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, stdout, stderr io.Writer) error {
+func renderFromStore(ctx context.Context, root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, stdout, stderr io.Writer) error {
 	// The zoom the renderer will ask the store for, from the renderer.
 	z, _, err := view.Zoom()
 	if err != nil {
@@ -586,7 +586,7 @@ func renderFromStore(root, archive string, view render.View, colours render.Pale
 		}
 		held, wanted, herr := src.HeldAt(b, zoom)
 		if herr == nil && held < wanted &&
-			offerToFill(stderr, shortfall{root: root, source: chosen.Source, bounds: b, zoom: zoom, held: held, wanted: wanted}, yes) {
+			offerToFill(ctx, stderr, shortfall{root: root, source: chosen.Source, bounds: b, zoom: zoom, held: held, wanted: wanted}, yes) {
 			if chosen, src, _, err = openStoreSource(root, archive); err != nil {
 				return err
 			}
@@ -594,7 +594,7 @@ func renderFromStore(root, archive string, view render.View, colours render.Pale
 	case noMap:
 		// No store, or one holding nothing: the same offer, from the
 		// default archive, and the old refusal if it is declined.
-		if !offerToFill(stderr, shortfall{root: root, bounds: b, zoom: z, empty: true}, yes) {
+		if !offerToFill(ctx, stderr, shortfall{root: root, bounds: b, zoom: z, empty: true}, yes) {
 			return err
 		}
 		if chosen, src, _, err = openStoreSource(root, archive); err != nil {
@@ -617,7 +617,7 @@ func renderFromStore(root, archive string, view render.View, colours render.Pale
 	if err != nil {
 		return err
 	}
-	res, err := r.Render(context.Background(), view)
+	res, err := r.Render(ctx, view)
 	if err != nil {
 		if errors.Is(err, render.ErrNoCoverage) {
 			lat, lon := viewCentre(view)

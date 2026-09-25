@@ -1,6 +1,7 @@
 package acquire
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,6 +55,17 @@ func Download(rawURL string, w io.Writer, limit int64) (int64, error) {
 // sized against what the caller is asking for rather than against what this
 // package usually fetches. Zero means DownloadTimeout.
 func DownloadWithin(rawURL string, w io.Writer, limit int64, timeout time.Duration) (int64, error) {
+	return DownloadContext(context.Background(), rawURL, w, limit, timeout)
+}
+
+// DownloadContext is DownloadWithin that stops when ctx is done.
+//
+// For a caller that can be interrupted: a command given Ctrl-C part way
+// through a half-gigabyte extract should stop reading and let its own
+// clean-up run, rather than die with a temporary file on disk. The error
+// wraps ctx's, so errors.Is(err, context.Canceled) tells an interruption
+// from a failure.
+func DownloadContext(ctx context.Context, rawURL string, w io.Writer, limit int64, timeout time.Duration) (int64, error) {
 	if timeout <= 0 {
 		timeout = DownloadTimeout
 	}
@@ -67,7 +79,7 @@ func DownloadWithin(rawURL string, w io.Writer, limit int64, timeout time.Durati
 	}
 
 	client := &http.Client{Timeout: timeout, CheckRedirect: checkRedirect}
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("acquire: preparing to download %s: %w", redactURL(u), err)
 	}

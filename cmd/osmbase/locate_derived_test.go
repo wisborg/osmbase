@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -50,7 +51,7 @@ func derivedStore(t *testing.T) string {
 func locateSaying(t *testing.T, args ...string) (stdout string, err error) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	err = runLocate(args, &out, &errb)
+	err = runLocate(context.Background(), args, &out, &errb)
 	return out.String(), err
 }
 
