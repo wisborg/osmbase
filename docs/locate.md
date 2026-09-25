@@ -569,8 +569,14 @@ is why it is written down here.
 - **`osm.Read` returns everything in memory.** A `func(Boundary) error` form would let the
   build stream and roughly halve peak, since a boundary way shared between two neighbours
   currently has its coordinates held twice.
-- **`osmbasetest.Extract` emits one block per element kind**, so a multi-block file, a block
-  mixing kinds, a non-default granularity and a coordinate origin are all unexercised.
+
+**Synthetic extracts come in more than one layout.** `osmbasetest.ExtractLayout` writes an
+extract as many blocks, with every kind in each block, unsorted, and at another granularity with
+offsets of either sign; one test reads the same two neighbouring boundaries under each and all at
+once, and requires what the plain layout gives. It is the only test that catches a block-kind
+check reading a block's first group alone — which the block skipping below would have turned into
+missing ways on any file that mixes kinds.
+
 **The later passes read only the blocks they need.** The first pass records what every block
 holds (`PrimitiveBlock.Holds`); the way and node passes read only blocks holding their kind, pass
 over the rest without inflating them (`Reader.NextData`), and stop after the last. That works for
