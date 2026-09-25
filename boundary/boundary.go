@@ -35,6 +35,10 @@ type Area struct {
 
 	// polygons are the parts of the area, each with its own box.
 	polygons []polygon
+
+	// names is what a search by name can match, for the areas that came
+	// from a file which says -- Natural Earth's. Nil for a derived area.
+	names *placeNames
 }
 
 // polygon is one part of an area: the rings in GeoJSON order -- the first is
@@ -426,7 +430,9 @@ func Read(r io.Reader, kind string, fromFeature bool) (*Set, error) {
 		if fromFeature {
 			k = featureKind(f.Properties, kind)
 		}
-		set.areas = append(set.areas, newArea(name, k, polys))
+		a := newArea(name, k, polys)
+		a.names = namesOf(f.Properties, name)
+		set.areas = append(set.areas, a)
 	}
 	if len(set.areas) == 0 {
 		return nil, fmt.Errorf("boundary: the %s file holds no named areas; it is not the file this expects", kind)

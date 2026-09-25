@@ -41,8 +41,16 @@ first match. Two ways to narrow it, either of which may be enough:
   each candidate's context — for a region, its country's name or ISO code.
 - **A level**: `--place-level country|region`.
 
-An exact match on the name is preferred to a match on an alternative name, so `Georgia` with
-`--place-level country` is the country and `Denmark` is Denmark without further help.
+A name matches when it equals any of an area's names or codes, ignoring case: `Denmark`, `DK`
+and `DNK` are the same country, and so are `France`, `FR` and `FRA` — Natural Earth writes -99
+in France's plain ISO fields, so the `_EH` and `ADM0_A3` codes are read too. A name that only
+*begins* a place's name is offered and never taken: `Newcastle` suggests Newcastle upon Tyne
+and draws nothing, because the Newcastle meant may be one this data does not hold.
+
+One data error needed a rule. Seven regions in the 10m file carry their country's name as their
+English one — Hovedstaden's `name_en` is "Denmark", Guyane française's is "France" — which made
+both countries ambiguous. A region's name is never the name of the country it is in, so those
+aliases are dropped.
 
 ## The extent is not the bounding box of everything
 
