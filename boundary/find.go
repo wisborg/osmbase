@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/wisborg/osmbase/locate"
@@ -82,11 +83,15 @@ type Extent struct{ West, South, East, North float64 }
 type Candidate struct {
 	// Name is the area's own name, as an answer would print it.
 	Name string
-	// Level is where it sits: Country or Region.
+	// Level is where it sits: Country or Region for a Natural Earth area, and
+	// Locality for any area from a derived file, whatever its admin_level --
+	// which of locality, macrohood or neighbourhood one area is depends on
+	// the point asked about, so a name on its own has no finer level.
 	Level locate.Level
 	// Type is its own word for what it is, when the source has one.
 	Type string
-	// In is the country a region is in, and empty for a country.
+	// In is what the area is in: a region's country, or a derived area's
+	// nearest wider area, region and country. Empty for a country.
 	In string
 
 	// Extent is the ground to show: the area's main part and the parts
@@ -119,9 +124,16 @@ func (c Candidate) Describe() string {
 // in the store.
 //
 // The query is a name, optionally followed by a comma and what it is in:
-// "Luxembourg, Belgium". levels narrows the search to Country or Region, and
-// none searches both. A list rather than one Level with a zero meaning "any",
-// because the zero Level is Country.
+// "Luxembourg, Belgium". levels narrows the search to Country, Region or
+// Locality -- the areas of the derived files -- and none searches all three.
+// A list rather than one Level with a zero meaning "any", because the zero
+// Level is Country.
+//
+// A derived file's national and state borders, admin_level 2 to 4, are
+// searched too, because they carry OpenStreetMap's LOCAL names -- "Danmark",
+// "Region Midtjylland" -- which Natural Earth's English ones do not. One that
+// merely repeats a Natural Earth match by name is dropped, so New South Wales
+// is not listed twice for one state.
 //
 // A name matches an area when it equals one of the area's names or codes,
 // ignoring case. Only when nothing matches that way are areas whose name
@@ -168,10 +180,198 @@ func (s *Source) Find(query string, levels ...locate.Level) (exact []Candidate, 
 			}
 		}
 	}
+	dExact, dNear := s.findDerived(name, within)
+	exact = append(exact, withoutRepeats(levels, dExact, exact)...)
+	near = append(near, withoutRepeats(levels, dNear, near)...)
 	if len(exact) > 0 {
 		return exact, nil
 	}
 	return nil, near
+}
+
+// findDerived searches the derived files' areas by their OpenStreetMap name.
+//
+// A derived area carries one name and no idea what it is in, so both come
+// from containment: a point inside the area is looked up in Natural Earth's
+// regions and countries and in the wider areas of the derived files. That is
+// what lets "Newcastle, New South Wales" and "Hornsby, Hornsby Shire" narrow
+// a search, and what tells two suburbs of one name apart in a list.
+func (s *Source) findDerived(name, within string) (exact, near []Candidate) {
+	var seen []Area
+	for _, set := range s.derived() {
+		for _, a := range set.areas {
+			match, isExact := matchName([]string{a.Name}, name)
+			if !match {
+				continue
+			}
+			// The same boundary in two overlapping extracts is one place.
+			if slices.ContainsFunc(seen, func(b Area) bool { return sameArea(a, b) }) {
+				continue
+			}
+			seen = append(seen, a)
+			c, context := s.derivedCandidate(a)
+			if within != "" && !slices.ContainsFunc(context, func(x string) bool { return strings.EqualFold(x, within) }) {
+				continue
+			}
+			c.exact = isExact
+			if isExact {
+				exact = append(exact, c)
+			} else {
+				near = append(near, c)
+			}
+		}
+	}
+	return exact, near
+}
+
+// withoutRepeats keeps the derived candidates at the levels asked for that do
+// not repeat, by name and level, one Natural Earth already gave.
+func withoutRepeats(levels []locate.Level, derived, ne []Candidate) []Candidate {
+	var out []Candidate
+	for _, c := range derived {
+		if len(levels) > 0 && !slices.Contains(levels, c.Level) {
+			continue
+		}
+		if slices.ContainsFunc(ne, func(n Candidate) bool { return n.Level == c.Level && strings.EqualFold(n.Name, c.Name) }) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// listedLevel is the level a derived area is listed at: a national border is
+// a country and a state border a region, and everything below is local.
+// admin_level 3 and 4 are the first subdivision in nearly every country's
+// tagging, which is the same judgement Natural Earth's region file makes; a
+// kind that is not a number is local, having no level to judge it by.
+func listedLevel(a Area) locate.Level {
+	switch n, err := strconv.Atoi(a.Kind); {
+	case err != nil:
+		return locate.Locality
+	case n <= 2:
+		return locate.Country
+	case n <= 4:
+		return locate.Region
+	}
+	return locate.Locality
+}
+
+// derivedCandidate builds a candidate for a derived area, and the names it
+// can be qualified by: its region's and country's names and codes, and the
+// names of the wider derived areas holding it.
+func (s *Source) derivedCandidate(a Area) (Candidate, []string) {
+	c := Candidate{Name: a.Name, Level: listedLevel(a), Parts: len(a.polygons)}
+	if _, err := strconv.Atoi(a.Kind); err == nil {
+		c.Type = "admin level " + a.Kind
+	} else {
+		c.Type = a.Kind
+	}
+	c.Extent, c.Shown = mainExtent(a)
+
+	lat, lon, ok := interiorPoint(a)
+	if !ok {
+		return c, nil
+	}
+	var context, in []string
+	if c.Level == locate.Country {
+		// A country is in nothing worth saying.
+		return c, nil
+	}
+	// The nearest wider area first: the council a suburb is in says more
+	// than the country does.
+	var wider []Area
+	for _, set := range s.derived() {
+		for _, b := range set.Containing(lat, lon) {
+			if sameArea(a, b) || b.boxArea() <= a.boxArea() || isCountry(b) {
+				continue
+			}
+			wider = append(wider, b)
+		}
+	}
+	slices.SortStableFunc(wider, func(x, y Area) int { return -outermostFirst(x, y) })
+	for _, b := range wider {
+		context = append(context, b.Name)
+	}
+	// Shown only below the region: a derived state border is the region
+	// Natural Earth is about to name in English, and saying both read as
+	// "Region Midtjylland, Midtjylland, Denmark".
+	if len(wider) > 0 && listedLevel(wider[0]) == locate.Locality {
+		in = append(in, wider[0].Name)
+	}
+	// The region's own record of its country counts as well as the country
+	// file's outline. Natural Earth's coast is generalised, so a point just
+	// inside a harbour suburb can fall outside the country's outline and
+	// inside the region's -- and the region still knows what it is in.
+	country := ""
+	if set := s.set(Regions); set != nil && c.Level == locate.Locality {
+		if r, ok := set.At(lat, lon); ok {
+			in = append(in, r.Name)
+			context = append(context, r.Name)
+			if r.names != nil {
+				context = append(context, r.names.aliases...)
+				context = append(context, r.names.context...)
+				if len(r.names.context) > 0 {
+					country = r.names.context[0]
+				}
+			}
+		}
+	}
+	if set := s.set(Countries); set != nil {
+		if k, ok := set.At(lat, lon); ok {
+			country = k.Name
+			context = append(context, k.Name)
+			if k.names != nil {
+				context = append(context, k.names.aliases...)
+			}
+		}
+	}
+	if country != "" && !slices.Contains(in, country) {
+		in = append(in, country)
+	}
+	c.In = strings.Join(in, ", ")
+	return c, context
+}
+
+// interiorPoint is a point inside an area, for asking what the area is in.
+//
+// The middle of its largest part's box when that is inside it, which it is
+// for most areas; otherwise the first point of a coarse grid over the box
+// that is. A crescent or an L-shaped suburb has its box's middle outside it,
+// and asking what THAT point is in could name the neighbouring council.
+func interiorPoint(a Area) (lat, lon float64, ok bool) {
+	var main *polygon
+	for i := range a.polygons {
+		if main == nil || a.polygons[i].box.area() > main.box.area() {
+			main = &a.polygons[i]
+		}
+	}
+	if main == nil || len(main.rings) == 0 || math.IsInf(main.box.area(), 0) {
+		return 0, 0, false
+	}
+	b := main.box
+	const n = 8
+	for i := 0; i <= n; i++ {
+		for j := 0; j <= n; j++ {
+			// From the middle outward, so the middle is tried first.
+			fy, fx := 0.5+offset(i, n), 0.5+offset(j, n)
+			la, lo := b.south+fy*(b.north-b.south), b.west+fx*(b.east-b.west)
+			if a.contains(la, lo) {
+				return la, lo, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// offset is the i-th of n steps from the middle of [-0.5, 0.5], alternating
+// sides: 0, +1/n, -1/n, +2/n, ...
+func offset(i, n int) float64 {
+	step := float64((i+1)/2) / float64(n)
+	if i%2 == 1 {
+		return step
+	}
+	return -step
 }
 
 // matchName reports whether a query names an area, and whether exactly.

@@ -25,7 +25,32 @@ Step 3 is `render --bbox`, which is useful on its own and is the target the othe
 | derived OpenStreetMap files | a name and an `admin_level`, a full outline | only where a file was built |
 | tiles | named points, no extent | only where tiles were fetched |
 
-Stage one of this uses Natural Earth only. Derived files and tile points are later parts.
+Natural Earth and the derived files are both searched. Tile points are a later part.
+
+### Derived files: local names, placed by containment
+
+A derived area carries one name — OpenStreetMap's local one — and an `admin_level`, and nothing
+about what it is in. Both come from containment: a point inside the area is looked up in Natural
+Earth's regions and countries and in the wider derived areas around it. That is what lets
+`Newcastle, New South Wales` or `Hornsby, Hornsby Shire` narrow a search, and what tells two
+Newcastles apart in a list:
+
+```
+"Newcastle" is 2 places:
+  Newcastle (admin level 9, City of Newcastle, New South Wales, Australia)
+  Newcastle (admin level 8, Newcastle upon Tyne, United Kingdom)
+```
+
+The point is chosen *inside* the area — an L-shaped suburb has the middle of its box over its
+neighbour — and the country is taken from the region's own record as well as from the country
+outline, because Natural Earth's coast is generalised and a harbour suburb can fall outside it.
+
+The derived files' national and state borders are searched too, because they carry the local
+names Natural Earth's English ones lack: `Danmark` is found, as a country, and `Region
+Midtjylland` as a region. One that repeats a Natural Earth match by name and level is dropped, so
+New South Wales is not listed twice. `admin_level` 2 is a country and 3–4 a region; everything
+below is `--place-level local`, since which of locality, macrohood or neighbourhood one area is
+depends on the point asked about.
 
 ## Ambiguity is the normal case, not the edge
 
@@ -116,7 +141,7 @@ tiles directly from the bounds.
 | 3 | Natural Earth names | ✅ `boundary.Source.Find`: candidates with level, type, country and main-part extent |
 | 4 | `--place` | ✅ on `render` and `fetch`, with `--place-level`; ambiguity refused with the list and a suggestion that works |
 | 5 | The offer | ✅ `render --store` asks to fetch what the view lacks at its zoom, measured by `slice.Source.HeldAt`; `--yes` answers in advance |
-| 6 | Derived files | not started: suburbs and councils where a file was built, context by containment |
+| 6 | Derived files | ✅ areas found by their local names, placed by containment, `--place-level local` |
 | 7 | Tile points | not started: cities no outline covers, zoom from the kind — the weakest source, last |
 
 Measured on a copy of a real store holding tiles around Horsens: `render --place Denmark`
@@ -134,7 +159,8 @@ from shallower tiles and reported 83% of the image overzoomed.
   records that its fetch finished, so a tile missing from it is known to be absent; the
   overview has no such record. Protomaps' builds hold every shallow tile, so this has not been
   seen, but an archive with gaps above the cell zoom would meet it.
-- **Names are English or codes.** Natural Earth's `name` is sometimes local, but `Danmark`
-  finds nothing. Derived files carry OpenStreetMap's local names and are part 6.
+- **A town that is a point is not found.** Denmark maps its towns as points and stops its
+  boundaries at the kommune, so `Horsens` offers `Horsens Kommune` and draws nothing. The tiles'
+  place points are part 7.
 - **The United States is the contiguous states**, because Alaska is more than 300 km from them
   and Hawaii nearly 4,000. A cartographer might do either; `--bbox` is the way to the other.
