@@ -43,9 +43,12 @@ func TestPackage_HasNoWayToFetchAnything(t *testing.T) {
 		}
 	}
 
-	// The positive half. One package of this module is the store's business:
-	// the projection, which is how a rectangle of degrees becomes a cell.
-	allowed := []string{"github.com/wisborg/osmbase/mercator"}
+	// The positive half. Two packages of this module are the store's
+	// business: the projection, which is how a rectangle of degrees becomes a
+	// cell, and the bounded decompression every stored tile passes through --
+	// which imports nothing but the standard library's compression and io,
+	// and has its own test saying so.
+	allowed := []string{"github.com/wisborg/osmbase/mercator", "github.com/wisborg/osmbase/internal/inflate"}
 	for _, imp := range pkg.Imports {
 		if !strings.HasPrefix(imp, "github.com/wisborg/osmbase/") {
 			continue

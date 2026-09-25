@@ -51,7 +51,9 @@ package inside either of them.
 | `osmbase/boundary` | Admin polygon derivation, the compact on-disk format, containment. Answers country, region and water from Natural Earth, and the levels below them from derived OpenStreetMap files when a store holds any |
 | `osmbase/boundary/osm` | The three passes that turn an OSM extract into administrative outlines. Reads the file three times so the node set stays the boundaries' nodes rather than the country's |
 | `osmbase/acquire` | The **only** package that opens a socket |
-| `cmd/osmbase` | Standalone CLI: `inspect`, `tile`, `geojson` today; `fetch`, `boundaries`, `render`, `place` to come |
+| `internal/protobuf` | The protobuf wire reader MVT and PBF both use |
+| `internal/inflate` | Decompression bounded while it expands, shared by `pmtiles`, `slice` and `osmpbf`; imports nothing that could fetch |
+| `cmd/osmbase` | Standalone CLI: `inspect`, `tile`, `geojson`, `fetch`, `boundaries`, `render` (with `--place`), `locate` |
 | `osmbasetest` | Synthetic archives, tiles, slices and OSM extracts, mirroring `fitactivity/fittest` |
 
 The network lives in exactly one package, and that package is named after what it does.

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/wisborg/osmbase/internal/inflate"
 	"github.com/wisborg/osmbase/internal/protobuf"
 )
 
@@ -351,13 +352,14 @@ func (d *Reader) unzlib(compressed []byte, declared int) ([]byte, error) {
 		// raw_size, to hold a block that is usually well under one.
 		d.inflated.Grow(declared)
 	}
-	// One byte past the limit, so that reaching it is distinguishable from a
-	// block that is exactly that long.
-	n, err := io.Copy(&d.inflated, io.LimitReader(d.zr, int64(limit)+1))
-	if err != nil {
+	// The bound itself is internal/inflate's, shared with pmtiles and slice:
+	// one byte past the limit, so reaching it is distinguishable from a
+	// block exactly that long.
+	_, err = inflate.Into(&d.inflated, d.zr, int64(limit))
+	if err != nil && !errors.Is(err, inflate.ErrTooLarge) {
 		return nil, fmt.Errorf("osmpbf: inflating a blob: %w", err)
 	}
-	if n > int64(limit) {
+	if err != nil {
 		// Two limits reach here and only one of them is the file's. Reporting
 		// the declaration when there was none says "the producer wrote
 		// raw_size = 0", and sends whoever is debugging a real extract to

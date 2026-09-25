@@ -560,10 +560,6 @@ is why it is written down here.
   seam and leaves it out rather than handing it to `inRing`, which treats longitude as
   linear. Neither extract produces one. Handling them — unwrapping, or splitting at the seam
   — is a design decision for whoever first needs Fiji.
-- **The decompression-bomb guard is still in three places**: `pmtiles.decompress`,
-  `slice.decompress` and `osmpbf.unzlib`, with three error vocabularies. Carried since part
-  3 and deferred each time because it touches two working packages. It has already diverged
-  once.
 - **The protobuf fixture primitives still exist twice**: `osmbasetest` (shared by `Extract`
   and the tile builder) and `osmpbf/fixture_test.go`. The latter should keep only what
   expresses *malformed* files — `truncatedZlibBlob`, `zlibBlobDeclaring`, `paddedHeader`,
@@ -583,6 +579,10 @@ is why it is written down here.
   point**, keeping one of three answers and discarding the rest. The interface asks a level
   at a time, so fixing it means changing that interface; a route of thousands of points pays
   three times.
+
+**The decompression-bomb guard is in one place**, `internal/inflate`: the bound enforced while
+expanding, with sentinel errors each caller words in its own vocabulary. `pmtiles`, `slice` and
+`osmpbf` use it; its test measures allocation on a 256 MB bomb rather than asserting an error.
 
 **Signals are handled.** The first Ctrl-C or SIGTERM cancels the context every command runs
 under: a download stops (`acquire.DownloadContext`), the extract passes stop at the next read,

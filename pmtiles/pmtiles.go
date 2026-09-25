@@ -23,13 +23,14 @@
 package pmtiles
 
 import (
-	"bytes"
-	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"sync"
+
+	"github.com/wisborg/osmbase/internal/inflate"
 )
 
 // maxLeafDepth caps how many leaf directories a single lookup will follow.
@@ -553,17 +554,16 @@ func decompress(c Compression, b []byte, limit int64, what string) ([]byte, erro
 		}
 		return b, nil
 	case CompressionGzip:
-		zr, err := gzip.NewReader(bytes.NewReader(b))
-		if err != nil {
-			return nil, fmt.Errorf("pmtiles: %s is not the gzip stream the header says it is: %w", what, err)
-		}
-		defer zr.Close()
-		out, err := io.ReadAll(io.LimitReader(zr, limit+1))
-		if err != nil {
-			return nil, fmt.Errorf("pmtiles: decompressing %s: %w", what, err)
-		}
-		if int64(len(out)) > limit {
+		// The bound itself is internal/inflate's, shared with slice and
+		// osmpbf; what is this package's is the wording.
+		out, err := inflate.Gzip(b, limit)
+		switch {
+		case errors.Is(err, inflate.ErrTooLarge):
 			return nil, tooLarge(what, limit)
+		case errors.Is(err, inflate.ErrNotGzip):
+			return nil, fmt.Errorf("pmtiles: %s is not the gzip stream the header says it is: %w", what, err)
+		case err != nil:
+			return nil, fmt.Errorf("pmtiles: decompressing %s: %w", what, err)
 		}
 		return out, nil
 	case CompressionBrotli, CompressionZstd:

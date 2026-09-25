@@ -1,10 +1,10 @@
 package slice
 
 import (
-	"bytes"
-	"compress/gzip"
+	"errors"
 	"fmt"
-	"io"
+
+	"github.com/wisborg/osmbase/internal/inflate"
 )
 
 // Compression names how the tile files in a source are encoded on disk.
@@ -72,17 +72,16 @@ func (c Compression) decompress(b []byte, what string) ([]byte, error) {
 		}
 		return b, nil
 	case CompressionGzip:
-		zr, err := gzip.NewReader(bytes.NewReader(b))
-		if err != nil {
-			return nil, fmt.Errorf("slice: %s is not the gzip stream the manifest says it is: %w", what, err)
-		}
-		defer zr.Close()
-		out, err := io.ReadAll(io.LimitReader(zr, maxTileBytes+1))
-		if err != nil {
-			return nil, fmt.Errorf("slice: decompressing %s: %w", what, err)
-		}
-		if int64(len(out)) > maxTileBytes {
+		// The bound itself is internal/inflate's, shared with pmtiles and
+		// osmpbf; what is this package's is the wording.
+		out, err := inflate.Gzip(b, maxTileBytes)
+		switch {
+		case errors.Is(err, inflate.ErrTooLarge):
 			return nil, fmt.Errorf("slice: %s expands past this store's limit of %d bytes", what, maxTileBytes)
+		case errors.Is(err, inflate.ErrNotGzip):
+			return nil, fmt.Errorf("slice: %s is not the gzip stream the manifest says it is: %w", what, err)
+		case err != nil:
+			return nil, fmt.Errorf("slice: decompressing %s: %w", what, err)
 		}
 		return out, nil
 	}
