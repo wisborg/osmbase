@@ -65,9 +65,10 @@ func (b Bounds) validate() error {
 // View is what to draw: a geographic rectangle and the pixel size to draw it
 // at.
 //
-// The image COVERS the rectangle rather than fitting inside it. Degrees and
-// pixels rarely have the same aspect ratio, and the three ways to reconcile
-// that are to stretch, to show less than was asked for, or to show more. Web
+// The image SHOWS ALL of the rectangle rather than filling itself with part of
+// it. Degrees and pixels rarely have the same aspect ratio, and the three ways
+// to reconcile that are to stretch, to show less than was asked for, or to show
+// more. Web
 // Mercator is conformal -- a small circle on the ground is a circle on the
 // screen -- and stretching it to an aspect ratio destroys exactly that, turning
 // every roundabout into an ellipse. Showing less silently answers a different
@@ -173,9 +174,15 @@ func resolve(v View) (projection, error) {
 		return projection{}, fmt.Errorf("render: latitudes %g to %g project to a rectangle of no height; Web Mercator is cut at %g degrees", v.Bounds.South, v.Bounds.North, mercator.MaxLatitude)
 	}
 
-	// The larger of the two scales is what makes the image cover the rectangle
-	// rather than fit inside it.
-	scale := math.Max(float64(v.Width)/worldW, float64(v.Height)/worldH)
+	// The SMALLER of the two scales, so the whole rectangle is on the image:
+	// it fills one axis and the other is extended, symmetrically about the
+	// centre, as View promises. This took the larger for its first two weeks,
+	// which cropped the longer axis instead -- a 400 by 100 image of one
+	// square tile showed a quarter of its height -- and a test asserted that,
+	// reading edges beyond the image as "more" when they are ground not drawn.
+	// Every caller in this module passes a view already at the image's aspect
+	// ratio, where the two scales are equal, which is why nothing showed it.
+	scale := math.Min(float64(v.Width)/worldW, float64(v.Height)/worldH)
 
 	p := projection{
 		width:   v.Width,

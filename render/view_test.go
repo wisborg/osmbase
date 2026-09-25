@@ -51,48 +51,72 @@ func TestResolve_OneTileShownAtTileSizeIsExactlyThatZoom(t *testing.T) {
 	}
 }
 
-// TestResolve_TheImageCoversTheBoundsOnOneScale pins the aspect-ratio decision.
+// TestResolve_TheImageShowsAllOfTheBoundsOnOneScale pins the aspect-ratio
+// decision.
 //
 // Degrees and pixels rarely agree, and the three answers are to stretch, to
 // show less than was asked for, or to show more. Stretching destroys the one
 // property Web Mercator is chosen for -- a circle on the ground is a circle on
 // the screen -- so the two scales have to be equal, and showing less would
-// answer a question nobody asked, so the requested rectangle has to be inside
-// what came back.
+// answer a question nobody asked, so every edge of the requested rectangle has
+// to be ON the image: at its border along one axis, inside it along the other.
 //
 // The view here is one zoom-4 tile asked for on a 400 by 100 image. The tile is
 // 1/16 of the world on each axis, so the scales that would fit it are 6400 and
-// 1600 pixels per world unit; covering takes the larger, and at 6400 the image
-// is 400/6400 = 1/16 of the world wide -- the tile exactly -- and 100/6400 =
-// 1/64 tall, a quarter of the tile, centred.
-func TestResolve_TheImageCoversTheBoundsOnOneScale(t *testing.T) {
+// 1600 pixels per world unit. Showing all of it takes the SMALLER: at 1600 the
+// image is 100/1600 = 1/16 of the world tall -- the tile exactly -- and
+// 400/1600 = 1/4 wide, the tile and a tile and a half of ground either side.
+//
+// This test used to assert the opposite. It took the larger scale, found the
+// north and south edges beyond the image, and called that "more, not less" --
+// but an edge beyond the image is ground that was not drawn. At 6400 the image
+// held a quarter of the tile's height and the View's own documentation, that
+// everything asked for is on the image, was false for any caller whose
+// rectangle was not the image's shape. Both orientations are checked, since a
+// rule that picked one axis would pass either alone.
+func TestResolve_TheImageShowsAllOfTheBoundsOnOneScale(t *testing.T) {
 	b := tileBounds(t, 4, 8, 8)
-	p, err := resolve(View{Bounds: b, Width: 400, Height: 100})
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-
-	if want := 400 * 16.0; math.Abs(p.scale-want) > 1e-6 {
-		t.Errorf("scale = %g, want %g", p.scale, want)
-	}
-
-	// The requested rectangle has to be on the image. West and east land on the
-	// edges; north and south fall outside it, which is the "more, not less"
-	// half of the rule.
 	x0, y0 := mercator.Project(b.West, b.North)
 	x1, y1 := mercator.Project(b.East, b.South)
 	const eps = 1e-9
-	if got := p.pixelX(x0); math.Abs(got) > eps {
-		t.Errorf("the west edge is at pixel %g, want 0", got)
-	}
-	if got := p.pixelX(x1); math.Abs(got-400) > eps {
-		t.Errorf("the east edge is at pixel %g, want 400", got)
-	}
-	if got := p.pixelY(y0); got > 0 {
-		t.Errorf("the north edge is at pixel %g, want 0 or above the image; the image must not show less than was asked for", got)
-	}
-	if got := p.pixelY(y1); got < 100 {
-		t.Errorf("the south edge is at pixel %g, want 100 or below the image", got)
+
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		scale         float64
+	}{
+		{"wide image", 400, 100, 100 * 16.0},
+		{"tall image", 100, 400, 100 * 16.0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := resolve(View{Bounds: b, Width: tc.width, Height: tc.height})
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if math.Abs(p.scale-tc.scale) > 1e-6 {
+				t.Errorf("scale = %g, want %g", p.scale, tc.scale)
+			}
+			w, h := float64(tc.width), float64(tc.height)
+			for _, e := range []struct {
+				name string
+				px   float64
+				max  float64
+			}{
+				{"west", p.pixelX(x0), w}, {"east", p.pixelX(x1), w},
+				{"north", p.pixelY(y0), h}, {"south", p.pixelY(y1), h},
+			} {
+				if e.px < -eps || e.px > e.max+eps {
+					t.Errorf("the %s edge is at pixel %g, outside the image's 0 to %g: part of what was asked for was not drawn", e.name, e.px, e.max)
+				}
+			}
+			// And one axis is filled: the rectangle is shown as large as it
+			// fits, not merely somewhere on the image.
+			fillsX := math.Abs(p.pixelX(x0)) < eps && math.Abs(p.pixelX(x1)-w) < eps
+			fillsY := math.Abs(p.pixelY(y0)) < eps && math.Abs(p.pixelY(y1)-h) < eps
+			if !fillsX && !fillsY {
+				t.Error("the rectangle fills neither axis of the image")
+			}
+		})
 	}
 }
 
