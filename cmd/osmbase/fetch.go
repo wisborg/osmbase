@@ -201,8 +201,19 @@ func writePlan(w io.Writer, p *acquire.Plan, root string) {
 	} else {
 		fmt.Fprintf(w, "%-12s west %.4f, south %.4f, east %.4f, north %.4f\n",
 			"area", p.Bounds.West, p.Bounds.South, p.Bounds.East, p.Bounds.North)
-		fmt.Fprintf(w, "%-12s %d of %d cells, zooms %d to %d\n",
-			"cells", p.CellsToFetch, len(p.Cells), p.Zoom.Min, p.Zoom.Max)
+		if p.Zoom.Empty() {
+			// Shallow: every tile is above the cell grid, and the cells
+			// beneath are not being filled -- which a count of "0 of N
+			// cells" would say as though something had gone wrong.
+			fmt.Fprintf(w, "%-12s zooms %d to %d, above the store's cell grid", "depth", p.Overview.Min, p.Overview.Max)
+			if len(p.Cells) > 0 {
+				fmt.Fprintf(w, "; the %d cells beneath are not filled", len(p.Cells))
+			}
+			fmt.Fprintln(w)
+		} else {
+			fmt.Fprintf(w, "%-12s %d of %d cells, zooms %d to %d\n",
+				"cells", p.CellsToFetch, len(p.Cells), p.Zoom.Min, p.Zoom.Max)
+		}
 	}
 	fetch := p.Tiles - p.Held - p.Absent
 	fmt.Fprintf(w, "%-12s %d to fetch", "tiles", fetch)

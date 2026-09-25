@@ -223,11 +223,40 @@ func cellOf(t TileRef, cellZoom uint8) (Cell, bool) {
 func CellsForZoom(b Bounds, cellZoom uint8) ([]Cell, error) { return cellsFor(b, cellZoom) }
 
 func cellsFor(b Bounds, cellZoom uint8) ([]Cell, error) {
-	if err := b.validate(); err != nil {
+	x0, x1, y0, y1, err := cellRange(b, cellZoom)
+	if err != nil {
 		return nil, err
 	}
+	cells := make([]Cell, 0, (int(x1-x0)+1)*(int(y1-y0)+1))
+	for y := y0; y <= y1; y++ {
+		for x := x0; x <= x1; x++ {
+			cells = append(cells, Cell{X: x, Y: y})
+		}
+	}
+	return cells, nil
+}
+
+// CellCount is how many cells CellsForZoom would return, without allocating
+// them.
+//
+// For a caller deciding whether to list an area's cells at all. A continent
+// at the default cell zoom is hundreds of thousands of them, and counting by
+// listing is the allocation the question exists to avoid.
+func CellCount(b Bounds, cellZoom uint8) (int, error) {
+	x0, x1, y0, y1, err := cellRange(b, cellZoom)
+	if err != nil {
+		return 0, err
+	}
+	return (int(x1-x0) + 1) * (int(y1-y0) + 1), nil
+}
+
+// cellRange is the first and last cell index a rectangle covers on each axis.
+func cellRange(b Bounds, cellZoom uint8) (x0, x1, y0, y1 uint32, err error) {
+	if err := b.validate(); err != nil {
+		return 0, 0, 0, 0, err
+	}
 	if err := checkCellZoom(cellZoom); err != nil {
-		return nil, err
+		return 0, 0, 0, 0, err
 	}
 	n := math.Exp2(float64(cellZoom))
 	last := uint32(1)<<cellZoom - 1
@@ -236,16 +265,9 @@ func cellsFor(b Bounds, cellZoom uint8) ([]Cell, error) {
 	// to get an empty cell list for a perfectly good rectangle.
 	wx0, wy0 := mercator.Project(b.West, b.North)
 	wx1, wy1 := mercator.Project(b.East, b.South)
-	x0, x1 := cellSpan(wx0, wx1, n, last)
-	y0, y1 := cellSpan(wy0, wy1, n, last)
-
-	cells := make([]Cell, 0, (int(x1-x0)+1)*(int(y1-y0)+1))
-	for y := y0; y <= y1; y++ {
-		for x := x0; x <= x1; x++ {
-			cells = append(cells, Cell{X: x, Y: y})
-		}
-	}
-	return cells, nil
+	x0, x1 = cellSpan(wx0, wx1, n, last)
+	y0, y1 = cellSpan(wy0, wy1, n, last)
+	return x0, x1, y0, y1, nil
 }
 
 // cellSpan turns one axis of a rectangle, in normalised world units, into the

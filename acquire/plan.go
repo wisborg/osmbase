@@ -291,12 +291,18 @@ func PlanFor(ctx context.Context, a Archive, dst *slice.Source, req Request) (*P
 	} else if !depth.World {
 		// The cells are still reported, because "this area touches four cells
 		// and none of them is being filled" is the fact that explains why a
-		// render here will be coarse.
-		cells, err := cellsOf(p.Bounds, req.CellZoom)
+		// render here will be coarse -- where there are few enough to list.
+		// Past the limit they are not listed rather than refused: nothing is
+		// being fetched into them, and a country is thousands.
+		n, err := slice.CellCount(p.Bounds, req.CellZoom)
 		if err != nil {
 			return nil, err
 		}
-		p.Cells = cells
+		if n <= MaxPlanCells {
+			if p.Cells, err = cellsOf(p.Bounds, req.CellZoom); err != nil {
+				return nil, err
+			}
+		}
 		p.Zoom = slice.EmptyZoomRange()
 	} else {
 		p.Zoom = slice.EmptyZoomRange()
@@ -348,12 +354,19 @@ func depthFor(req Request) (Depth, error) {
 }
 
 // overviewTiles lists the shallow tiles a fetch needs, deduplicated and in a
-// deterministic order.
+// deterministic order: by zoom, then row-major.
 //
 // For a global slice that is every tile on earth to the chosen depth. For an
-// area it is the ancestor chain above each of its cells, which neighbouring
-// cells share almost entirely -- twelve tiles for one cell at the default cell
-// zoom, and not many more for a hundred of them.
+// area it is every tile covering the area at each zoom above the cell zoom --
+// which is the same set as the ancestor chains above its cells, listed from
+// the bounds directly.
+//
+// It used to be listed through the cells, and that was the wrong way round
+// for exactly the requests that need it most. A country fits an image at
+// about zoom 7; Denmark at zoom 7 is a few dozen tiles, and reaching them
+// through its cells meant enumerating 5,658 of them at zoom 12 -- past
+// MaxPlanCells, so the plan was refused before a tile was listed. A
+// whole-world box enumerated sixteen million.
 //
 // The list is capped at the cell zoom because that is the boundary the store
 // draws: a tile at or below the cell zoom belongs to a cell and is written by
@@ -373,27 +386,37 @@ func overviewTiles(b slice.Bounds, cellZoom uint8, d Depth) ([]slice.TileRef, er
 	if cellZoom == 0 {
 		return nil, nil
 	}
-	cells, err := cellsOf(b, cellZoom)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[slice.TileRef]bool)
 	var out []slice.TileRef
-	for _, c := range cells {
-		refs, err := slice.AncestorTiles(c, cellZoom, slice.ZoomRange{Min: 0, Max: top})
+	for z := uint8(0); z <= top; z++ {
+		// Counted before it is listed, so a box too big for its zoom is
+		// refused without allocating it.
+		n, err := slice.CellCount(b, z)
 		if err != nil {
 			return nil, err
 		}
-		for _, r := range refs {
-			if seen[r] {
-				continue
-			}
-			seen[r] = true
-			out = append(out, r)
+		if len(out)+n > MaxOverviewTiles {
+			return nil, fmt.Errorf("acquire: that area is more than %d tiles by zoom %d, which is not an overview any more; ask for a shallower zoom or a smaller area",
+				MaxOverviewTiles, z)
+		}
+		// A tile at zoom z is the cell of a grid keyed at z, so slice's cell
+		// arithmetic -- edge slack and all -- is the tile arithmetic too.
+		cells, err := slice.CellsForZoom(b, z)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cells {
+			out = append(out, slice.TileRef{Z: z, X: c.X, Y: c.Y})
 		}
 	}
 	return out, nil
 }
+
+// MaxOverviewTiles bounds the shallow tiles one fetch over an area may list.
+//
+// The same figure as the deepest whole-world list: every tile on earth to
+// zoom 8. An area needing more than that above the cell zoom is asking for a
+// planet download at a zoom where one is not an overview.
+const MaxOverviewTiles = 87_381
 
 // cellsOf is slice's own cell arithmetic with this package's cap on top of it.
 func cellsOf(b slice.Bounds, cellZoom uint8) ([]slice.Cell, error) {
