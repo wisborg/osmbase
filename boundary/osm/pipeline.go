@@ -180,7 +180,7 @@ type Open func() (io.ReadCloser, error)
 func Read(open Open, opts Options) ([]Boundary, error) {
 	opts.Limits = opts.Limits.withDefaults()
 
-	found, wantedWays, err := readRelations(open, opts)
+	found, wantedWays, kinds, err := readRelations(open, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -188,12 +188,12 @@ func Read(open Open, opts Options) ([]Boundary, error) {
 		return nil, ErrNoBoundaries
 	}
 
-	wayNodes, wantedNodes, err := readWays(open, wantedWays, opts.Limits)
+	wayNodes, wantedNodes, err := readWays(open, wantedWays, kinds, opts.Limits)
 	if err != nil {
 		return nil, err
 	}
 
-	places, err := readNodes(open, wantedNodes)
+	places, err := readNodes(open, wantedNodes, kinds)
 	if err != nil {
 		return nil, err
 	}
@@ -212,11 +212,20 @@ type relation struct {
 
 // readRelations is pass 1. It keeps the relations that are administrative
 // boundaries at a wanted level, and the ids of the ways they name.
-func readRelations(open Open, opts Options) ([]relation, *idSet, error) {
+//
+// It also records what every block holds, which is what lets the two passes
+// after it read only the blocks they need. See blockKinds.
+func readRelations(open Open, opts Options) ([]relation, *idSet, blockKinds, error) {
 	var found []relation
+	var kinds blockKinds
 	wanted := newIDSet(opts.Limits.Ways)
 
-	err := eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+	err := eachBlock(open, nil, func(i int, b *osmpbf.PrimitiveBlock) error {
+		k, err := b.Holds()
+		if err != nil {
+			return err
+		}
+		kinds = append(kinds, k)
 		return b.EachRelation(func(r osmpbf.Relation) error {
 			if !r.Tags.Is("boundary", "administrative") {
 				return nil
@@ -258,10 +267,10 @@ func readRelations(open Open, opts Options) ([]relation, *idSet, error) {
 		})
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	wanted.freeze()
-	return found, wanted, nil
+	return found, wanted, kinds, nil
 }
 
 // readWays is pass 2. For the ways pass 1 asked about, it records the nodes
@@ -271,7 +280,7 @@ func readRelations(open Open, opts Options) ([]relation, *idSet, error) {
 // than in a map keyed by way id. That is the whole reason the set is a sorted
 // slice: a binary search gives the position, and the position indexes
 // everything else, so nothing pays a map's per-entry overhead.
-func readWays(open Open, wantedWays *idSet, limits Limits) ([][]int64, *idSet, error) {
+func readWays(open Open, wantedWays *idSet, kinds blockKinds, limits Limits) ([][]int64, *idSet, error) {
 	nodes := make([][]int64, wantedWays.len())
 	// Presence tracked separately rather than by nodes[i] != nil. A way may
 	// legitimately carry no references at all, and slices.Clone of an empty
@@ -282,7 +291,7 @@ func readWays(open Open, wantedWays *idSet, limits Limits) ([][]int64, *idSet, e
 	seen := make([]bool, wantedWays.len())
 	wanted := newIDSet(limits.Nodes)
 
-	err := eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+	err := eachBlock(open, kinds.only(osmpbf.HoldsWays), func(_ int, b *osmpbf.PrimitiveBlock) error {
 		return b.EachWay(func(w osmpbf.Way) error {
 			i, ok := wantedWays.find(w.ID)
 			if !ok {
@@ -321,11 +330,11 @@ func readWays(open Open, wantedWays *idSet, limits Limits) ([][]int64, *idSet, e
 // nodes an administrative boundary actually runs through, in an array
 // parallel to the frozen set -- 24 bytes a node, against the 50 or more a
 // map[int64]Point would spend per entry before storing anything.
-func readNodes(open Open, wantedNodes *idSet) ([]Point, error) {
+func readNodes(open Open, wantedNodes *idSet, kinds blockKinds) ([]Point, error) {
 	points := make([]Point, wantedNodes.len())
 	seen := make([]bool, wantedNodes.len())
 
-	err := eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+	err := eachBlock(open, kinds.only(osmpbf.HoldsNodes), func(_ int, b *osmpbf.PrimitiveBlock) error {
 		return b.EachNode(func(n osmpbf.Node) error {
 			i, ok := wantedNodes.find(n.ID)
 			if !ok {
@@ -431,32 +440,85 @@ func collect(found []relation, wantedWays *idSet, wayNodes [][]int64, wantedNode
 	return out, nil
 }
 
-// eachBlock opens the extract and hands every OSMData block to walk.
-func eachBlock(open Open, walk func(*osmpbf.PrimitiveBlock) error) error {
+// blockKinds is what each of an extract's data blocks holds, by index, as
+// the first pass found it.
+//
+// It is what makes the second and third passes cheap. Most of a country's
+// blocks are nodes -- Denmark's extract is 6,689 node blocks, 848 way blocks
+// and 7 relation blocks -- and the way pass used to inflate and decode every
+// one of them to find the ways. Knowing where the ways are, it passes over the
+// rest without inflating them, and stops after the last one. Recorded by the
+// first pass, which has to read every block anyway, so it costs a byte a
+// block and no extra read; and it works for a file in any order, sorted or
+// not, which the header's Sort.Type_then_ID flag would not.
+type blockKinds []osmpbf.Kinds
+
+// only is the filter a pass reads with: the blocks holding kind, and nothing
+// after the last of them.
+func (k blockKinds) only(kind osmpbf.Kinds) *blockFilter {
+	last := -1
+	for i, h := range k {
+		if h&kind != 0 {
+			last = i
+		}
+	}
+	return &blockFilter{kinds: k, want: kind, last: last}
+}
+
+type blockFilter struct {
+	kinds blockKinds
+	want  osmpbf.Kinds
+	last  int
+}
+
+// eachBlock opens the extract and hands the OSMData blocks to walk, with
+// their index among the file's data blocks.
+//
+// With a filter, a block it does not want is passed over without being
+// inflated, and the read stops after the last block it does. A filter
+// describes a file as the first pass found it; one that meets a block past
+// its end is reading a different file -- replaced between passes -- and says
+// so rather than skip by a map of something else.
+func eachBlock(open Open, filter *blockFilter, walk func(int, *osmpbf.PrimitiveBlock) error) error {
 	rc, err := open()
 	if err != nil {
 		return fmt.Errorf("osm: opening the extract: %w", err)
 	}
 	defer rc.Close()
 
+	keep := func(int) bool { return true }
+	if filter != nil {
+		if filter.last < 0 {
+			return nil
+		}
+		keep = func(i int) bool { return i < len(filter.kinds) && filter.kinds[i]&filter.want != 0 }
+	}
 	d := osmpbf.NewReader(rc)
 	for {
-		block, err := d.Next()
+		block, i, err := d.NextData(keep)
 		if errors.Is(err, io.EOF) {
+			if filter != nil {
+				return fmt.Errorf("osm: the extract ended before block %d, which the first pass read; it changed between passes", filter.last)
+			}
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if block.Type != osmpbf.TypeData {
-			continue
+		if filter != nil && i >= len(filter.kinds) {
+			return fmt.Errorf("osm: the extract has a block %d the first pass did not; it changed between passes", i)
 		}
 		pb, err := osmpbf.DecodePrimitiveBlock(block.Data)
 		if err != nil {
 			return err
 		}
-		if err := walk(&pb); err != nil {
+		if err := walk(i, &pb); err != nil {
 			return err
+		}
+		if filter != nil && i == filter.last {
+			// Everything this pass wants has been read. What follows is
+			// blocks it would only pass over.
+			return nil
 		}
 	}
 }

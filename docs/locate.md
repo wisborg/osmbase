@@ -564,10 +564,6 @@ is why it is written down here.
   and the tile builder) and `osmpbf/fixture_test.go`. The latter should keep only what
   expresses *malformed* files — `truncatedZlibBlob`, `zlibBlobDeclaring`, `paddedHeader`,
   `framedWith` — which `Extract` cannot and should not express.
-- **The header's sort order is still unread, and `osmpbf.ErrStop` still has no consumer**
-  outside its own test. A file marked sorted type-then-id would let the three passes stop
-  early rather than read to the end. Either wire it up or strike the claim in `ErrStop`'s
-  doc that "the three passes over an extract all want it".
 - **`Header` does not carry the bounding box**, which would let a caller reject an extract
   that does not cover the area before reading an element.
 - **`osm.Read` returns everything in memory.** A `func(Boundary) error` form would let the
@@ -575,6 +571,15 @@ is why it is written down here.
   currently has its coordinates held twice.
 - **`osmbasetest.Extract` emits one block per element kind**, so a multi-block file, a block
   mixing kinds, a non-default granularity and a coordinate origin are all unexercised.
+**The later passes read only the blocks they need.** The first pass records what every block
+holds (`PrimitiveBlock.Holds`); the way and node passes read only blocks holding their kind, pass
+over the rest without inflating them (`Reader.NextData`), and stop after the last. That works for
+a file in any order, which the header's `Sort.Type_then_ID` flag — the route this item first
+proposed — would not. Measured on Denmark (6,689 node blocks, 848 way, 7 relation): the way pass
+went from 8.8 s to 4.9 s and the node pass from 10.4 s to 7.6 s, 26.7 s to 20.1 s end to end, with
+a byte-identical file bar its timestamp. `ErrStop` keeps its place as a caller's convenience, and
+no longer claims the passes use it.
+
 **A point's containment stack is built once, not once per level.** `BoundarySource` still asks
 a level at a time, and a source that can do better implements the optional
 `locate.LevelsSource`; `AtEach` asks it once per point for every covered level. `boundary.Source`

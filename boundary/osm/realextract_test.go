@@ -76,7 +76,7 @@ func TestMeasureARealExtract(t *testing.T) {
 			opts := Options{Levels: tc.levels, Limits: DefaultLimits()}
 
 			start := time.Now()
-			found, wantedWays, err := readRelations(open, opts)
+			found, wantedWays, kinds, err := readRelations(open, opts)
 			if err != nil {
 				t.Fatalf("pass 1: %v", err)
 			}
@@ -88,7 +88,7 @@ func TestMeasureARealExtract(t *testing.T) {
 			}
 
 			start = time.Now()
-			wayNodes, wantedNodes, err := readWays(open, wantedWays, opts.Limits)
+			wayNodes, wantedNodes, err := readWays(open, wantedWays, kinds, opts.Limits)
 			if err != nil {
 				t.Fatalf("pass 2: %v", err)
 			}
@@ -103,7 +103,7 @@ func TestMeasureARealExtract(t *testing.T) {
 			}
 
 			start = time.Now()
-			points, err := readNodes(open, wantedNodes)
+			points, err := readNodes(open, wantedNodes, kinds)
 			if err != nil {
 				t.Fatalf("pass 3: %v", err)
 			}

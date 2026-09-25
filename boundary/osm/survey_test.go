@@ -40,7 +40,7 @@ func TestSurveyARealExtract(t *testing.T) {
 		relations int
 	)
 
-	err := eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+	err := eachBlock(open, nil, func(_ int, b *osmpbf.PrimitiveBlock) error {
 		if err := b.EachRelation(func(r osmpbf.Relation) error {
 			relations++
 			if v, ok := r.Tags.Get("admin_level"); ok && r.Tags.Is("boundary", "administrative") {
@@ -127,7 +127,7 @@ func surveyTaggedWays(t *testing.T, open Open) {
 	t.Helper()
 
 	var members []int64
-	err := eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+	err := eachBlock(open, nil, func(_ int, b *osmpbf.PrimitiveBlock) error {
 		return b.EachRelation(func(r osmpbf.Relation) error {
 			if !r.Tags.Is("boundary", "administrative") {
 				return nil
@@ -147,7 +147,7 @@ func surveyTaggedWays(t *testing.T, open Open) {
 	members = slices.Compact(members)
 
 	var tagged, alsoMember, standalone int
-	err = eachBlock(open, func(b *osmpbf.PrimitiveBlock) error {
+	err = eachBlock(open, nil, func(_ int, b *osmpbf.PrimitiveBlock) error {
 		return b.EachWay(func(w osmpbf.Way) error {
 			if !w.Tags.Is("boundary", "administrative") {
 				return nil

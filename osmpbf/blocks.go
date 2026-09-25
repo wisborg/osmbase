@@ -111,6 +111,10 @@ type Reader struct {
 	// tens of thousands of multi-megabyte allocations for no reason.
 	inflated bytes.Buffer
 	zr       io.ReadCloser
+
+	// dataIndex counts the OSMData blocks NextData has passed, returned or
+	// not, so an index names the same block on every read of one file.
+	dataIndex int
 }
 
 // NewReader reads PBF blocks from r.
@@ -157,6 +161,68 @@ func (d *Reader) Next() (Block, error) {
 	}
 
 	return Block{Type: kind, Data: data}, nil
+}
+
+// NextData returns the next OSMData block that keep wants, and its index
+// among the file's data blocks, or io.EOF at the end of the file.
+//
+// A data block keep refuses is passed over WITHOUT being inflated: its bytes
+// are read past and discarded, which is IO and nothing else. For a reader that
+// already knows which blocks it needs -- the boundary passes learn what every
+// block holds on their first read of the file -- inflating the rest is most of
+// the cost of a pass: a country's way pass inflates thousands of node blocks
+// to find the few hundred holding ways.
+//
+// A header block is always inflated and checked, as Next checks it, whether
+// or not anything wants it: its required features decide whether the file may
+// be read at all. Other block types are passed over.
+func (d *Reader) NextData(keep func(index int) bool) (Block, int, error) {
+	for {
+		size, err := d.headerSize()
+		if err != nil {
+			return Block{}, 0, err
+		}
+		raw, err := d.read(int(size))
+		if err != nil {
+			return Block{}, 0, fmt.Errorf("osmpbf: reading a blob header: %w", err)
+		}
+		kind, dataSize, err := parseBlobHeader(raw)
+		if err != nil {
+			return Block{}, 0, err
+		}
+		if kind == TypeData && !keep(d.dataIndex) {
+			d.dataIndex++
+			if _, err := io.CopyN(io.Discard, d.r, int64(dataSize)); err != nil {
+				if errors.Is(err, io.EOF) {
+					return Block{}, 0, io.ErrUnexpectedEOF
+				}
+				return Block{}, 0, fmt.Errorf("osmpbf: passing over a %s blob: %w", kind, err)
+			}
+			continue
+		}
+		blob, err := d.read(int(dataSize))
+		if err != nil {
+			return Block{}, 0, fmt.Errorf("osmpbf: reading a %s blob: %w", kind, err)
+		}
+		if kind != TypeData && kind != TypeHeader {
+			continue
+		}
+		data, err := d.inflate(blob)
+		if err != nil {
+			return Block{}, 0, err
+		}
+		if kind == TypeHeader {
+			h, err := DecodeHeader(data)
+			if err != nil {
+				return Block{}, 0, err
+			}
+			d.header = h
+			continue
+		}
+		i := d.dataIndex
+		d.dataIndex++
+		return Block{Type: kind, Data: data}, i, nil
+	}
 }
 
 // Header returns the file's feature declarations, once its OSMHeader block

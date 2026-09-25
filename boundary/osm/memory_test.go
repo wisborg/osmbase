@@ -126,7 +126,7 @@ func TestOnlyTheNodesTheBoundariesTouchAreKept(t *testing.T) {
 
 	open := from(e.Bytes())
 
-	_, wantedWays, err := readRelations(open, Options{Limits: DefaultLimits()})
+	_, wantedWays, kinds, err := readRelations(open, Options{Limits: DefaultLimits()})
 	if err != nil {
 		t.Fatalf("pass 1: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestOnlyTheNodesTheBoundariesTouchAreKept(t *testing.T) {
 		t.Errorf("pass 1 wants %d ways, want 1; the other %d are not boundaries", wantedWays.len(), 20)
 	}
 
-	_, wantedNodes, err := readWays(open, wantedWays, DefaultLimits())
+	_, wantedNodes, err := readWays(open, wantedWays, kinds, DefaultLimits())
 	if err != nil {
 		t.Fatalf("pass 2: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestOnlyTheNodesTheBoundariesTouchAreKept(t *testing.T) {
 		t.Errorf("pass 2 wants %d nodes, want 4; the extract holds %d", wantedNodes.len(), irrelevant+4)
 	}
 
-	points, err := readNodes(open, wantedNodes)
+	points, err := readNodes(open, wantedNodes, kinds)
 	if err != nil {
 		t.Fatalf("pass 3: %v", err)
 	}

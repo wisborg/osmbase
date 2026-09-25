@@ -30,14 +30,15 @@ const (
 	MaxDenseTagEntries = 1 << 20
 )
 
-// ErrStop is the error a callback returns to end a pass early without it
-// being a failure.
+// ErrStop is the error a callback returns to end a walk early without it
+// being a failure. Each* returns a callback's error unchanged, so a caller
+// may use its own instead; this exists so that the common case has one name.
 //
-// Defined here rather than left to each caller because the three passes over
-// an extract all want it, and three private sentinels would be three
-// spellings of one rule -- each with its own errors.Is at the call site. Each*
-// returns a callback's error unchanged, so a caller may use its own instead;
-// this exists so that the common case has one name.
+// The boundary passes, which it was first written for, stop a different way:
+// the first pass records what every block holds (see PrimitiveBlock.Holds),
+// and the later ones read only the blocks they need through
+// Reader.NextData. That stops at the block level without inflating the rest,
+// which a callback returning ErrStop from inside a block cannot.
 var ErrStop = errors.New("osmpbf: stop")
 
 // The coordinate system's extent, in nanodegrees. A node outside it is not
@@ -255,6 +256,40 @@ func (b *PrimitiveBlock) EachRelation(f func(Relation) error) error {
 	return b.each(func(g []byte) error {
 		return b.elementsIn(g, 4, func(payload []byte) error { return b.decodeRelation(payload, f) })
 	})
+}
+
+// Kinds says which element kinds a block holds.
+type Kinds uint8
+
+// The element kinds, as bits of Kinds.
+const (
+	HoldsNodes Kinds = 1 << iota
+	HoldsWays
+	HoldsRelations
+)
+
+// Holds reports which kinds of element the block holds, from its groups'
+// field numbers and without decoding a single element: the cheap question a
+// reader asks to know whether a block is worth decoding on a later pass.
+func (b *PrimitiveBlock) Holds() (Kinds, error) {
+	var k Kinds
+	for _, g := range b.Groups {
+		err := b.fieldsIn(g, func(field int, _ []byte) error {
+			switch field {
+			case 1, 2:
+				k |= HoldsNodes
+			case 3:
+				k |= HoldsWays
+			case 4:
+				k |= HoldsRelations
+			}
+			return nil
+		}, 1, 2, 3, 4)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return k, nil
 }
 
 // nodesIn walks a group's nodes, which arrive in either of two encodings.

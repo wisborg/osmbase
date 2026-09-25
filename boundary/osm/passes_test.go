@@ -327,7 +327,7 @@ func dataBlob(t *testing.T, payload []byte) []byte {
 // TestExtract_BlocksAreOrderedAsARealExtractOrdersThem.
 func TestOnlyDataBlocksReachTheWalk(t *testing.T) {
 	var walks int
-	err := eachBlock(from(square(t)), func(*osmpbf.PrimitiveBlock) error {
+	err := eachBlock(from(square(t)), nil, func(int, *osmpbf.PrimitiveBlock) error {
 		walks++
 		return nil
 	})
@@ -344,7 +344,7 @@ func TestOnlyDataBlocksReachTheWalk(t *testing.T) {
 func TestAnErrorFromTheWalkStopsThePass(t *testing.T) {
 	want := errors.New("enough")
 	var walks int
-	err := eachBlock(from(square(t)), func(*osmpbf.PrimitiveBlock) error {
+	err := eachBlock(from(square(t)), nil, func(int, *osmpbf.PrimitiveBlock) error {
 		walks++
 		return want
 	})
