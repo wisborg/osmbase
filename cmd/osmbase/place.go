@@ -54,11 +54,15 @@ func (p placeFlags) resolve(root string) (boundary.Candidate, error) {
 	}
 
 	src := boundary.Open(root, "")
-	if !src.Covers(osmlocate.Country) && !src.Covers(osmlocate.Region) && !src.Covers(osmlocate.Locality) {
+	points, err := storedPlacePoints(root)
+	if err != nil {
+		return boundary.Candidate{}, err
+	}
+	if !src.Covers(osmlocate.Country) && !src.Covers(osmlocate.Region) && !src.Covers(osmlocate.Locality) && len(points) == 0 {
 		return boundary.Candidate{}, fmt.Errorf("--place looks names up in the boundaries in the store, and %s has none; run \"osmbase boundaries --store %s\" first, once -- it downloads the world's countries and regions",
 			root, root)
 	}
-	exact, near := src.Find(p.name, levels...)
+	exact, near := src.FindAll(p.name, points, levels...)
 
 	switch {
 	case len(exact) == 1:
@@ -68,11 +72,57 @@ func (p placeFlags) resolve(root string) (boundary.Candidate, error) {
 			p.name, len(exact), listCandidates(exact), howToNarrow(p, exact))
 	case len(near) > 0:
 		return boundary.Candidate{}, usageErrorf("no place is named %q exactly; did you mean\n%s\nNothing was drawn: the %s you mean may be one the store's boundaries do not hold.%s",
-			p.name, listCandidates(near), strings.TrimSpace(strings.SplitN(p.name, ",", 2)[0]), localHint(src))
+			p.name, listCandidates(near), strings.TrimSpace(strings.SplitN(p.name, ",", 2)[0]), localHint(src)+townHint)
 	}
-	return boundary.Candidate{}, usageErrorf("no place in %s is named %q. Countries and regions are Natural Earth's names, in English, or ISO codes like DK and DNK; councils and suburbs are OpenStreetMap's local names.%s",
-		root, p.name, localHint(src))
+	return boundary.Candidate{}, usageErrorf("no place in %s is named %q. Countries and regions are Natural Earth's names, in English, or ISO codes like DK and DNK; councils and suburbs are OpenStreetMap's local names.%s%s",
+		root, p.name, localHint(src), townHint)
 }
+
+// maxPlaceTiles bounds how many tiles a name lookup reads for place points.
+// Zoom 10 is where towns are marked, and 4,096 tiles of it is a continent;
+// a store holding more has been filled for more ground than one lookup should
+// walk, and what it read is searched.
+const maxPlaceTiles = 4096
+
+// storedPlacePoints reads the towns and cities the store's tiles mark with a
+// point, from every archive in it. A store with no map has none, which is not
+// an error: the boundary files may still answer.
+func storedPlacePoints(root string) ([]osmlocate.PlacePoint, error) {
+	st, err := slice.Open(root)
+	if err != nil {
+		return nil, nil
+	}
+	sources, err := st.Sources()
+	if err != nil {
+		return nil, err
+	}
+	var out []osmlocate.PlacePoint
+	for _, m := range sources {
+		src, err := st.Source(m.ID)
+		if err != nil {
+			return nil, err
+		}
+		refs, _, err := src.TilesAt(osmlocate.LocalityZoom(), maxPlaceTiles)
+		if err != nil {
+			return nil, err
+		}
+		tiles := make([]osmlocate.Tile, len(refs))
+		for i, r := range refs {
+			tiles[i] = osmlocate.Tile{Z: r.Z, X: r.X, Y: r.Y}
+		}
+		pts, err := osmlocate.PlacePoints(src, tiles)
+		if err != nil {
+			return nil, fmt.Errorf("reading place names from the store at %s: %w", root, err)
+		}
+		out = append(out, pts...)
+	}
+	return out, nil
+}
+
+// townHint says where towns come from, because the answer explains most
+// misses: a town that is only a point is read from the map tiles the store
+// holds, so Aarhus is not found in a store filled around Horsens.
+const townHint = " Towns and cities are read from the map tiles the store holds, so only where it has been filled; \"osmbase fetch --place\" with the country or region fills it, and --bbox or --lat/--lon reach any place meanwhile."
 
 // localHint says how to find towns and suburbs, when the store has none.
 func localHint(src *boundary.Source) string {

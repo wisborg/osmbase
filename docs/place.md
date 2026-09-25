@@ -25,7 +25,7 @@ Step 3 is `render --bbox`, which is useful on its own and is the target the othe
 | derived OpenStreetMap files | a name and an `admin_level`, a full outline | only where a file was built |
 | tiles | named points, no extent | only where tiles were fetched |
 
-Natural Earth and the derived files are both searched. Tile points are a later part.
+Natural Earth, the derived files and the tiles' place points are all searched.
 
 ### Derived files: local names, placed by containment
 
@@ -51,6 +51,22 @@ Midtjylland` as a region. One that repeats a Natural Earth match by name and lev
 New South Wales is not listed twice. `admin_level` 2 is a country and 3–4 a region; everything
 below is `--place-level local`, since which of locality, macrohood or neighbourhood one area is
 depends on the point asked about.
+
+### Tile points: towns with a name and no outline
+
+Denmark maps its towns as points and stops its boundaries at the kommune, so `Horsens` has no
+outline anywhere — only Horsens Kommune does. The tiles mark it: the `places` layer at zoom 10,
+where `locate` reads localities, holds every city, town and village with a name, an English name
+and a kind. `--place` reads those from the tiles the store already holds (`slice.Source.TilesAt`,
+at most 4,096 of them) and nothing else — so a town is found only where the store has been filled,
+and the refusal says so when a name is missed.
+
+A point is placed by containment like a derived area — `Horsens (city, Horsens Kommune,
+Midtjylland, Denmark)` — and shown with ground around it sized to its kind, since it has no
+outline to fit: 10 km either side for a city, 4 for a town, 2 for a village, 1 for a hamlet. Those
+are judgements; `--bbox` is there when one is wrong for a place. A point repeating an area of the
+same name that holds it — the label at a suburb's middle — is the same place, and the area, which
+has an outline, is kept.
 
 ## Ambiguity is the normal case, not the edge
 
@@ -142,7 +158,7 @@ tiles directly from the bounds.
 | 4 | `--place` | ✅ on `render` and `fetch`, with `--place-level`; ambiguity refused with the list and a suggestion that works |
 | 5 | The offer | ✅ `render --store` asks to fetch what the view lacks at its zoom, measured by `slice.Source.HeldAt`; `--yes` answers in advance |
 | 6 | Derived files | ✅ areas found by their local names, placed by containment, `--place-level local` |
-| 7 | Tile points | not started: cities no outline covers, zoom from the kind — the weakest source, last |
+| 7 | Tile points | ✅ towns and cities from the store's zoom-10 tiles, placed by containment, sized by kind |
 
 Measured on a copy of a real store holding tiles around Horsens: `render --place Denmark`
 fits Denmark, Bornholm included, at zoom 7, where the store held 2 of the 20 tiles the view
@@ -159,8 +175,7 @@ from shallower tiles and reported 83% of the image overzoomed.
   records that its fetch finished, so a tile missing from it is known to be absent; the
   overview has no such record. Protomaps' builds hold every shallow tile, so this has not been
   seen, but an archive with gaps above the cell zoom would meet it.
-- **A town that is a point is not found.** Denmark maps its towns as points and stops its
-  boundaries at the kommune, so `Horsens` offers `Horsens Kommune` and draws nothing. The tiles'
-  place points are part 7.
+- **A town is found only where the store holds tiles.** `Aarhus` is not found in a store filled
+  around Horsens; the refusal says so, and `fetch --place` with the country fills it.
 - **The United States is the contiguous states**, because Alaska is more than 300 km from them
   and Hawaii nearly 4,000. A cartographer might do either; `--bbox` is the way to the other.

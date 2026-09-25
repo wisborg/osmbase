@@ -109,3 +109,21 @@ func TestRenderPlaceFromAStoreOfDerivedFilesOnly(t *testing.T) {
 		t.Errorf("exit %d\n%s", r.code, r.stderr)
 	}
 }
+
+// A town the tiles mark only with a point is found from the store's own
+// tiles, and drawn with ground around it.
+func TestRenderPlaceFindsATownThatIsOnlyAPoint(t *testing.T) {
+	store, _, _ := mixedStore(t)
+	out := filepath.Join(t.TempDir(), "horsens.png")
+	r := runCLI(t, "render", "--store", store, "--place", "Horsens", "--width", "256", "--height", "256", "--out", out)
+	if r.code != 0 {
+		t.Fatalf("exit %d\n%s", r.code, r.stderr)
+	}
+	if line, _ := lineContaining(r.stdout, "fitted"); !strings.Contains(line, "Horsens (place)") {
+		t.Errorf("fitted line: %q", line)
+	}
+	// And the level filter leaves it out when a region is asked for.
+	if r := runCLI(t, "render", "--store", store, "--place", "Horsens", "--place-level", "region", "--out", out); r.code != 2 {
+		t.Errorf("--place-level region found a town: exit %d\n%s", r.code, r.stderr)
+	}
+}

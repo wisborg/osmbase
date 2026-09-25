@@ -94,3 +94,46 @@ func TestHeldAtCountsOverviewTilesOnDisk(t *testing.T) {
 		t.Errorf("zoom 11: %d of %d held, want 0 of 4", held, wanted)
 	}
 }
+
+// TilesAt lists what is on disk at one zoom, from the overview above the cell
+// zoom and from every cell at or below it, and stops at the limit.
+func TestTilesAtListsWhatIsOnDisk(t *testing.T) {
+	_, src, tiles := filled(t)
+	for _, zoom := range []uint8{12, 13, 14} {
+		want := 0
+		for ref := range tiles {
+			if ref.Z == zoom {
+				want++
+			}
+		}
+		got, more, err := src.TilesAt(zoom, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != want || more {
+			t.Errorf("zoom %d: listed %d (more %v), want %d", zoom, len(got), more, want)
+		}
+		for _, r := range got {
+			if !src.Has(r) || r.Z != zoom {
+				t.Errorf("listed %v, which is not a tile the store holds at zoom %d", r, zoom)
+			}
+		}
+	}
+	if got, more, _ := src.TilesAt(14, 3); len(got) != 3 || !more {
+		t.Errorf("with a limit of 3: %d listed, more %v", len(got), more)
+	}
+	if got, _, err := src.TilesAt(9, 10); err != nil || len(got) != 0 {
+		t.Errorf("an overview zoom with nothing on disk: %v %v", got, err)
+	}
+
+	st := newStore(t, slice.Config{})
+	anc := slice.TileRef{Z: 10, X: 5, Y: 7}
+	r := archive(t, map[slice.TileRef][]byte{anc: []byte("x")})
+	ov := addSource(t, st, r, "o.pmtiles")
+	if _, err := ov.FillOverview(context.Background(), r, []slice.TileRef{anc}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := ov.TilesAt(10, 10); len(got) != 1 || got[0] != anc {
+		t.Errorf("overview listing = %v, want %v", got, anc)
+	}
+}

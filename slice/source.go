@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -92,6 +94,62 @@ func (s *Source) Tile(z uint8, x, y uint32) ([]byte, bool, error) {
 func (s *Source) Has(t TileRef) bool {
 	info, err := os.Stat(s.tilePath(t))
 	return err == nil && info.Mode().IsRegular()
+}
+
+// TilesAt lists the tiles the store holds at one zoom, wherever they are.
+//
+// For a search that has no area to start from -- a place name, which could be
+// anywhere the store has been filled -- and so asks the disk what there is.
+// Read from the directory names, which this package wrote and which are
+// numbers throughout; a name that does not parse is skipped, not reported,
+// since it is nothing this package put there. At most limit tiles, and
+// whether there were more, so a store filled for a whole country at street
+// detail cannot turn one name lookup into a walk of every file it holds.
+func (s *Source) TilesAt(zoom uint8, limit int) (tiles []TileRef, more bool, err error) {
+	var dirs []string
+	if zoom < s.store.cellZoom {
+		dirs = []string{filepath.Join(s.sourceDir(), "overview", u8(zoom))}
+	} else {
+		cells, err := os.ReadDir(s.cellsDir())
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, false, err
+		}
+		for _, c := range cells {
+			if _, ok := parseCellDir(c.Name()); ok && c.IsDir() {
+				dirs = append(dirs, filepath.Join(s.cellsDir(), c.Name(), u8(zoom)))
+			}
+		}
+	}
+	for _, dir := range dirs {
+		xs, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, false, err
+		}
+		for _, xe := range xs {
+			x, err := strconv.ParseUint(xe.Name(), 10, 32)
+			if err != nil || !xe.IsDir() {
+				continue
+			}
+			ys, err := os.ReadDir(filepath.Join(dir, xe.Name()))
+			if err != nil {
+				return nil, false, err
+			}
+			for _, ye := range ys {
+				y, err := strconv.ParseUint(strings.TrimSuffix(ye.Name(), tileExt), 10, 32)
+				if err != nil || !strings.HasSuffix(ye.Name(), tileExt) {
+					continue
+				}
+				if len(tiles) == limit {
+					return tiles, true, nil
+				}
+				tiles = append(tiles, TileRef{Z: zoom, X: uint32(x), Y: uint32(y)})
+			}
+		}
+	}
+	return tiles, false, nil
 }
 
 // HeldAt reports how many of the tiles covering a rectangle at one zoom the

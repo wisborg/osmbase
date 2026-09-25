@@ -146,6 +146,15 @@ func (c Candidate) Describe() string {
 // "Luxembourg" is a country, a district of it and a province of Belgium --
 // and deciding between them is the caller's to do, or to refuse.
 func (s *Source) Find(query string, levels ...locate.Level) (exact []Candidate, near []Candidate) {
+	return s.FindAll(query, nil, levels...)
+}
+
+// FindAll is Find with the places the tiles mark only with a point as well --
+// the towns of a country that maps its boundaries no deeper than the
+// municipality, which have a name and a position and no outline. They are
+// local places, placed by containment like a derived area, and shown with
+// ground around them sized to their kind.
+func (s *Source) FindAll(query string, points []locate.PlacePoint, levels ...locate.Level) (exact []Candidate, near []Candidate) {
 	name, within, _ := strings.Cut(query, ",")
 	name, within = strings.TrimSpace(name), strings.TrimSpace(within)
 	if name == "" {
@@ -183,6 +192,10 @@ func (s *Source) Find(query string, levels ...locate.Level) (exact []Candidate, 
 	dExact, dNear := s.findDerived(name, within)
 	exact = append(exact, withoutRepeats(levels, dExact, exact)...)
 	near = append(near, withoutRepeats(levels, dNear, near)...)
+	if len(points) > 0 && (len(levels) == 0 || slices.Contains(levels, locate.Locality)) {
+		pExact, pNear := s.findPoints(name, within, points, append(slices.Clone(exact), near...))
+		exact, near = append(exact, pExact...), append(near, pNear...)
+	}
 	if len(exact) > 0 {
 		return exact, nil
 	}
@@ -270,20 +283,25 @@ func (s *Source) derivedCandidate(a Area) (Candidate, []string) {
 	c.Extent, c.Shown = mainExtent(a)
 
 	lat, lon, ok := interiorPoint(a)
-	if !ok {
-		return c, nil
-	}
-	var context, in []string
-	if c.Level == locate.Country {
+	if !ok || c.Level == locate.Country {
 		// A country is in nothing worth saying.
 		return c, nil
 	}
+	in, context := s.contextAt(lat, lon, &a, c.Level)
+	c.In = strings.Join(in, ", ")
+	return c, context
+}
+
+// contextAt is what a point is in: the words to show, nearest first, and the
+// names that qualify a search. self is the area the point was taken from,
+// which is not wider than itself; nil for a place that is only a point.
+func (s *Source) contextAt(lat, lon float64, self *Area, level locate.Level) (in, context []string) {
 	// The nearest wider area first: the council a suburb is in says more
 	// than the country does.
 	var wider []Area
 	for _, set := range s.derived() {
 		for _, b := range set.Containing(lat, lon) {
-			if sameArea(a, b) || b.boxArea() <= a.boxArea() || isCountry(b) {
+			if isCountry(b) || (self != nil && (sameArea(*self, b) || b.boxArea() <= self.boxArea())) {
 				continue
 			}
 			wider = append(wider, b)
@@ -304,7 +322,7 @@ func (s *Source) derivedCandidate(a Area) (Candidate, []string) {
 	// inside a harbour suburb can fall outside the country's outline and
 	// inside the region's -- and the region still knows what it is in.
 	country := ""
-	if set := s.set(Regions); set != nil && c.Level == locate.Locality {
+	if set := s.set(Regions); set != nil && level == locate.Locality {
 		if r, ok := set.At(lat, lon); ok {
 			in = append(in, r.Name)
 			context = append(context, r.Name)
@@ -329,8 +347,78 @@ func (s *Source) derivedCandidate(a Area) (Candidate, []string) {
 	if country != "" && !slices.Contains(in, country) {
 		in = append(in, country)
 	}
-	c.In = strings.Join(in, ", ")
-	return c, context
+	return in, context
+}
+
+// findPoints matches the places the tiles mark with a point.
+//
+// A point that repeats an area already found -- the same name, inside that
+// area -- is the same place twice: Hornsby the suburb and Hornsby the label
+// at its middle. It is dropped, and the area, which has an outline, is kept.
+func (s *Source) findPoints(name, within string, points []locate.PlacePoint, areas []Candidate) (exact, near []Candidate) {
+	for _, p := range points {
+		match, isExact := matchName(p.Names, name)
+		if !match {
+			continue
+		}
+		if slices.ContainsFunc(areas, func(c Candidate) bool {
+			return strings.EqualFold(c.Name, p.Names[0]) && c.Extent.holds(p.Lat, p.Lon)
+		}) {
+			continue
+		}
+		in, context := s.contextAt(p.Lat, p.Lon, nil, locate.Locality)
+		if within != "" && !slices.ContainsFunc(context, func(x string) bool { return strings.EqualFold(x, within) }) {
+			continue
+		}
+		c := Candidate{
+			Name: p.Names[0], Level: locate.Locality, Type: p.Kind,
+			In: strings.Join(in, ", "), Extent: aroundPoint(p.Lat, p.Lon, pointRadiusKM(p.Kind)),
+			Parts: 1, Shown: 1, exact: isExact,
+		}
+		if c.Type == "" {
+			c.Type = "place"
+		}
+		if isExact {
+			exact = append(exact, c)
+		} else {
+			near = append(near, c)
+		}
+	}
+	return exact, near
+}
+
+func (e Extent) holds(lat, lon float64) bool {
+	return lat >= e.South && lat <= e.North && lon >= e.West && lon <= e.East
+}
+
+// pointRadiusKM is how much ground a place marked only by a point is shown
+// with, from what kind of place it is. A point has no outline to fit, so the
+// map is sized to the kind instead: a city's worth of streets, a village's.
+// These are judgements, and --bbox is there when they are wrong for a place.
+func pointRadiusKM(kind string) float64 {
+	switch kind {
+	case "city":
+		return 10
+	case "town":
+		return 4
+	case "village":
+		return 2
+	case "hamlet", "isolated_dwelling", "farm":
+		return 1
+	}
+	return 3
+}
+
+// aroundPoint is the square reaching r kilometres from a point, clipped to
+// the world.
+func aroundPoint(lat, lon, r float64) Extent {
+	const kmPerDegree = 111.32
+	dLat := r / kmPerDegree
+	dLon := r / (kmPerDegree * math.Max(math.Cos(lat*math.Pi/180), 0.01))
+	return Extent{
+		West: math.Max(lon-dLon, -180), East: math.Min(lon+dLon, 180),
+		South: math.Max(lat-dLat, -85), North: math.Min(lat+dLat, 85),
+	}
 }
 
 // interiorPoint is a point inside an area, for asking what the area is in.

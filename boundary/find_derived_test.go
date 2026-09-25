@@ -215,3 +215,52 @@ func TestADerivedRegionIsNotSaidTwice(t *testing.T) {
 		t.Errorf("the derived region's name does not qualify: %v", described(exact))
 	}
 }
+
+// A town marked only by a point -- Denmark's towns, which it maps as points
+// under a kommune outline -- is found by name, placed by what holds it, and
+// shown with ground around it sized to its kind.
+func TestATownThatIsOnlyAPointIsFound(t *testing.T) {
+	src := denmarkStore(t)
+	points := []locate.PlacePoint{
+		{Names: []string{"Horsens"}, Kind: "city", Lat: 55.86, Lon: 9.85},
+		{Names: []string{"København", "Copenhagen"}, Kind: "city", Lat: 55.68, Lon: 12.57},
+	}
+	exact, _ := src.FindAll("Horsens", points)
+	if len(exact) != 1 || exact[0].Describe() != "Horsens (city, Horsens Kommune, Midtjylland, Denmark)" {
+		t.Fatalf("FindAll(Horsens) = %v", described(exact))
+	}
+	e := exact[0].Extent
+	if !e.holds(55.86, 9.85) || e.North-e.South < 0.15 || e.North-e.South > 0.2 {
+		t.Errorf("a city's extent is %+v, want about 10 km either side of it", e)
+	}
+	// Its English name finds it too, and a qualifier narrows it.
+	if exact, _ := src.FindAll("Copenhagen", points); len(exact) != 1 || exact[0].Name != "København" {
+		t.Errorf("FindAll(Copenhagen) = %v", described(exact))
+	}
+	if exact, _ := src.FindAll("Horsens, Horsens Kommune", points); len(exact) != 1 {
+		t.Errorf("FindAll(Horsens, Horsens Kommune) = %v", described(exact))
+	}
+	// And a qualifier it is not in excludes it, rather than being ignored.
+	if exact, near := src.FindAll("Horsens, Australia", points); len(exact)+len(near) != 0 {
+		t.Errorf("FindAll(Horsens, Australia) = %v %v, want nothing", described(exact), described(near))
+	}
+	// A point is local; asking for a country leaves it out.
+	if exact, _ := src.FindAll("Horsens", points, locate.Country); len(exact) != 0 {
+		t.Errorf("--place-level country found a town: %v", described(exact))
+	}
+}
+
+// A point repeating an area of the same name that holds it is the same place
+// -- the label at a suburb's middle -- and the area, which has an outline, is
+// the one kept. A point of the same name elsewhere is a different place.
+func TestAPointRepeatingAnAreaIsNotASecondPlace(t *testing.T) {
+	src := derivedFindStore(t)
+	inside := locate.PlacePoint{Names: []string{"Hornsby"}, Kind: "suburb", Lat: -33.65, Lon: 151.05}
+	if exact, _ := src.FindAll("Hornsby", []locate.PlacePoint{inside}); len(exact) != 1 || exact[0].Type != "admin level 9" {
+		t.Errorf("FindAll(Hornsby) = %v, want the suburb's outline alone", described(exact))
+	}
+	elsewhere := locate.PlacePoint{Names: []string{"Hornsby"}, Kind: "village", Lat: -30, Lon: 145}
+	if exact, _ := src.FindAll("Hornsby", []locate.PlacePoint{inside, elsewhere}); len(exact) != 2 {
+		t.Errorf("FindAll(Hornsby) = %v, want the suburb and the other Hornsby", described(exact))
+	}
+}
