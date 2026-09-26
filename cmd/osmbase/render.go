@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wisborg/osmbase/fetch"
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/pmtiles"
 	"github.com/wisborg/osmbase/render"
@@ -580,10 +581,7 @@ func renderFromStore(ctx context.Context, root, archive string, view render.View
 	case err == nil:
 		// No deeper than the archive this store was filled from goes;
 		// past that, overzoom is the answer and there is nothing to fetch.
-		zoom := z
-		if sz := chosen.SourceZoom; !sz.Empty() && zoom > sz.Max {
-			zoom = sz.Max
-		}
+		zoom := fetch.DrawnZoom(src, z)
 		held, wanted, herr := src.HeldAt(b, zoom)
 		if herr == nil && held < wanted &&
 			offerToFill(ctx, stderr, shortfall{root: root, source: chosen.Source, bounds: b, zoom: zoom, held: held, wanted: wanted}, yes) {

@@ -1,34 +1,19 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"strings"
 
 	"github.com/wisborg/osmbase/acquire"
+	"github.com/wisborg/osmbase/fetch"
 	"github.com/wisborg/osmbase/slice"
 )
 
-// stdinAnswerable reports whether something can answer a question on stdin.
-//
-// Only a terminal can be relied on to. A render started from a script or a job
-// runner inherits a pipe that may stay open for the life of the parent, and a
-// read on it blocks for ever: a render that produces no output and no error,
-// which is the hardest failure there is to look at. fitdash found that out by
-// running it; this does not need to find it again.
-//
-// A character device is the test, and /dev/null passes it without being a
-// terminal. That is harmless: a read from it ends at once, which is a no, and
-// nothing waits. The hazard is a pipe, and a pipe fails it.
-//
-// A variable so a test can say yes and then answer through a pipe.
-var stdinAnswerable = func() bool {
-	info, err := os.Stdin.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
-}
+// stdinAnswerable is fetch.Consent's test for whether a person can answer --
+// see there for why only a terminal can be relied on to. A variable so a test
+// can say yes and then answer through a pipe.
+var stdinAnswerable = fetch.StdinIsTerminal
 
 // shortfall is what a store lacks for one view.
 type shortfall struct {
@@ -78,23 +63,20 @@ func offerToFill(ctx context.Context, w io.Writer, s shortfall, yes bool) bool {
 	fmt.Fprintf(w, "osmbase: fetching it contacts %s, which learns which part\n", hostOf(host))
 	fmt.Fprintf(w, "osmbase:   of the map you asked about. Afterwards, rendering it contacts nobody.\n")
 
+	// The rule about asking is fetch.Consent's, shared with every program
+	// drawing from a store; the words are this command's.
 	later := fmt.Sprintf("osmbase fetch --store %s --bbox %s --max-zoom %d", s.root, bboxString(s.bounds), s.zoom)
-	if !yes {
-		if !stdinAnswerable() {
-			fmt.Fprintf(w, "osmbase: nothing is attached to answer, so nothing was fetched; pass --yes, or run\n")
-			fmt.Fprintf(w, "osmbase:   %s\n", later)
-			return false
-		}
-		fmt.Fprintf(w, "Fetch it now? [y/N] ")
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && line == "" {
-			fmt.Fprintf(w, "\nosmbase: no answer, so nothing was fetched\n")
-			return false
-		}
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			fmt.Fprintf(w, "osmbase: not fetched; when you want it:\nosmbase:   %s\n", later)
-			return false
-		}
+	switch (fetch.Consent{Yes: yes, Answerable: stdinAnswerable}).Ask(w, "Fetch it now? [y/N] ") {
+	case fetch.Unattended:
+		fmt.Fprintf(w, "osmbase: nothing is attached to answer, so nothing was fetched; pass --yes, or run\n")
+		fmt.Fprintf(w, "osmbase:   %s\n", later)
+		return false
+	case fetch.NoAnswer:
+		fmt.Fprintf(w, "\nosmbase: no answer, so nothing was fetched\n")
+		return false
+	case fetch.Declined:
+		fmt.Fprintf(w, "osmbase: not fetched; when you want it:\nosmbase:   %s\n", later)
+		return false
 	}
 
 	if err := fillFor(ctx, w, s); err != nil {
@@ -118,34 +100,23 @@ func fillFor(ctx context.Context, w io.Writer, s shortfall) error {
 	if err := a.requireVectorTiles(); err != nil {
 		return err
 	}
-	st, err := slice.Create(s.root, slice.Config{})
-	if err != nil {
-		return fmt.Errorf("opening the store at %s: %w", s.root, err)
-	}
-	src, err := a.AddTo(st, attributionOf(a, w))
-	if err != nil {
-		return err
-	}
-	// No deeper than the archive goes: a render at zoom 17 overzooms from
-	// 15, and asking the planner for 17 is refused as a zoom it cannot have.
-	zoom := min(s.zoom, a.Reader().Header().MaxZoom)
-	plan, err := a.Plan(ctx, src, acquire.Request{
-		Bounds: s.bounds, MaxZoom: int(zoom), CellZoom: st.CellZoom(),
-	})
+	// The sequence is fetch.Fill's; what is printed about it is ours.
+	res, err := fetch.Fill(ctx, s.root, a.Archive, attributionOf(a, w),
+		acquire.Request{Bounds: s.bounds, MaxZoom: int(s.zoom)},
+		func(plan *acquire.Plan) {
+			writePlan(w, plan, s.root)
+			if plan.Empty() {
+				fmt.Fprintln(w, "osmbase: nothing to fetch after all: the archive holds no more of this view than the store does")
+				return
+			}
+			a.Silence()
+		}, progressTo(w))
 	if err != nil {
 		return err
 	}
-	writePlan(w, plan, s.root)
-	if plan.Empty() {
-		fmt.Fprintln(w, "osmbase: nothing to fetch after all: the archive holds no more of this view than the store does")
-		return nil
+	if res.Written > 0 {
+		fmt.Fprintf(w, "\n%-12s %d tiles in %d requests, %s\n", "fetched", res.Written, res.Requests, humanBytes(res.Transfer))
 	}
-	a.Silence()
-	res, err := a.Fetch(ctx, plan, src, progressTo(w))
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(w, "\n%-12s %d tiles in %d requests, %s\n", "fetched", res.Written, res.Requests, humanBytes(res.Transfer))
 	return nil
 }
 
