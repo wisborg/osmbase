@@ -128,3 +128,33 @@ func TestAtEachAsksALevelsSourceOncePerPoint(t *testing.T) {
 		}
 	}
 }
+
+// zoomsRead is a tile source that holds nothing and remembers which zooms it
+// was asked for.
+type zoomsRead map[uint8]bool
+
+func (z zoomsRead) Tile(zoom uint8, x, y uint32) ([]byte, bool, error) {
+	z[zoom] = true
+	return nil, false, nil
+}
+
+// Level.Zoom is the zoom a lookup of that level reads, and nothing else: a
+// caller measuring whether a store can answer a level measures at it, so a
+// Zoom that drifted from the lookup would report a store able to answer
+// streets that holds none of the tiles streets are read from.
+func TestLevelZoomIsTheZoomTheLookupReads(t *testing.T) {
+	for _, l := range locate.Levels {
+		z, ok := l.Zoom()
+		read := zoomsRead{}
+		_, err := locate.AtEach(context.Background(), read, []locate.Coord{{Lat: 55, Lon: 9}}, locate.Options{Levels: []locate.Level{l}})
+		if err != nil {
+			t.Fatalf("%s: %v", l, err)
+		}
+		switch {
+		case !ok && len(read) > 0:
+			t.Errorf("%s says the tiles do not answer it, and the lookup read zooms %v", l, read)
+		case ok && (len(read) != 1 || !read[z]):
+			t.Errorf("%s says zoom %d, and the lookup read zooms %v", l, z, read)
+		}
+	}
+}

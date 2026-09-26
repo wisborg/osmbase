@@ -94,6 +94,19 @@ func (l Level) String() string {
 	return fmt.Sprintf("level(%d)", uint8(l))
 }
 
+// Zoom is the zoom the tiles are read at to answer this level, and whether
+// the tiles answer it at all: water is answered only by boundaries, and has
+// no zoom.
+//
+// For a caller that needs to know whether a store can answer a level before
+// asking it -- a summary choosing its depth among those the store holds the
+// map for -- rather than learning from a lookup that came back empty, which
+// cannot tell "nothing named here" from "no map here".
+func (l Level) Zoom() (uint8, bool) {
+	spec, ok := tileSpec(l)
+	return spec.zoom, ok
+}
+
 // MarshalJSON writes a level as its name.
 //
 // A number would be meaningless in the output and worse than meaningless

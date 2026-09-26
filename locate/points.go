@@ -30,8 +30,8 @@ type PlacePoint struct {
 // LocalityZoom is the zoom the tiles are read at for localities, which is
 // where Locality's own lookups read them.
 func LocalityZoom() uint8 {
-	spec, _ := tileSpec(Locality)
-	return spec.zoom
+	z, _ := Locality.Zoom()
+	return z
 }
 
 // PlacePoints reads the localities marked in the given tiles.
