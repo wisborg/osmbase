@@ -127,6 +127,12 @@ type Options struct {
 	// rejects more of them, which is how a map gets quieter rather than
 	// smaller.
 	LabelPadding int
+
+	// Language writes a label in a language where the data has one: "en"
+	// reads name:en and falls back to name, as locate does, so a map of
+	// Thailand can be read by somebody who cannot read Thai. Empty draws
+	// names as the place writes them.
+	Language string
 }
 
 // Renderer draws views from one tile source with one style.
@@ -142,6 +148,7 @@ type Renderer struct {
 	labelFace  font.Face
 	labelFaces func(float64) font.Face
 	labelPad   int
+	language   string
 }
 
 // faceFor is the face a rule's labels are drawn in, falling back to the base
@@ -178,6 +185,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 	return &Renderer{
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
+		language: o.Language,
 	}, nil
 }
 
@@ -247,7 +255,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	surface := raster.NewSurface(p.width, p.height)
 	surface.Background(r.palette.Background)
 
-	d := drawer{p: p, palette: r.palette}
+	d := drawer{p: p, palette: r.palette, language: r.language}
 	for i := range r.style.Rules {
 		rule := &r.style.Rules[i]
 		if !rule.appliesAt(p.tileZoom) {

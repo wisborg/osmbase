@@ -28,10 +28,11 @@ const kindKey = "kind"
 // on the Renderer so that two goroutines rendering two views through one
 // Renderer cannot share them.
 type drawer struct {
-	p       projection
-	palette Palette
-	path    raster.Path
-	clip    clipper
+	p        projection
+	palette  Palette
+	language string
+	path     raster.Path
+	clip     clipper
 
 	// src is the current ring or line transformed into surface pixels, and dst
 	// the clipped result converted to the rasterizer's float32.
@@ -420,7 +421,7 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 		if !rule.matches(f) || !rule.labels(f.Type) || !rule.allowsFeature(f, at) {
 			continue
 		}
-		text, ok := labelText(f, rule.Field)
+		text, ok := labelText(f, rule.Field, d.language)
 		if !ok {
 			continue
 		}
@@ -447,7 +448,18 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 // A feature with no name is not an error and not a label: most features in
 // most layers have none. A name that is present but empty is treated the same
 // way, since an empty label would reserve space and draw nothing.
-func labelText(f *mvt.Feature, field string) (string, bool) {
+// labelText is a feature's text in field, preferring its translation into
+// language -- field:language, name:en for name -- where the data has one.
+// The same rule locate's names follow, so a map and a summary asked for one
+// language name a place alike.
+func labelText(f *mvt.Feature, field, language string) (string, bool) {
+	if language != "" {
+		if v, ok := f.Tags[field+":"+language]; ok {
+			if s, ok := v.Text(); ok && s != "" {
+				return s, true
+			}
+		}
+	}
 	v, ok := f.Tags[field]
 	if !ok {
 		return "", false
