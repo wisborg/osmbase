@@ -308,65 +308,15 @@ const (
 	defaultHeight = 768
 )
 
-// maxFitZoom is the deepest zoom a fitted view is drawn at. The public builds
-// stop at 15, so a rectangle small enough to want more is drawn at 15 with
-// ground around it rather than overzoomed into a smear.
-const maxFitZoom = 15
+// maxFitZoom and fitMargin are the library's; see render.Fit.
+const (
+	maxFitZoom = render.MaxFitZoom
+	fitMargin  = render.FitMargin
+)
 
-// fitMargin is the ground left around a fitted rectangle, as a fraction of
-// its size on each side, so a coastline does not run along the image's edge.
-const fitMargin = 0.04
-
-// fitView is the view that holds a rectangle as closely as the image allows.
-//
-// At a CONTINUOUS zoom, not the deepest whole one. The renderer draws any
-// scale -- it picks the nearest tile zoom and stretches -- so rounding the fit
-// down to a whole zoom only threw ground away: up to twice the rectangle's
-// size in each direction, which is why New South Wales came with half of
-// Victoria and South Australia around it.
-//
-// The view has the image's own aspect ratio, so there is nothing for the
-// renderer to extend or crop; the rectangle fills the image along one axis
-// and is centred along the other. Centred in the PROJECTION, not on the
-// average of its degrees: Mercator stretches the north more, and centring
-// Denmark on 56.15 degrees leaves more margin below it than above.
-//
-// Three limits, each reported rather than silent. No deeper than zoom 15,
-// where the public builds stop. No shallower than the image allows -- the
-// whole world at 1024 by 768 would fit at zoom 1.3, where the world is
-// narrower than the image -- which crops, and cropped says so. And never over
-// the antimeridian or past the Mercator cut: the view is slid back inside the
-// world, since the renderer cannot draw across the seam. A rectangle near the
-// seam -- Fiji, or Australia at zoom 4, which was refused as "wider than the
-// whole world" -- then has its ground on one side rather than centred.
+// fitView is render.Fit for a slice rectangle.
 func fitView(b slice.Bounds, width, height int) (render.View, bool) {
-	x0, y0 := mercator.Project(b.West, b.North)
-	x1, y1 := mercator.Project(b.East, b.South)
-	cx, cy := (x0+x1)/2, (y0+y1)/2
-	dx, dy := (x1-x0)*(1+2*fitMargin), (y1-y0)*(1+2*fitMargin)
-
-	// Pixels per world unit: the world is scale pixels across.
-	scale := 256 * math.Exp2(maxFitZoom)
-	if dx > 0 {
-		scale = math.Min(scale, float64(width)/dx)
-	}
-	if dy > 0 {
-		scale = math.Min(scale, float64(height)/dy)
-	}
-	cropped := false
-	if floor := float64(max(width, height)); scale < floor {
-		scale, cropped = floor, true
-	}
-
-	w, h := float64(width)/scale, float64(height)/scale
-	cx = min(max(cx, w/2), 1-w/2)
-	cy = min(max(cy, h/2), 1-h/2)
-	west, north := mercator.Unproject(cx-w/2, cy-h/2)
-	east, south := mercator.Unproject(cx+w/2, cy+h/2)
-	return render.View{
-		Bounds: render.Bounds{West: west, South: south, East: east, North: north},
-		Width:  width, Height: height,
-	}, cropped
+	return render.Fit(render.Bounds{West: b.West, South: b.South, East: b.East, North: b.North}, width, height, render.MaxFitZoom)
 }
 
 // viewCentre is the coordinate at the middle of a view.
