@@ -184,6 +184,7 @@ func (o *overlayDrawer) dot(s *raster.Surface, at Coord, r float64, ink color.RG
 // stroked outline, with no dependency on glyph outlines this package does
 // not otherwise need.
 func (o *overlayDrawer) label(dst *image.RGBA, m Marker, face font.Face) {
+	m.Label = Visual(m.Label)
 	c := o.pixel(m.At)
 	adv := font.MeasureString(face, m.Label).Ceil()
 	gap := int(m.Radius+m.Halo) + 3

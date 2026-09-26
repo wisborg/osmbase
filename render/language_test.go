@@ -30,6 +30,7 @@ func (r recorder) Glyph(dot fixed.Point26_6, c rune) (image.Rectangle, image.Ima
 // Options.Language reaches the labels: a place with a name in the language
 // asked for is written in it, and without Language in its own.
 func TestLabelsAreWrittenInTheLanguageAskedFor(t *testing.T) {
+
 	src := newSource()
 	place := osmbasetest.FeatureSpec{
 		Type: mvt.GeomPoint,
@@ -37,6 +38,7 @@ func TestLabelsAreWrittenInTheLanguageAskedFor(t *testing.T) {
 			{Key: "kind", Value: mvt.StringValue("locality")},
 			{Key: "name", Value: mvt.StringValue("Krungthep")},
 			{Key: "name:en", Value: mvt.StringValue("Bangkok")},
+			{Key: "name:he", Value: mvt.StringValue("בנגקוק")},
 		},
 		Geometry: mvt.Geometry{Points: []mvt.Point{{X: testExtent / 2, Y: testExtent / 2}}},
 	}
@@ -47,7 +49,9 @@ func TestLabelsAreWrittenInTheLanguageAskedFor(t *testing.T) {
 	palette.Label = color.RGBA{A: 0xff}
 	v := tileView(t, 4, 3, 5, 3, 5, 256)
 
-	for lang, want := range map[string]string{"": "Krungthep", "en": "Bangkok"} {
+	// A right-to-left name is drawn in the order it is read in, right to
+	// left: its letters reach the face last first.
+	for lang, want := range map[string]string{"": "Krungthep", "en": "Bangkok", "he": "קוקגנב"} {
 		var drew strings.Builder
 		r, err := render.New(src, render.Options{Style: style, Palette: palette,
 			LabelFace: recorder{basicfont.Face7x13, &drew}, Language: lang})

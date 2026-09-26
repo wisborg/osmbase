@@ -425,6 +425,8 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 		if !ok {
 			continue
 		}
+		// Measured and placed as it will be drawn.
+		text = Visual(text)
 		for _, a := range labelAnchors(rule, f) {
 			p := tr.apply(a.X, a.Y)
 			*out = append(*out, candidate{
