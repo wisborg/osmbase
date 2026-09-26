@@ -103,7 +103,13 @@ func Areas(bs []Boundary) ([]boundary.Area, Report, error) {
 		}
 		rep.OrphanHoles += len(orphans)
 
-		areas = append(areas, boundary.NewArea(b.Name, strconv.Itoa(b.AdminLevel), polys))
+		// An area's kind is its admin_level, or for a city's extent the
+		// place it is: boundary.Source tells the two apart by it.
+		kind := strconv.Itoa(b.AdminLevel)
+		if b.Place != "" {
+			kind = b.Place
+		}
+		areas = append(areas, boundary.NewArea(b.Name, kind, polys))
 	}
 	return areas, rep, nil
 }

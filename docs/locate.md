@@ -229,7 +229,7 @@ The one-time cost buys better privacy, not worse.
 ```go
 package locate
 
-type Level uint8   // Country, Region, Water, Locality, Macrohood, Neighbourhood, Area, Street
+type Level uint8   // Country, Region, City, Water, Locality, Macrohood, Neighbourhood, Area, Street
 type Source uint8  // Near, Contained, Within
 
 type Match struct {
@@ -310,9 +310,18 @@ mislead:
 - **Suburbs over minor neighbourhoods**, always: the neighbourhood level holds both
   `place=suburb` and `place=neighbourhood`, and the nearer won -- a run from Hyde Park
   started in "Koreatown". A suburb in reach now wins, across tiles as within one.
-- **Prominent**, an option: Locality as the most prominent place in reach (lowest
-  `min_zoom`, then population) rather than the nearest -- Sydney, not Parramatta, for
-  Sydney Olympic Park.
+- **City**, a level between region and locality: the city a point is in as a whole --
+  Sydney, not the Council of the City of Sydney -- from the `boundary=place` relations
+  (`place=city`, `place=town`) that `boundaries --osm` keeps beside the administrative
+  ones. Boundaries only, like water; ranked into no other level. A metropolitan outline
+  closes only in an extract wide enough to hold it: Greater Sydney is kept from a Sydney
+  extract and produces no outline.
+- **Prominent**, an option, for where no city outline exists: Locality as the place whose
+  reach the point is most within. A place's reach grows with how early the map shows it --
+  25 km at `min_zoom` 8, doubling every two zooms to 200 km at 2 -- read from zoom-6 tiles
+  as well as the level's own for the wide ones. The airport at Badgerys Creek is in Sydney,
+  45 km off, rather than Penrith, 15; Newcastle is still Newcastle. Population, which the
+  data gives for a city in one place and a suburb in another, is not used.
 
 ## Where this got to
 

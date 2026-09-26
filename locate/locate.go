@@ -47,6 +47,17 @@ const (
 	Country Level = iota
 	Region
 
+	// City is the city or town a point is in, as a whole: Sydney, not the
+	// Council of the City of Sydney -- the metropolitan area a person names
+	// when asked where they live, and what a geocoding service calls a
+	// place.
+	//
+	// Answered only by boundaries, like Water: OpenStreetMap maps a city's
+	// extent as a boundary=place relation, which "osmbase boundaries --osm"
+	// keeps beside the administrative ones. The tiles have the city only as
+	// a label point, which is a Locality's answer, not an area's.
+	City
+
 	// Water is the named sea, ocean, strait or bay a coordinate is over.
 	//
 	// Not a rung of the land hierarchy and deliberately independent of it: a
@@ -92,6 +103,8 @@ func (l Level) String() string {
 		return "country"
 	case Region:
 		return "region"
+	case City:
+		return "city"
 	case Water:
 		return "water"
 	case Locality:
@@ -243,7 +256,7 @@ func (p Place) Deepest() (Match, bool) {
 
 // Levels are every level, widest first, which is also the order Matches comes
 // back in.
-var Levels = []Level{Country, Region, Water, Locality, Macrohood, Neighbourhood, Area, Street}
+var Levels = []Level{Country, Region, City, Water, Locality, Macrohood, Neighbourhood, Area, Street}
 
 // ParseLevel turns a name back into a level.
 func ParseLevel(s string) (Level, bool) {

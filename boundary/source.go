@@ -560,6 +560,20 @@ func (s *Source) Covers(l locate.Level) bool {
 	if l == locate.Country && s.countryFrom == CountryOSM && s.HasDerivedCountries() {
 		return true
 	}
+	if l == locate.City {
+		// Only where a derived file holds a city's extent: the tiles cannot
+		// answer the level at all, and claiming it on the strength of a file
+		// with no city in it would say "in no city" everywhere that file
+		// reaches.
+		for _, set := range s.derived() {
+			for _, a := range set.areas {
+				if isCity(a) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	if layer, ok := layerFor(l); ok {
 		// The FILE has to be there, not just the layer name. This was
 		// unconditional while Available guaranteed all three Natural Earth
@@ -646,6 +660,10 @@ func (s *Source) Contains(l locate.Level, lat, lon float64) (name, kind, credit 
 		// No derived file holds the point, so Natural Earth answers as it
 		// would by default -- including "at sea", which past the
 		// territorial-waters limit is what both sources agree on.
+	}
+	if l == locate.City {
+		a := s.cityAt(lat, lon)
+		return a.Name, a.Kind, a.Credit, a.Containment
 	}
 	layer, ok := layerFor(l)
 	if !ok {
@@ -737,7 +755,7 @@ func (s *Source) derivedStack(lat, lon float64) []credited {
 	var stack []credited
 	for _, set := range s.derived() {
 		for _, a := range set.Containing(lat, lon) {
-			if isCountry(a) {
+			if isCountry(a) || isCity(a) {
 				continue
 			}
 			if !slices.ContainsFunc(stack, func(c credited) bool { return sameArea(c.area, a) }) {
@@ -771,6 +789,40 @@ func (s *Source) derivedCountry(lat, lon float64) (Area, string, bool) {
 	last := found[len(found)-1]
 	return last.area, last.credit, true
 }
+
+// cityAt answers the City level: the smallest city or town extent in the
+// derived files holding the point. Outside every one of them, it is Outside
+// where some other derived area holds the point -- the file knows that
+// ground, and it is in no city -- and NoData where none does, since a file
+// cut from one extract knows nothing past it.
+func (s *Source) cityAt(lat, lon float64) locate.Answer {
+	var found []credited
+	known := false
+	for _, set := range s.derived() {
+		for _, a := range set.Containing(lat, lon) {
+			known = true
+			if isCity(a) {
+				found = append(found, credited{a, set.Provenance().Attribution})
+			}
+		}
+	}
+	if len(found) == 0 {
+		if known {
+			return locate.Answer{Containment: locate.Outside}
+		}
+		return locate.Answer{Containment: locate.NoData}
+	}
+	slices.SortStableFunc(found, func(a, b credited) int { return outermostFirst(a.area, b.area) })
+	c := found[len(found)-1]
+	return locate.Answer{Name: c.area.Name, Kind: c.area.Kind, Credit: c.credit, Containment: locate.Inside}
+}
+
+// isCity reports whether an area is a city's or a town's extent -- an
+// OpenStreetMap boundary=place, whose kind is the place rather than an
+// admin_level. It answers the City level and no other: ranked into the
+// levels below a region, Greater Sydney would be the "locality" of every
+// suburb in it.
+func isCity(a Area) bool { return a.Kind == "city" || a.Kind == "town" }
 
 // isCountry reports whether an area is a national border, admin_level 2.
 //

@@ -257,8 +257,12 @@ func withoutRepeats(levels []locate.Level, derived, ne []Candidate) []Candidate 
 // a country and a state border a region, and everything below is local.
 // admin_level 3 and 4 are the first subdivision in nearly every country's
 // tagging, which is the same judgement Natural Earth's region file makes; a
-// kind that is not a number is local, having no level to judge it by.
+// kind that is not a number is local, having no level to judge it by -- except
+// a city's extent, which is a city.
 func listedLevel(a Area) locate.Level {
+	if isCity(a) {
+		return locate.City
+	}
 	switch n, err := strconv.Atoi(a.Kind); {
 	case err != nil:
 		return locate.Locality

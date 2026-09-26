@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	osmlocate "github.com/wisborg/osmbase/locate"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -163,5 +164,17 @@ func TestAPlantedMapCreditCannotForgeOutput(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b") || strings.Contains(out, "\n  country") {
 		t.Errorf("the map's credit reached the terminal unfiltered:\n%q", out)
+	}
+}
+
+// A level the tiles cannot answer -- city, water -- is never one a store is
+// short of tiles for, with boundaries or without: asking only for it of a
+// store with no map is not "needs map tiles".
+func TestALevelTheTilesCannotAnswerNeedsNoTiles(t *testing.T) {
+	if need := tileLevels([]osmlocate.Level{osmlocate.City, osmlocate.Water}, nil); len(need) != 0 {
+		t.Errorf("tileLevels = %v, want none", need)
+	}
+	if need := tileLevels([]osmlocate.Level{osmlocate.City, osmlocate.Street}, nil); len(need) != 1 || need[0] != osmlocate.Street {
+		t.Errorf("tileLevels = %v, want street alone", need)
 	}
 }

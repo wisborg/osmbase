@@ -298,6 +298,12 @@ func tileLevels(wanted []osmlocate.Level, bounds *boundary.Source) []osmlocate.L
 	}
 	var need []osmlocate.Level
 	for _, l := range levels {
+		// A level the tiles cannot answer at all -- city, water -- needs no
+		// map: without boundaries it has no answer, and a store holding
+		// boundaries and no map is not short of anything for it.
+		if _, fromTiles := l.Zoom(); !fromTiles {
+			continue
+		}
 		if bounds == nil || !bounds.Covers(l) {
 			need = append(need, l)
 		}

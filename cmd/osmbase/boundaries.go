@@ -75,6 +75,11 @@ mapped as points, so the same command gives Sydney its suburbs and Denmark its
 municipalities. Run it without --levels first to see what a region actually
 carries.
 
+It also keeps the extent of each city and town the extract maps as one --
+Sydney as a whole, not the council called Sydney -- whatever --levels says,
+and locate answers its city level from them. A metropolitan outline is large,
+and closes only in an extract that holds all of it: a state's, not a city's.
+
 The extract is OpenStreetMap data, which is NOT public domain. The file this
 writes from it is a Derivative Database under the ODbL, so share-alike attaches
 to that file: passing it to somebody else passes the licence with it. Answering

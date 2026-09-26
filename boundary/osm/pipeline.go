@@ -49,7 +49,11 @@ type Boundary struct {
 	ID         int64
 	Name       string
 	AdminLevel int
-	Ways       []Way
+	// Place is "city" or "town" for a boundary=place relation -- the extent
+	// of a city as a whole, which is no administrative level -- and empty
+	// for an administrative boundary. See cityPlace.
+	Place string
+	Ways  []Way
 }
 
 // Limits bound what a file can make the pipeline hold.
@@ -206,6 +210,7 @@ type relation struct {
 	id     int64
 	name   string
 	level  int
+	place  string
 	wayIDs []int64
 	roles  []string
 }
@@ -227,12 +232,16 @@ func readRelations(open Open, opts Options) ([]relation, *idSet, blockKinds, err
 		}
 		kinds = append(kinds, k)
 		return b.EachRelation(func(r osmpbf.Relation) error {
-			if !r.Tags.Is("boundary", "administrative") {
-				return nil
-			}
-			level, ok := adminLevel(r.Tags)
-			if !ok || !wantsLevel(opts.Levels, level) {
-				return nil
+			place, isPlace := cityPlace(r.Tags)
+			level := 0
+			if !isPlace {
+				if !r.Tags.Is("boundary", "administrative") {
+					return nil
+				}
+				var ok bool
+				if level, ok = adminLevel(r.Tags); !ok || !wantsLevel(opts.Levels, level) {
+					return nil
+				}
 			}
 			name := preferredName(r.Tags, opts.Language)
 			if name == "" {
@@ -248,7 +257,7 @@ func readRelations(open Open, opts Options) ([]relation, *idSet, blockKinds, err
 					opts.Limits.Boundaries)
 			}
 
-			keep := relation{id: r.ID, name: name, level: level}
+			keep := relation{id: r.ID, name: name, level: level, place: place}
 			for _, m := range r.Members {
 				if m.Type != osmpbf.MemberWay {
 					// A boundary relation also names an admin_centre node and
@@ -389,7 +398,7 @@ func collect(found []relation, wantedWays *idSet, wayNodes [][]int64, wantedNode
 	var total int
 
 	for _, r := range found {
-		b := Boundary{ID: r.id, Name: r.name, AdminLevel: r.level}
+		b := Boundary{ID: r.id, Name: r.name, AdminLevel: r.level, Place: r.place}
 		for j, id := range r.wayIDs {
 			i, ok := wantedWays.find(id)
 			if !ok {
@@ -521,6 +530,26 @@ func eachBlock(open Open, filter *blockFilter, walk func(int, *osmpbf.PrimitiveB
 			return nil
 		}
 	}
+}
+
+// cityPlace reports whether a relation is the extent of a city or a town --
+// boundary=place with place=city or place=town -- and which.
+//
+// Kept whatever --levels asks for, because it is no administrative level: it
+// is the city as a whole, Sydney rather than the Council of the City of
+// Sydney, and in a country that maps one it is the answer to "which city is
+// this in" that the administrative boundaries cannot give. Anything smaller
+// -- a suburb, a village -- is already an administrative area where it is an
+// area at all.
+func cityPlace(tags osmpbf.Tags) (string, bool) {
+	if !tags.Is("boundary", "place") {
+		return "", false
+	}
+	p, _ := tags.Get("place")
+	if p == "city" || p == "town" {
+		return p, true
+	}
+	return "", false
 }
 
 // adminLevel reads the admin_level tag as a number.

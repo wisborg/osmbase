@@ -242,32 +242,57 @@ func TestNeighbourhoodPrefersASuburb(t *testing.T) {
 	}
 }
 
-// Prominent takes the place the map shows first, then the most populous,
-// over the nearest; without it the nearest is the answer.
-func TestProminentLocalityIsTheOneTheMapShowsFirst(t *testing.T) {
+// Prominent answers with the place the point is most within the reach of,
+// where a place's reach grows with how early the map shows it: a city 45 km
+// off beats a town 15 km off, but not the town the point is in. Two places
+// shown at the same zoom are decided by distance alone; population is not
+// used, and a village is never the answer, however near. Without Prominent
+// the nearest label answers.
+func TestProminentLocalityIsTheOneThePointIsMostWithinReachOf(t *testing.T) {
 	town := func(name string, minZoom int64, pop uint64, east float64) sceneFeature {
-		tags := text("kind", "locality", "name", name)
+		detail := "town"
+		if minZoom < 6 {
+			detail = "city"
+		}
+		if minZoom > 10 {
+			detail = "village"
+		}
+		tags := text("kind", "locality", "kind_detail", detail, "name", name)
 		tags["min_zoom"] = mvt.IntValue(minZoom)
 		tags["population"] = mvt.UintValue(pop)
-		return sceneFeature{layer: "places", typ: mvt.GeomPoint, tags: tags, pts: [][2]float64{{east, 0}}}
+		// Encoded in the tile holding the label itself.
+		return sceneFeature{layer: "places", typ: mvt.GeomPoint, tags: tags, pts: [][2]float64{{east, 0}}, tileEast: east}
 	}
-	src := scene(t, 10,
-		town("Nearby Town", 8, 20_000, 3_000),
-		town("Big City", 2, 4_000_000, 15_000),
-		town("Other Town", 8, 60_000, 5_000),
-	)
-	near := lookup(t, src, 0, 0, locate.Options{Levels: []locate.Level{locate.Locality}})
-	if m, _ := near.Match(locate.Locality); m.Name != "Nearby Town" {
-		t.Errorf("nearest is %q", m.Name)
+	locality := []locate.Level{locate.Locality}
+	answer := func(src tiles, east float64, prominent bool) string {
+		m, _ := lookup(t, src, east, 0, locate.Options{Levels: locality, Prominent: prominent}).Match(locate.Locality)
+		return m.Name
 	}
-	prom := lookup(t, src, 0, 0, locate.Options{Levels: []locate.Level{locate.Locality}, Prominent: true})
-	if m, _ := prom.Match(locate.Locality); m.Name != "Big City" {
-		t.Errorf("prominent is %q", m.Name)
+	// The city's label is 45 km off: beyond the neighbouring zoom-10 tiles,
+	// so it is found only in the shallow tile the lookup also reads.
+	city := town("Big City", 2, 4_000_000, 45_000)
+	merged := func(a, b tiles) tiles {
+		for k, v := range b {
+			a[k] = v
+		}
+		return a
 	}
-	src = scene(t, 10, town("Nearby Town", 8, 20_000, 3_000), town("Other Town", 8, 60_000, 5_000))
-	prom = lookup(t, src, 0, 0, locate.Options{Levels: []locate.Level{locate.Locality}, Prominent: true})
-	if m, _ := prom.Match(locate.Locality); m.Name != "Other Town" {
-		t.Errorf("between two towns shown at the same zoom, prominent is %q; want the more populous", m.Name)
+	src := merged(scene(t, 10, town("Nearby Town", 8, 900_000, 15_000), town("Home Town", 8, 20_000, -60_000),
+		town("Next Village", 11, 2_000, 1_000)), scene(t, 6, city))
+
+	if got := answer(src, 0, false); got != "Next Village" {
+		t.Errorf("nearest is %q", got)
+	}
+	if got := answer(src, 0, true); got != "Big City" {
+		t.Errorf("45 km from a city and 15 km from a town, prominent is %q", got)
+	}
+	if got := answer(src, -59_000, true); got != "Home Town" {
+		t.Errorf("a kilometre from its own town's label, prominent is %q", got)
+	}
+
+	src = scene(t, 10, town("Near Town", 8, 20_000, 3_000), town("Bigger Town", 8, 60_000, 5_000))
+	if got := answer(src, 0, true); got != "Near Town" {
+		t.Errorf("between two towns shown at the same zoom, prominent is %q; want the nearer", got)
 	}
 }
 

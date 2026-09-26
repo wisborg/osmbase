@@ -51,14 +51,25 @@ type Options struct {
 	// that street by any reading a person would give.
 	OnWay bool
 
-	// Prominent answers Locality with the most prominent place within reach
-	// rather than the nearest: the one the map shows first (its min_zoom),
-	// then the most populous, then the nearest.
+	// Prominent answers Locality with the place whose reach the point is
+	// most within, rather than the nearest label: "which city is this in",
+	// where the nearest answers "which town is closest".
 	//
-	// It is the answer to "which city is this in", where the nearest answers
-	// "which town is closest". A point in Sydney Olympic Park is nearer to
-	// Parramatta's label than to Sydney's, and is in Sydney by any account a
-	// person would give.
+	// A place's reach grows with its prominence -- the zoom the map first
+	// shows it at. A town first shown at 8 reaches the level's usual cap,
+	// 25 km; each two zooms earlier doubles it, to 200 km for a city shown at
+	// 2. The answer is the place with the smallest distance for its reach. So
+	// Western Sydney's new airport, 45 km from Sydney's label and 15 from
+	// Penrith's, is in Sydney -- a fifth of Sydney's reach against three
+	// fifths of Penrith's -- while a point in Newcastle, 120 km up the coast,
+	// is in Newcastle, on top of its own label. Only cities and towns are
+	// candidates: a village beside the course is not the city it is in.
+	// Population, which the data gives for a city here and a suburb there,
+	// is not used.
+	//
+	// Where OpenStreetMap maps a city's extent, the City level answers the
+	// same question by containment, and is the better answer; this is for
+	// everywhere it does not.
 	Prominent bool
 
 	// Levels restricts the lookup. Empty asks for all of them.
@@ -310,6 +321,7 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		// kilometre apart share a country tile and not a street tile.
 		byTile := map[tileRef][]int{}
 		cap := opts.maxDistance(level)
+		prominent := level == Locality && opts.Prominent
 		for _, i := range rest {
 			p := pts[i]
 			x, y, err := mercator.TileAt(spec.zoom, p.Lon, p.Lat)
@@ -321,6 +333,15 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 			}
 			for _, ref := range tilesNear(spec.zoom, x, y, p, cap) {
 				byTile[ref] = append(byTile[ref], i)
+			}
+			if prominent {
+				// A city's reach runs past the neighbouring tiles at the
+				// level's own zoom. The shallow tiles hold only the places
+				// shown that early -- exactly the ones with that reach.
+				x, y, _ := mercator.TileAt(prominentZoom, p.Lon, p.Lat)
+				for _, ref := range tilesNear(prominentZoom, x, y, p, cap*maxReachFactor) {
+					byTile[ref] = append(byTile[ref], i)
+				}
 			}
 		}
 
@@ -494,6 +515,7 @@ func nearest(feats []mvt.Feature, spec levelSpec, ref tileRef, at Coord, opts Op
 	var best Match
 	found := false
 	bestD := math.Inf(1)
+	prominent := spec.level == Locality && opts.Prominent
 
 	for i := range feats {
 		f := &feats[i]
@@ -504,18 +526,59 @@ func nearest(feats []mvt.Feature, spec levelSpec, ref tileRef, at Coord, opts Op
 		if !ok {
 			continue
 		}
-		d, ok := distanceTo(f, spec.line, at, spec.zoom, ref)
-		if !ok || d > opts.maxDistance(spec.level) {
+		if prominent && !cityOrTown(f) {
+			continue
+		}
+		d, ok := distanceTo(f, spec.line, at, ref.z, ref)
+		limit := opts.maxDistance(spec.level)
+		if prominent {
+			limit = reach(f, limit)
+		}
+		if !ok || d > limit {
 			continue
 		}
 		kind, _ := textTag(f, "kind_detail")
 		m := Match{Level: spec.level, Name: name, Kind: kind, Source: Near,
-			DistanceM: math.Round(d*10) / 10, rank: rankOf(f, spec.level, opts)}
+			DistanceM: math.Round(d*10) / 10, rank: rankOf(f, spec.level)}
+		if prominent {
+			m.rank = [2]float64{d / limit, 0}
+		}
 		if !found || m.rank != best.rank && less(m.rank, best.rank) || m.rank == best.rank && d < bestD {
 			best, bestD, found = m, d, true
 		}
 	}
 	return best, found
+}
+
+// cityOrTown reports whether a locality label is a city's or a town's. A
+// village is not the answer to "which city is this in" however close its
+// label is: a run past Luddenham, a village two kilometres off, is at
+// Western Sydney's airport, and in Sydney.
+func cityOrTown(f *mvt.Feature) bool {
+	kind, _ := textTag(f, "kind_detail")
+	return kind == "city" || kind == "town"
+}
+
+// prominentZoom is the shallow zoom Prominent reads for the places whose
+// reach runs past the level's own neighbouring tiles, and maxReachFactor how
+// far past the level's cap the widest reach goes.
+const (
+	prominentZoom  = 6
+	maxReachFactor = 8
+)
+
+// reach is how far a place's label answers for, under Options.Prominent:
+// base for a place the map first shows at zoom 8, doubled for each two zooms
+// earlier, up to maxReachFactor times base; halved for each two later. A
+// place with no min_zoom is taken to be shown late.
+func reach(f *mvt.Feature, base float64) float64 {
+	z := 12.0
+	if v, ok := f.Tag("min_zoom"); ok {
+		if n, ok := v.Float64(); ok {
+			z = n
+		}
+	}
+	return base * math.Min(math.Exp2((8-z)/2), maxReachFactor)
 }
 
 // preferred reports whether a is a better answer than b for the same level:
@@ -544,29 +607,13 @@ func less(a, b [2]float64) bool {
 var neighbourhoodRank = map[string]float64{"suburb": 0, "quarter": 1, "neighbourhood": 2}
 
 // rankOf is a candidate's rank at a level; see Match.rank.
-func rankOf(f *mvt.Feature, l Level, opts Options) [2]float64 {
-	switch {
-	case l == Neighbourhood:
+func rankOf(f *mvt.Feature, l Level) [2]float64 {
+	if l == Neighbourhood {
 		kind, _ := textTag(f, "kind_detail")
 		if r, ok := neighbourhoodRank[kind]; ok {
 			return [2]float64{r, 0}
 		}
 		return [2]float64{3, 0}
-	case l == Locality && opts.Prominent:
-		// The zoom the map first shows it at, then population. A place with
-		// neither is ranked after every place that has them.
-		z, pop := 99.0, 0.0
-		if v, ok := f.Tag("min_zoom"); ok {
-			if n, ok := v.Float64(); ok {
-				z = n
-			}
-		}
-		if v, ok := f.Tag("population"); ok {
-			if n, ok := v.Float64(); ok {
-				pop = n
-			}
-		}
-		return [2]float64{z, -pop}
 	}
 	return [2]float64{}
 }
