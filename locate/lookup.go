@@ -37,6 +37,30 @@ type Options struct {
 	// zooms a country lookup would otherwise need.
 	Boundaries BoundarySource
 
+	// OnWay answers Street with the street the point is ON rather than the
+	// nearest one with a name.
+	//
+	// The default answers "which named street is nearest", which is the right
+	// question for one coordinate and the wrong one for a course. A path
+	// through a park runs beside a road without being on it, and a course
+	// along that path is reported as having gone down the road. With OnWay
+	// the nearest way of ANY kind decides: a named one is the answer, and an
+	// unnamed footpath or track is no answer at all -- unless a named way is
+	// within SidewalkM of it, because a pavement mapped as its own line runs
+	// a few metres beside the street it belongs to, and a runner on it is on
+	// that street by any reading a person would give.
+	OnWay bool
+
+	// Prominent answers Locality with the most prominent place within reach
+	// rather than the nearest: the one the map shows first (its min_zoom),
+	// then the most populous, then the nearest.
+	//
+	// It is the answer to "which city is this in", where the nearest answers
+	// "which town is closest". A point in Sydney Olympic Park is nearer to
+	// Parramatta's label than to Sydney's, and is in Sydney by any account a
+	// person would give.
+	Prominent bool
+
 	// Levels restricts the lookup. Empty asks for all of them.
 	//
 	// Worth setting: each level is read at its own zoom, so asking for fewer
@@ -60,6 +84,15 @@ var DefaultMaxDistanceM = map[Level]float64{
 	Neighbourhood: 3_000,
 	Street:        250,
 }
+
+// SidewalkM is how far a named street may be from an unnamed way nearer the
+// point, under Options.OnWay, for the point to be on the street.
+//
+// A pavement mapped as its own line lies five to ten metres from the centre
+// line of its street. A footpath that merely runs parallel to a road through a
+// park is usually further. Twelve metres takes the first and leaves the
+// second.
+const SidewalkM = 12.0
 
 // levelSpec says where in the schema a level's data lives.
 //
@@ -95,7 +128,18 @@ var levelSpecs = []levelSpec{
 	{Locality, "places", []string{"locality"}, 10, false},
 	{Macrohood, "places", []string{"macrohood"}, 13, false},
 	{Neighbourhood, "places", []string{"neighbourhood"}, 14, false},
+	{Area, "landuse", areaKinds, 14, false},
 	{Street, "roads", nil, 14, true},
+}
+
+// areaKinds are the landuse kinds the Area level names: places a person would
+// say a course went through, rather than the ground cover under it. Grass,
+// wood and scrub are left out -- every park is partly each -- and so are
+// residential and industrial, which are addresses by another name.
+var areaKinds = []string{
+	"park", "garden", "nature_reserve", "national_park", "protected_area",
+	"cemetery", "golf_course", "zoo", "theme_park", "recreation_ground",
+	"university", "college", "aerodrome",
 }
 
 // Coord is a point to look up.
@@ -255,6 +299,12 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("locate: looking up %s: %w", level, err)
 		}
+		if level == Area {
+			if err := areasAt(src, spec, rest, pts, opts, out); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		// Every point that shares a tile at this level is answered from one
 		// read. The grouping is per level because the zooms differ: points a
 		// kilometre apart share a country tile and not a street tile.
@@ -274,6 +324,12 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 			}
 		}
 
+		if level == Street && opts.OnWay {
+			if err := onWays(src, spec, byTile, pts, opts, out); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		for ref, idx := range byTile {
 			feats, err := readLayer(src, ref, spec.layer)
 			if err != nil {
@@ -291,7 +347,7 @@ func AtEach(ctx context.Context, src TileSource, pts []Coord, opts Options) ([]P
 				// read, and the nearest of those answers is the one that is
 				// true. Keeping the first would make the result depend on map
 				// iteration order, which is randomised.
-				if prev, had := out[i].matchAt(level); !had || m.DistanceM < prev.DistanceM {
+				if prev, had := out[i].matchAt(level); !had || preferred(m, prev) {
 					out[i].setMatch(m)
 				}
 			}
@@ -432,10 +488,12 @@ func readLayer(src TileSource, ref tileRef, layer string) ([]mvt.Feature, error)
 	return l.Features, nil
 }
 
-// nearest finds the closest named feature of a level to a point.
+// nearest finds the closest named feature of a level to a point -- the most
+// preferred, where the level ranks its candidates, and the closest of those.
 func nearest(feats []mvt.Feature, spec levelSpec, ref tileRef, at Coord, opts Options) (Match, bool) {
-	best := math.Inf(1)
-	var bestName, bestKind string
+	var best Match
+	found := false
+	bestD := math.Inf(1)
 
 	for i := range feats {
 		f := &feats[i]
@@ -447,20 +505,121 @@ func nearest(feats []mvt.Feature, spec levelSpec, ref tileRef, at Coord, opts Op
 			continue
 		}
 		d, ok := distanceTo(f, spec.line, at, spec.zoom, ref)
-		if !ok || d >= best {
+		if !ok || d > opts.maxDistance(spec.level) {
 			continue
 		}
-		best, bestName = d, name
-		bestKind, _ = textTag(f, "kind_detail")
+		kind, _ := textTag(f, "kind_detail")
+		m := Match{Level: spec.level, Name: name, Kind: kind, Source: Near,
+			DistanceM: math.Round(d*10) / 10, rank: rankOf(f, spec.level, opts)}
+		if !found || m.rank != best.rank && less(m.rank, best.rank) || m.rank == best.rank && d < bestD {
+			best, bestD, found = m, d, true
+		}
 	}
+	return best, found
+}
 
-	if bestName == "" || best > opts.maxDistance(spec.level) {
-		return Match{}, false
+// preferred reports whether a is a better answer than b for the same level:
+// better ranked, or as well ranked and nearer.
+func preferred(a, b Match) bool {
+	if a.rank != b.rank {
+		return less(a.rank, b.rank)
 	}
-	return Match{
-		Level: spec.level, Name: bestName, Kind: bestKind,
-		Source: Near, DistanceM: math.Round(best*10) / 10,
-	}, true
+	return a.DistanceM < b.DistanceM
+}
+
+func less(a, b [2]float64) bool {
+	if a[0] != b[0] {
+		return a[0] < b[0]
+	}
+	return a[1] < b[1]
+}
+
+// neighbourhoodRank orders the kinds the neighbourhood level holds. OSM's
+// place=suburb is the named district a person gives as where they live --
+// in Australia the official suburb -- and place=neighbourhood is whatever
+// somebody mapped inside one: a precinct, a street's nickname, a
+// "Koreatown" around a few restaurants. Both are published at this level, and
+// taking the nearer made a run from Hyde Park start in Koreatown. A suburb in
+// reach is the answer; a neighbourhood only where there is no suburb.
+var neighbourhoodRank = map[string]float64{"suburb": 0, "quarter": 1, "neighbourhood": 2}
+
+// rankOf is a candidate's rank at a level; see Match.rank.
+func rankOf(f *mvt.Feature, l Level, opts Options) [2]float64 {
+	switch {
+	case l == Neighbourhood:
+		kind, _ := textTag(f, "kind_detail")
+		if r, ok := neighbourhoodRank[kind]; ok {
+			return [2]float64{r, 0}
+		}
+		return [2]float64{3, 0}
+	case l == Locality && opts.Prominent:
+		// The zoom the map first shows it at, then population. A place with
+		// neither is ranked after every place that has them.
+		z, pop := 99.0, 0.0
+		if v, ok := f.Tag("min_zoom"); ok {
+			if n, ok := v.Float64(); ok {
+				z = n
+			}
+		}
+		if v, ok := f.Tag("population"); ok {
+			if n, ok := v.Float64(); ok {
+				pop = n
+			}
+		}
+		return [2]float64{z, -pop}
+	}
+	return [2]float64{}
+}
+
+// onWays answers Street under Options.OnWay: across every tile read for a
+// point, the nearest way of any kind and the nearest named one, and the named
+// one only where it is the way the point is on -- nearest, or within
+// SidewalkM of the nearest.
+//
+// Aeroways are not ways anybody travels on foot or by road, and their names
+// are taxiway letters; they are left out.
+func onWays(src TileSource, spec levelSpec, byTile map[tileRef][]int, pts []Coord, opts Options, out []Place) error {
+	type acc struct {
+		any, named float64
+		name, kind string
+	}
+	accs := map[int]*acc{}
+	for ref, idx := range byTile {
+		feats, err := readLayer(src, ref, spec.layer)
+		if err != nil {
+			return err
+		}
+		for _, i := range idx {
+			a := accs[i]
+			if a == nil {
+				a = &acc{any: math.Inf(1), named: math.Inf(1)}
+				accs[i] = a
+			}
+			for k := range feats {
+				f := &feats[k]
+				if kind, _ := textTag(f, "kind"); kind == "aeroway" {
+					continue
+				}
+				d, ok := distanceTo(f, true, pts[i], spec.zoom, ref)
+				if !ok {
+					continue
+				}
+				a.any = math.Min(a.any, d)
+				if name, ok := preferredName(f, opts.Language); ok && d < a.named {
+					a.named, a.name = d, name
+					a.kind, _ = textTag(f, "kind_detail")
+				}
+			}
+		}
+	}
+	for i, a := range accs {
+		if a.name == "" || a.named > opts.maxDistance(spec.level) || a.named > a.any+SidewalkM {
+			continue
+		}
+		out[i].setMatch(Match{Level: spec.level, Name: a.name, Kind: a.kind, Source: Near,
+			DistanceM: math.Round(a.named*10) / 10})
+	}
+	return nil
 }
 
 // tilesNear is the tiles that could hold a feature within cap metres of a

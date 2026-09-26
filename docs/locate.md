@@ -229,8 +229,8 @@ The one-time cost buys better privacy, not worse.
 ```go
 package locate
 
-type Level uint8   // Country, Region, Locality, Macrohood, Neighbourhood, Street
-type Source uint8  // Contained, Near
+type Level uint8   // Country, Region, Water, Locality, Macrohood, Neighbourhood, Area, Street
+type Source uint8  // Near, Contained, Within
 
 type Match struct {
     Level     Level
@@ -290,6 +290,29 @@ previous row. A four-hour activity becomes a handful of rows naming the places i
 through. Because lookups here are local and cheap, the aggressive point-thinning a metered
 geocoding API forces is unnecessary — the filter can be generous and the change detection
 does the work.
+
+## Stage three: the questions a course asks
+
+A summary of a whole course -- the `course` module -- asks things a single coordinate does
+not, and real runs through Sydney and Horsens showed where the nearest-feature answers
+mislead:
+
+- **Area**, a new level between neighbourhood and street: the park, garden, cemetery, golf
+  course, campus or airport whose polygon holds the point, answered `Within` -- a fact
+  from the tiles, owing the tiles' credit. The schema names the label point rather than
+  the polygon, and the two share a feature identifier, which is how a polygon gets its
+  name; the label is looked for in the polygon's tile and its neighbours. A run entirely
+  inside a park had been summarised as the streets around it.
+- **OnWay**, an option: the street a point is ON is decided by the nearest way of any
+  kind, so a path through a park beside a road is not the road. A named street within
+  `SidewalkM` of the nearest way still counts, for pavements mapped as their own lines.
+  Aeroways are not ways.
+- **Suburbs over minor neighbourhoods**, always: the neighbourhood level holds both
+  `place=suburb` and `place=neighbourhood`, and the nearer won -- a run from Hyde Park
+  started in "Koreatown". A suburb in reach now wins, across tiles as within one.
+- **Prominent**, an option: Locality as the most prominent place in reach (lowest
+  `min_zoom`, then population) rather than the nearest -- Sydney, not Parramatta, for
+  Sydney Olympic Park.
 
 ## Where this got to
 

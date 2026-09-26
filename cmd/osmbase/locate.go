@@ -418,11 +418,12 @@ func writeLocateText(w io.Writer, places []osmlocate.Place, credit string, conta
 				kind = m.Level.String()
 			}
 			fmt.Fprintf(w, "  %-14s %s %s (%s)\n", m.Level, m.Source, safeForTerminal(m.Name), safeForTerminal(kind))
-			// No distance for a contained match. It is always zero, and
-			// printing "0 m away" invites a reader to think a measurement was
-			// taken and came back as nothing, when in fact the question does
-			// not apply: the point is inside the area, not near it.
-			if m.Source != osmlocate.Contained {
+			// No distance for a contained match, or one within an area. It
+			// is always zero, and printing "0 m away" invites a reader to
+			// think a measurement was taken and came back as nothing, when in
+			// fact the question does not apply: the point is inside the area,
+			// not near it.
+			if m.Source == osmlocate.Near {
 				fmt.Fprintf(w, "  %-14s %s away\n", "", humanDistance(m.DistanceM))
 			}
 		}

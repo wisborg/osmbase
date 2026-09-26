@@ -64,6 +64,18 @@ const (
 	Locality
 	Macrohood
 	Neighbourhood
+
+	// Area is a named place on the ground that is not an address: a park, a
+	// garden, a cemetery, a golf course, a campus, an airport.
+	//
+	// Answered by containment in the map tiles -- the area's polygon holds
+	// the point -- and never by the nearest label, because "near a park" is
+	// true of every house on its edge and says nothing about where a course
+	// went. It is the level that describes a run inside a park, which has no
+	// street under it and whose nearest street is a road the runner never set
+	// foot on.
+	Area
+
 	Street
 )
 
@@ -88,6 +100,8 @@ func (l Level) String() string {
 		return "macrohood"
 	case Neighbourhood:
 		return "neighbourhood"
+	case Area:
+		return "area"
 	case Street:
 		return "street"
 	}
@@ -127,16 +141,28 @@ const (
 	// statement of fact, and not available from tiles alone -- see
 	// Options.Boundaries.
 	Contained
+
+	// Within means a polygon in the map tiles holds the point -- the Area
+	// level's park or airport. As much a statement of fact as Contained, and
+	// kept apart from it for one reason: it comes from the TILES, so it owes
+	// the tile archive's credit where Contained owes the boundary file's. A
+	// caller crediting "anything not Contained" to the tiles is right about
+	// it without knowing it exists.
+	Within
 )
 
 func (s Source) String() string {
-	if s == Contained {
+	switch s {
+	case Contained:
 		return "contained"
+	case Within:
+		return "within"
 	}
 	return "near"
 }
 
-// MarshalJSON writes a source as "near" or "contained". See Level.MarshalJSON.
+// MarshalJSON writes a source as "near", "contained" or "within". See
+// Level.MarshalJSON.
 func (s Source) MarshalJSON() ([]byte, error) { return json.Marshal(s.String()) }
 
 // Match is one level's answer.
@@ -177,6 +203,13 @@ type Match struct {
 	// names in one answer came from different places under different terms,
 	// and cannot act on silence.
 	Attribution string `json:"attribution,omitempty"`
+
+	// rank orders candidates before distance does, where a level prefers
+	// one kind of answer to a nearer one: a suburb to a neighbourhood, a
+	// city to a town when Options.Prominent asks. Lower is preferred. It is
+	// what lets answers from neighbouring tiles be compared the same way as
+	// answers from one.
+	rank [2]float64
 }
 
 // Place is everything known about one coordinate.
@@ -210,7 +243,7 @@ func (p Place) Deepest() (Match, bool) {
 
 // Levels are every level, widest first, which is also the order Matches comes
 // back in.
-var Levels = []Level{Country, Region, Water, Locality, Macrohood, Neighbourhood, Street}
+var Levels = []Level{Country, Region, Water, Locality, Macrohood, Neighbourhood, Area, Street}
 
 // ParseLevel turns a name back into a level.
 func ParseLevel(s string) (Level, bool) {
