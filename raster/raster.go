@@ -117,6 +117,20 @@ func NewSurface(w, h int) *Surface {
 	}
 }
 
+// NewSurfaceOn returns a Surface that draws onto img, which it does not copy.
+//
+// For drawing OVER a picture that already exists -- a route over a rendered
+// map -- rather than starting from a transparent one. img's rectangle must
+// begin at the origin, as every surface here does; one that does not gives an
+// empty surface, the same as a non-positive size does in NewSurface.
+func NewSurfaceOn(img *image.RGBA) *Surface {
+	if img == nil || img.Bounds().Min != (image.Point{}) {
+		return NewSurface(0, 0)
+	}
+	b := img.Bounds()
+	return &Surface{img: img, rast: vector.NewRasterizer(b.Dx(), b.Dy())}
+}
+
 // RGBA returns the image being drawn on. It is the live image, not a copy.
 func (s *Surface) RGBA() *image.RGBA { return s.img }
 

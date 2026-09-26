@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
-// Overlay is what a consumer draws ON TOP of the map.
+// Overlay is the inks a consumer draws ON TOP of the map.
 //
-// The library never draws these. It needs to know them because the whole
-// argument for drawing a basemap from the consumer's own palette is that
-// separation can then be guaranteed rather than corrected afterwards, and a
-// guarantee needs both halves: the colours underneath, which are the Palette,
-// and the colours on top, which are these.
+// Colours, not geometry: Draw is what puts lines and markers over a map, in
+// whatever inks it is given, and a caller usually gives it these. The library
+// needs to know them because the whole argument for drawing a basemap from
+// the consumer's own palette is that separation can then be guaranteed rather
+// than corrected afterwards, and a guarantee needs both halves: the colours
+// underneath, which are the Palette, and the colours on top, which are these.
 //
 // In fitdash they are the route line, the covered prefix, the position dot and
 // the highlight marks. This package does not know that and must not: the names
