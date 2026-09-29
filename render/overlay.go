@@ -16,8 +16,8 @@ import (
 // Coord is a position in degrees, latitude first as everywhere in this module.
 type Coord struct{ Lat, Lon float64 }
 
-// Drawing is what a caller asks to have drawn over a map: lines and markers,
-// in coordinates.
+// Drawing is what a caller asks to have drawn over a map: lines, lines
+// coloured by a value along them, and markers, in coordinates.
 //
 // This package draws them and decides nothing about them. Which points make
 // a route, where its start and its kilometre markers go, and in what colours,
@@ -25,8 +25,9 @@ type Coord struct{ Lat, Lon float64 }
 // projection, the clipping, the strokes -- so a line drawn over a map lands
 // on the same pixels the map put the ground at.
 type Drawing struct {
-	Lines   []Line
-	Markers []Marker
+	Lines     []Line
+	Gradients []Gradient
+	Markers   []Marker
 }
 
 // Line is a polyline over the map.
@@ -71,7 +72,8 @@ type Marker struct {
 //
 // All halos are drawn before any ink, so a line that crosses itself, or
 // crosses another, is not cut by its own halo. Then every line in order, then
-// every marker, then every label, so a label is never under a line.
+// every gradient, then every marker, then every label, so a label is never
+// under a line.
 //
 // face is the font for labels, and may be nil when no marker has one.
 func Draw(img *image.RGBA, v View, d Drawing, face font.Face) error {
@@ -90,6 +92,11 @@ func Draw(img *image.RGBA, v View, d Drawing, face font.Face) error {
 			o.stroke(s, l.Points, raster.Stroke{Width: float32(l.Width + 2*l.Halo)}, l.HaloInk)
 		}
 	}
+	for _, g := range d.Gradients {
+		if g.Halo > 0 && g.Width > 0 {
+			o.stroke(s, g.Points, raster.Stroke{Width: float32(g.Width + 2*g.Halo)}, g.HaloInk)
+		}
+	}
 	for _, m := range d.Markers {
 		if m.Halo > 0 && m.Radius > 0 {
 			o.dot(s, m.At, m.Radius+m.Halo, m.HaloInk)
@@ -99,6 +106,9 @@ func Draw(img *image.RGBA, v View, d Drawing, face font.Face) error {
 		if l.Width > 0 {
 			o.stroke(s, l.Points, raster.Stroke{Width: float32(l.Width), Dash: l.Dash}, l.Ink)
 		}
+	}
+	for _, g := range d.Gradients {
+		o.gradient(s, g)
 	}
 	for _, m := range d.Markers {
 		if m.Radius > 0 {
