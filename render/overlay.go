@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
@@ -148,20 +149,56 @@ func (o *overlayDrawer) stroke(s *raster.Surface, points []Coord, st raster.Stro
 	if len(points) < 2 {
 		return
 	}
-	o.src = o.src[:0]
-	for _, c := range points {
-		o.src = append(o.src, o.pixel(c))
-	}
 	o.path.Reset()
 	clip := o.p.surface().inflate(float64(st.Width))
-	o.clip.line(o.src, clip, func(run []pt) {
-		o.dst = o.dst[:0]
-		for _, q := range run {
-			o.dst = append(o.dst, raster.Point{X: float32(q.X), Y: float32(q.Y)})
+	for _, piece := range splitAtAntimeridian(points) {
+		o.src = o.src[:0]
+		for _, c := range piece {
+			o.src = append(o.src, o.pixel(c))
 		}
-		st.DashPhase = o.path.Stroke(o.dst, st)
-	})
+		o.clip.line(o.src, clip, func(run []pt) {
+			o.dst = o.dst[:0]
+			for _, q := range run {
+				o.dst = append(o.dst, raster.Point{X: float32(q.X), Y: float32(q.Y)})
+			}
+			st.DashPhase = o.path.Stroke(o.dst, st)
+		})
+	}
 	s.Fill(&o.path, ink)
+}
+
+// splitAtAntimeridian cuts a line wherever it crosses 180°, into pieces
+// that each end on it: one running off the east edge of the world, the next
+// coming in at the west.
+//
+// A line is drawn from one point to the next, and between 179° and -179° the
+// straight way in the projection is back across the whole world -- which is
+// how a flight from Australia to America drew its Pacific crossing, west past
+// Africa. Two points more than 180° of longitude apart are taken to be
+// neighbours across the meridian, the way nobody travelling between them
+// would go the long way round. Where the line crosses is interpolated in
+// longitude unwrapped across the meridian, so the pieces meet it at the same
+// latitude.
+func splitAtAntimeridian(points []Coord) [][]Coord {
+	var pieces [][]Coord
+	cur := []Coord{points[0]}
+	for i := 1; i < len(points); i++ {
+		a, b := points[i-1], points[i]
+		if math.Abs(b.Lon-a.Lon) <= 180 {
+			cur = append(cur, b)
+			continue
+		}
+		edge, unwrapped := 180.0, b.Lon+360
+		if b.Lon > a.Lon {
+			edge, unwrapped = -180, b.Lon-360
+		}
+		t := (edge - a.Lon) / (unwrapped - a.Lon)
+		lat := a.Lat + t*(b.Lat-a.Lat)
+		cur = append(cur, Coord{Lat: lat, Lon: edge})
+		pieces = append(pieces, cur)
+		cur = []Coord{{Lat: lat, Lon: -edge}, b}
+	}
+	return append(pieces, cur)
 }
 
 // dot draws a filled circle, if any of it is in the image.

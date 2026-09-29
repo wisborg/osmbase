@@ -191,3 +191,60 @@ func TestDrawRefusesAPictureOfAnotherSize(t *testing.T) {
 		t.Error("no picture at all was accepted")
 	}
 }
+
+// A line across 180° is cut there, into a piece running off the east edge of
+// the world and one coming in at the west, meeting the meridian at the same
+// latitude -- not drawn back across the whole world.
+func TestDrawCutsALineAcrossTheAntimeridian(t *testing.T) {
+	v, _ := Fit(Bounds{West: -180, South: -60, East: 180, North: 60}, 400, 400, MaxFitZoom)
+	img := blank(v)
+	l := Line{Points: []Coord{{Lat: 0, Lon: 170}, {Lat: 10, Lon: -170}}, Ink: red, Width: 3}
+	if err := Draw(img, v, Drawing{Lines: []Line{l}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	row := func(lat float64) int {
+		_, y := mercator.Project(0, lat)
+		_, y0 := mercator.Project(v.Bounds.West, v.Bounds.North)
+		_, y1 := mercator.Project(v.Bounds.East, v.Bounds.South)
+		return int((y - y0) / (y1 - y0) * float64(v.Height))
+	}
+	red := func(x, y int) bool {
+		for dy := -3; dy <= 3; dy++ {
+			if same(img.At(x, y+dy), red) {
+				return true
+			}
+		}
+		return false
+	}
+	// At 5°N, where the line meets the meridian, it is at both edges.
+	if !red(v.Width-2, row(5)) || !red(1, row(5)) {
+		t.Error("the line does not reach both edges of the world where it crosses 180°")
+	}
+	// Across the middle of the world there is nothing.
+	for x := 50; x < v.Width-50; x += 10 {
+		if red(x, row(5)) {
+			t.Fatalf("the line crosses the world at x=%d", x)
+		}
+	}
+}
+
+func TestSplitAtAntimeridian(t *testing.T) {
+	pieces := splitAtAntimeridian([]Coord{{0, 170}, {10, -170}, {12, -160}})
+	if len(pieces) != 2 {
+		t.Fatalf("%d pieces", len(pieces))
+	}
+	a, b := pieces[0], pieces[1]
+	if end := a[len(a)-1]; end.Lon != 180 || end.Lat != 5 {
+		t.Errorf("the first piece ends at %v; want 5°N on 180°", end)
+	}
+	if start := b[0]; start.Lon != -180 || start.Lat != 5 || len(b) != 3 {
+		t.Errorf("the second piece is %v; want it to start at 5°N on -180° and carry on", b)
+	}
+	back := splitAtAntimeridian([]Coord{{0, -170}, {10, 170}})
+	if len(back) != 2 || back[0][1].Lon != -180 || back[1][0].Lon != 180 {
+		t.Errorf("westward across the meridian: %v", back)
+	}
+	if got := splitAtAntimeridian([]Coord{{0, 10}, {0, 20}}); len(got) != 1 {
+		t.Errorf("a line nowhere near 180° was cut: %v", got)
+	}
+}
