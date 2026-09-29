@@ -208,6 +208,7 @@ func TestOnWayIsTheWayThePointIsOn(t *testing.T) {
 		{"a pavement 8 m from its street", []sceneFeature{way("", "path", 1), way("Main Road", "major_road", 8)}, "Main Road", "Main Road"},
 		{"on the street itself", []sceneFeature{way("Main Road", "major_road", 1), way("", "path", 20)}, "Main Road", "Main Road"},
 		{"a taxiway", []sceneFeature{way("B", "aeroway", 1)}, "", "B"},
+		{"a railway siding beside a street", []sceneFeature{way("Network Base", "rail", 1), way("Station Street", "minor_road", 9)}, "Station Street", "Network Base"},
 		{"a named path", []sceneFeature{way("Creek Path", "path", 1), way("Main Road", "major_road", 25)}, "Creek Path", "Creek Path"},
 	} {
 		src := scene(t, 14, tc.ways...)
@@ -244,7 +245,7 @@ func TestNeighbourhoodPrefersASuburb(t *testing.T) {
 
 // Prominent answers with the place the point is most within the reach of,
 // where a place's reach grows with how early the map shows it: a city 45 km
-// off beats a town 15 km off, but not the town the point is in. Two places
+// off beats a town 15 km off, but not the city the point is in. Two places
 // shown at the same zoom are decided by distance alone; population is not
 // used, and a village is never the answer, however near. Without Prominent
 // the nearest label answers.
@@ -277,7 +278,7 @@ func TestProminentLocalityIsTheOneThePointIsMostWithinReachOf(t *testing.T) {
 		}
 		return a
 	}
-	src := merged(scene(t, 10, town("Nearby Town", 8, 900_000, 15_000), town("Home Town", 8, 20_000, -60_000),
+	src := merged(scene(t, 10, town("Nearby Town", 8, 900_000, 15_000), town("Home City", 5, 300_000, -60_000),
 		town("Next Village", 11, 2_000, 1_000)), scene(t, 6, city))
 
 	if got := answer(src, 0, false); got != "Next Village" {
@@ -286,13 +287,26 @@ func TestProminentLocalityIsTheOneThePointIsMostWithinReachOf(t *testing.T) {
 	if got := answer(src, 0, true); got != "Big City" {
 		t.Errorf("45 km from a city and 15 km from a town, prominent is %q", got)
 	}
-	if got := answer(src, -59_000, true); got != "Home Town" {
-		t.Errorf("a kilometre from its own town's label, prominent is %q", got)
+	if got := answer(src, -59_000, true); got != "Home City" {
+		t.Errorf("a kilometre from its own city's label, 105 km from a bigger one's, prominent is %q", got)
 	}
 
 	src = scene(t, 10, town("Near Town", 8, 20_000, 3_000), town("Bigger Town", 8, 60_000, 5_000))
 	if got := answer(src, 0, true); got != "Near Town" {
 		t.Errorf("between two towns shown at the same zoom, prominent is %q; want the nearer", got)
+	}
+
+	// A town inside a city's reach is in the city, however near its own
+	// label -- but a city on top of its own label is itself.
+	suburbTown := town("Inner Town", 8, 20_000, 500)
+	src = merged(scene(t, 10, suburbTown), scene(t, 6, city))
+	if got := answer(src, 0, true); got != "Big City" {
+		t.Errorf("half a kilometre from a town's label, 45 km from a city's, prominent is %q", got)
+	}
+	ownCity := town("Own City", 5, 300_000, 500)
+	src = merged(scene(t, 10, ownCity), scene(t, 6, city, ownCity))
+	if got := answer(src, 0, true); got != "Own City" {
+		t.Errorf("on top of a city's own label, prominent is %q", got)
 	}
 }
 

@@ -63,7 +63,9 @@ type Options struct {
 	// Penrith's, is in Sydney -- a fifth of Sydney's reach against three
 	// fifths of Penrith's -- while a point in Newcastle, 120 km up the coast,
 	// is in Newcastle, on top of its own label. Only cities and towns are
-	// candidates: a village beside the course is not the city it is in.
+	// candidates, and a city is preferred to a town wherever one reaches: a
+	// village beside the course is not the city it is in, and nor is a town
+	// inside a city -- Hornsby, in Sydney.
 	// Population, which the data gives for a city here and a suburb there,
 	// is not used.
 	//
@@ -541,7 +543,9 @@ func nearest(feats []mvt.Feature, spec levelSpec, ref tileRef, at Coord, opts Op
 		m := Match{Level: spec.level, Name: name, Kind: kind, Source: Near,
 			DistanceM: math.Round(d*10) / 10, rank: rankOf(f, spec.level)}
 		if prominent {
-			m.rank = [2]float64{d / limit, 0}
+			// A city before a town, then the smaller share of its reach: a
+			// town is the answer only where no city reaches.
+			m.rank = [2]float64{townRank(f), d / limit}
 		}
 		if !found || m.rank != best.rank && less(m.rank, best.rank) || m.rank == best.rank && d < bestD {
 			best, bestD, found = m, d, true
@@ -557,6 +561,22 @@ func nearest(feats []mvt.Feature, spec levelSpec, ref tileRef, at Coord, opts Op
 func cityOrTown(f *mvt.Feature) bool {
 	kind, _ := textTag(f, "kind_detail")
 	return kind == "city" || kind == "town"
+}
+
+// townRank is 0 for a city's label and 1 for a town's.
+//
+// A town inside a city's reach is part of that city to anybody asked where it
+// is: Hornsby, Penrith and Parramatta are towns in the map's own terms and in
+// Sydney, and nearest-for-its-reach alone gave "Hornsby" for a walk round
+// Hornsby, because its label is two kilometres away and Sydney's twenty.
+// Cities keep their own ground against each other by reach -- Newcastle and
+// Wollongong are cities within Sydney's reach and stay themselves, as does
+// Horsens beside Aarhus -- since that comparison is only among cities.
+func townRank(f *mvt.Feature) float64 {
+	if kind, _ := textTag(f, "kind_detail"); kind == "city" {
+		return 0
+	}
+	return 1
 }
 
 // prominentZoom is the shallow zoom Prominent reads for the places whose
@@ -623,8 +643,10 @@ func rankOf(f *mvt.Feature, l Level) [2]float64 {
 // one only where it is the way the point is on -- nearest, or within
 // SidewalkM of the nearest.
 //
-// Aeroways are not ways anybody travels on foot or by road, and their names
-// are taxiway letters; they are left out.
+// Aeroways and railways are not ways anybody travels on foot or by road --
+// taxiways are named by letter, and a siding beside a station was "the street"
+// a walk through it was on -- so they are left out, as the answer and as the
+// way nearer than a street.
 func onWays(src TileSource, spec levelSpec, byTile map[tileRef][]int, pts []Coord, opts Options, out []Place) error {
 	type acc struct {
 		any, named float64
@@ -644,7 +666,7 @@ func onWays(src TileSource, spec levelSpec, byTile map[tileRef][]int, pts []Coor
 			}
 			for k := range feats {
 				f := &feats[k]
-				if kind, _ := textTag(f, "kind"); kind == "aeroway" {
+				if kind, _ := textTag(f, "kind"); kind == "aeroway" || kind == "rail" {
 					continue
 				}
 				d, ok := distanceTo(f, true, pts[i], spec.zoom, ref)

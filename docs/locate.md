@@ -306,7 +306,7 @@ mislead:
 - **OnWay**, an option: the street a point is ON is decided by the nearest way of any
   kind, so a path through a park beside a road is not the road. A named street within
   `SidewalkM` of the nearest way still counts, for pavements mapped as their own lines.
-  Aeroways are not ways.
+  Aeroways and railways are not ways.
 - **Suburbs over minor neighbourhoods**, always: the neighbourhood level holds both
   `place=suburb` and `place=neighbourhood`, and the nearer won -- a run from Hyde Park
   started in "Koreatown". A suburb in reach now wins, across tiles as within one.
@@ -320,8 +320,10 @@ mislead:
   reach the point is most within. A place's reach grows with how early the map shows it --
   25 km at `min_zoom` 8, doubling every two zooms to 200 km at 2 -- read from zoom-6 tiles
   as well as the level's own for the wide ones. The airport at Badgerys Creek is in Sydney,
-  45 km off, rather than Penrith, 15; Newcastle is still Newcastle. Population, which the
-  data gives for a city in one place and a suburb in another, is not used.
+  45 km off, rather than Penrith, 15; Newcastle is still Newcastle. A city's label is
+  preferred to a town's wherever one reaches -- Hornsby is a town in Sydney -- and cities
+  keep their own ground against each other by reach. Population, which the data gives for
+  a city in one place and a suburb in another, is not used.
 
 ## Where this got to
 
