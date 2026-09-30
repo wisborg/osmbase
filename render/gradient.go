@@ -42,6 +42,14 @@ type Gradient struct {
 	// MinPiece is the shortest a piece of one colour is drawn, in image
 	// pixels; zero takes DefaultMinPiece.
 	MinPiece float64
+	// Peaks colours each piece by the value in it farthest from the middle
+	// of the Scale, rather than by their average. A value that matters
+	// most where it is most extreme and shortest -- a staircase in a run
+	// coloured by its slope, twenty metres at -35% -- averaged into a
+	// piece a few pixels long with the level ground either side of it is
+	// drawn as a gentle slope, and at a whole course's zoom it vanishes.
+	// With Peaks it is still there, drawn a little longer than it was.
+	Peaks bool
 }
 
 // DefaultMinPiece is the shortest piece of one colour a Gradient draws unless
@@ -153,7 +161,8 @@ type gradientPiece struct {
 // A segment's value is the mean of its two ends, or the one end that is known;
 // a piece's is its segments' values averaged by their length on the picture,
 // so a long straight segment counts for what it covers rather than for one
-// sample among many. A piece ends where it has reached minPiece, and also
+// sample among many -- or, with Peaks, the segment value farthest from the
+// scale's middle. A piece ends where it has reached minPiece, and also
 // where the values stop or start being known, because a colour averaged over
 // a gap would be made up. What is left at the end shorter than minPiece joins
 // the piece before it, if that one is of the same kind, rather than standing
@@ -169,17 +178,28 @@ func (g Gradient) pieces(span func(a, b Coord) float64, minPiece float64) []grad
 	start := 0
 	var length, weighted, plain float64
 	var count int
+	mid := (g.Scale.Min + g.Scale.Max) / 2
+	far := math.NaN() // with Peaks, the value farthest from mid so far
+	farther := func(a, b float64) float64 {
+		if math.IsNaN(a) || math.Abs(b-mid) > math.Abs(a-mid) {
+			return b
+		}
+		return a
+	}
 	known := !math.IsNaN(segmentValue(g.Values[0], g.Values[1]))
 	flush := func(end int) {
 		v := math.NaN()
-		if known {
+		switch {
+		case known && g.Peaks:
+			v = far
+		case known:
 			v = plain / float64(count)
 			if length > 0 {
 				v = weighted / length
 			}
 		}
 		out = append(out, gradientPiece{points: g.Points[start : end+1], value: v})
-		start, length, weighted, plain, count = end, 0, 0, 0, 0
+		start, length, weighted, plain, count, far = end, 0, 0, 0, 0, math.NaN()
 	}
 	for i := 1; i < n; i++ {
 		v := segmentValue(g.Values[i-1], g.Values[i])
@@ -195,6 +215,7 @@ func (g Gradient) pieces(span func(a, b Coord) float64, minPiece float64) []grad
 			weighted += d * v
 			plain += v
 			count++
+			far = farther(far, v)
 		}
 		if length >= minPiece {
 			flush(i)
@@ -208,7 +229,10 @@ func (g Gradient) pieces(span func(a, b Coord) float64, minPiece float64) []grad
 			p := out[last]
 			l := pathLength(p.points, span)
 			v := p.value
-			if known && l+length > 0 {
+			switch {
+			case known && g.Peaks:
+				v = farther(p.value, far)
+			case known && l+length > 0:
 				v = (p.value*l + weighted) / (l + length)
 			}
 			out[last] = gradientPiece{points: g.Points[start-len(p.points)+1 : n], value: v}

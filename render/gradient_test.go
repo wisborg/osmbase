@@ -321,3 +321,66 @@ func absDiff(a, b uint8) int {
 	}
 	return int(b - a)
 }
+
+// With Peaks a piece takes the value in it farthest from the scale's middle,
+// on either side, and what is left at the end keeps the farther of its own
+// and the piece it joins.
+func TestGradientPiecesPeaks(t *testing.T) {
+	g := Gradient{
+		Points: line(10),
+		Values: []float64{0, 0, 0, -1, -1, 0, 0, 0.6, 0.6, 0, 0},
+		Scale:  Scale{Min: -1, Max: 1},
+		Peaks:  true,
+	}
+	want := [][3]float64{{0, 4, -1}, {4, 10, 0.6}}
+	if got := piecesOf(g, 4); !samePieces(got, want) {
+		t.Errorf("pieces = %v, want %v", got, want)
+	}
+
+	// Farthest from the middle of THIS scale, 15, not from zero.
+	g = Gradient{Points: line(4), Values: []float64{16, 16, 11, 11, 16}, Scale: Scale{Min: 10, Max: 20}, Peaks: true}
+	if got := piecesOf(g, 100); !samePieces(got, [][3]float64{{0, 4, 11}}) {
+		t.Errorf("pieces on a 10-20 scale = %v, want the one piece at 11", got)
+	}
+
+	// Unknown stretches are still their own pieces.
+	nan := math.NaN()
+	g = Gradient{Points: line(4), Values: []float64{1, 1, nan, nan, nan}, Scale: Scale{Min: -1, Max: 1}, Peaks: true}
+	if got := piecesOf(g, 100); !samePieces(got, [][3]float64{{0, 2, 1}, {2, 4, nan}}) {
+		t.Errorf("pieces with an unknown stretch = %v", got)
+	}
+}
+
+// A stretch much shorter than a piece -- a staircase in a long level run --
+// is drawn in its own colour with Peaks, where averaged it is barely a tint.
+func TestDrawAGradientsPeaks(t *testing.T) {
+	v := overlayView()
+	var g Gradient
+	for i := 0; i <= 100; i++ {
+		g.Points = append(g.Points, at(v, 50+float64(i), 100.5))
+		value := 0.0
+		if i >= 60 && i <= 61 {
+			value = 1 // a pixel of it, a hundredth of the line
+		}
+		g.Values = append(g.Values, value)
+	}
+	g.Scale = Scale{Min: -1, Max: 1, Colours: []color.RGBA{low, grey, high}}
+	g.Width, g.MinPiece = 4, 20
+	for _, c := range []struct {
+		peaks bool
+		want  bool
+	}{{false, false}, {true, true}} {
+		img := blank(v)
+		g.Peaks = c.peaks
+		if err := Draw(img, v, Drawing{Gradients: []Gradient{g}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for x := 50; x <= 150; x++ {
+			found = found || same(img.At(x, 100), high)
+		}
+		if found != c.want {
+			t.Errorf("with Peaks %v, the short stretch drawn in its own colour: %v", c.peaks, found)
+		}
+	}
+}
