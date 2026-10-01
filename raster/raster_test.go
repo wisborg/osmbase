@@ -240,3 +240,49 @@ func TestFill_NonFiniteCoordinatesDrawSomethingHarmlessRatherThanCrashing(t *tes
 		s.Fill(&p, ink)
 	}
 }
+
+// A fill only works on the part of the surface its path covers, and must
+// put the path exactly where it was: a small square in the far corner of a
+// large surface covers its own pixels and no others, wherever the box it was
+// rasterized in begins.
+func TestFill_ASmallPathOnALargeSurfaceIsWhereItWasPut(t *testing.T) {
+	s := raster.NewSurface(2000, 1500)
+	var p raster.Path
+	p.Rect(raster.Point{X: 1980, Y: 1480}, raster.Point{X: 1990, Y: 1490})
+	s.Fill(&p, ink)
+	if got := coverageTotal(s); !nearly(got, 100, 0.5) {
+		t.Errorf("a 10 by 10 square covers %.4f pixels, want 100", got)
+	}
+	img := s.RGBA()
+	for _, c := range []struct {
+		x, y int
+		in   bool
+	}{{1980, 1480, true}, {1989, 1489, true}, {1979, 1485, false}, {1990, 1485, false}, {1985, 1479, false}, {1985, 1490, false}} {
+		if got := img.RGBAAt(c.x, c.y).A > 0; got != c.in {
+			t.Errorf("pixel %d,%d inked: %v, want %v", c.x, c.y, got, c.in)
+		}
+	}
+}
+
+// Where a path runs off the surface on some sides only, its box stops at the
+// surface's edge there, and every row it covers still fills from that edge:
+// a band from far off the left to the middle covers the left half, and one
+// from the middle to far off the right and the bottom covers the rest.
+func TestFill_GeometryRunningOffOneSideStillFillsToTheEdge(t *testing.T) {
+	for _, c := range []struct {
+		lo, hi raster.Point
+		want   float64
+	}{
+		{raster.Point{X: -500, Y: 4}, raster.Point{X: 16, Y: 12}, 16 * 8},
+		{raster.Point{X: 10, Y: -500}, raster.Point{X: 900, Y: 900}, 22 * 32},
+		{raster.Point{X: 8, Y: 20}, raster.Point{X: 900, Y: 24}, 24 * 4},
+	} {
+		s := raster.NewSurface(32, 32)
+		var p raster.Path
+		p.Rect(c.lo, c.hi)
+		s.Fill(&p, ink)
+		if got := coverageTotal(s); !nearly(got, c.want, 0.5) {
+			t.Errorf("a rectangle %v-%v covers %.4f pixels, want %v", c.lo, c.hi, got, c.want)
+		}
+	}
+}

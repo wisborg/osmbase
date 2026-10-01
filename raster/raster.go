@@ -194,13 +194,43 @@ func (s *Surface) Fill(p *Path, c color.Color) {
 	if b.Empty() {
 		return
 	}
+	// Only the part of the surface the path's box covers is rasterized and
+	// composited, not the whole surface. Both are per-pixel over the area
+	// they are given, so a renderer filling thousands of small paths -- a
+	// line coloured piece by piece, every marker -- otherwise paid for the
+	// whole picture on every one: a 4800 by 3000 map coloured by grade took
+	// six minutes, almost all of it compositing transparent pixels. The box
+	// is the path's bounds, grown a pixel for antialiasing and cut to the
+	// surface; the path is moved by the box's whole-pixel corner. That
+	// changes nothing but the rounding of the rasterizer's own arithmetic,
+	// done on smaller numbers: an antialiased edge pixel here and there
+	// comes out one level of 255 apart, measured on random strokes at 300
+	// and at 1200 pixels, and never more.
+	//
+	// Where the box stops at a surface edge, the path may run past it, just
+	// as before: a polygon larger than the view still fills it, since
+	// coverage still accumulates from the left of each row of the box --
+	// which is then the surface's own edge -- and nothing to the right of a
+	// pixel ever reaches it.
+	lo, hi, ok := p.Bounds()
+	if !ok {
+		return
+	}
+	box := image.Rect(
+		int(math.Floor(float64(lo.X)))-1, int(math.Floor(float64(lo.Y)))-1,
+		int(math.Ceil(float64(hi.X)))+1, int(math.Ceil(float64(hi.Y)))+1,
+	).Intersect(b)
+	if box.Empty() {
+		return
+	}
+	w, h := box.Dx(), box.Dy()
 	// Reset before rather than after, for two reasons that both bite.
 	// Draw is destructive on the fixed-point implementation: it accumulates
 	// the delta buffer into itself in place, so a rasterizer that was drawn
 	// from and not reset holds coverage where it should hold deltas. And the
 	// zero value of a Rasterizer is a zero-sized one, so the first fill needs
 	// this call anyway.
-	s.rast.Reset(b.Dx(), b.Dy())
-	p.replay(s.rast)
-	s.rast.Draw(s.img, b, image.NewUniform(c), image.Point{})
+	s.rast.Reset(w, h)
+	p.replayFrom(s.rast, Point{X: float32(box.Min.X), Y: float32(box.Min.Y)})
+	s.rast.Draw(s.img, box, image.NewUniform(c), image.Point{})
 }

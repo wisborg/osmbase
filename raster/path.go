@@ -213,7 +213,11 @@ func (p *Path) Circle(c Point, r float32) {
 // recorded half-finished: whatever a caller appended, what reaches the
 // rasterizer is a set of closed contours whose coverage deltas sum to zero on
 // every scanline. See MoveTo for what an unbalanced one does.
-func (p *Path) replay(z *vector.Rasterizer) {
+func (p *Path) replay(z *vector.Rasterizer) { p.replayFrom(z, Point{}) }
+
+// replayFrom is replay with every point moved by -o: the path as seen from a
+// rasterizer whose top left is at o.
+func (p *Path) replayFrom(z *vector.Rasterizer, o Point) {
 	i := 0
 	open := false
 	for _, v := range p.verbs {
@@ -222,17 +226,17 @@ func (p *Path) replay(z *vector.Rasterizer) {
 			if open {
 				z.ClosePath()
 			}
-			z.MoveTo(p.pts[i].X, p.pts[i].Y)
+			z.MoveTo(p.pts[i].X-o.X, p.pts[i].Y-o.Y)
 			i++
 			open = true
 		case verbLine:
-			z.LineTo(p.pts[i].X, p.pts[i].Y)
+			z.LineTo(p.pts[i].X-o.X, p.pts[i].Y-o.Y)
 			i++
 		case verbCube:
 			z.CubeTo(
-				p.pts[i].X, p.pts[i].Y,
-				p.pts[i+1].X, p.pts[i+1].Y,
-				p.pts[i+2].X, p.pts[i+2].Y,
+				p.pts[i].X-o.X, p.pts[i].Y-o.Y,
+				p.pts[i+1].X-o.X, p.pts[i+1].Y-o.Y,
+				p.pts[i+2].X-o.X, p.pts[i+2].Y-o.Y,
 			)
 			i += 3
 		}
