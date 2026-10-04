@@ -267,8 +267,9 @@ func writePlan(w io.Writer, p *acquire.Plan, root string) {
 				"cells", p.CellsToFetch, len(p.Cells), p.Zoom.Min, p.Zoom.Max)
 		}
 	}
-	fetch := p.Tiles - p.Held - p.Absent
-	fmt.Fprintf(w, "%-12s %d to fetch", "tiles", fetch)
+	// Tiles is what will be written, already apart from what is held and
+	// what the archive lacks; see acquire.Plan.
+	fmt.Fprintf(w, "%-12s %d to fetch", "tiles", p.Tiles)
 	if p.Held > 0 {
 		fmt.Fprintf(w, ", %d already held", p.Held)
 	}
