@@ -1,6 +1,9 @@
 package render
 
-import "image/color"
+import (
+	"image/color"
+	"slices"
+)
 
 // The built-in style and palettes.
 //
@@ -31,7 +34,7 @@ func BasemapStyle() Style {
 	return Style{
 		Name:   "basemap",
 		Schema: basemapSchema,
-		Rules: []Rule{
+		Rules: slices.Concat([]Rule{
 			// Land over the background. In this schema the sea is not a
 			// polygon, it is the absence of one, so the background colour is
 			// the ocean and this rule is what puts a continent on it.
@@ -87,7 +90,8 @@ func BasemapStyle() Style {
 			},
 
 			// Roads, thinnest first, so a motorway crosses over a footpath
-			// rather than being interrupted by it.
+			// rather than being interrupted by it. Up to zoom 14 a road is a
+			// line; see wideRoads for what it is closer than that.
 			{
 				Layer: "roads", Kinds: []string{"path"},
 				MinZoom: 12, MaxZoom: MaxRuleZoom,
@@ -95,24 +99,25 @@ func BasemapStyle() Style {
 			},
 			{
 				Layer: "roads", Kinds: []string{"minor_road", "other"},
-				MinZoom: 11, MaxZoom: MaxRuleZoom,
+				MinZoom: 11, MaxZoom: lineRoadsTo,
 				Paint: Paint{Role: RoleRoad, Width: 1.0},
 			},
 			{
 				Layer: "roads", Kinds: []string{"medium_road"},
-				MinZoom: 8, MaxZoom: MaxRuleZoom,
+				MinZoom: 8, MaxZoom: lineRoadsTo,
 				Paint: Paint{Role: RoleRoad, Width: 1.5},
 			},
 			{
 				Layer: "roads", Kinds: []string{"major_road"},
-				MinZoom: 6, MaxZoom: MaxRuleZoom,
+				MinZoom: 6, MaxZoom: lineRoadsTo,
 				Paint: Paint{Role: RoleRoad, Width: 2.0},
 			},
 			{
 				Layer: "roads", Kinds: []string{"highway"},
-				MinZoom: 4, MaxZoom: MaxRuleZoom,
+				MinZoom: 4, MaxZoom: lineRoadsTo,
 				Paint: Paint{Role: RoleRoad, Width: 2.6},
 			},
+		}, wideRoads(), []Rule{
 			{
 				Layer: "roads", Kinds: []string{"rail"},
 				MinZoom: 11, MaxZoom: MaxRuleZoom,
@@ -123,9 +128,76 @@ func BasemapStyle() Style {
 				Layer: "boundaries", MinZoom: 0, MaxZoom: MaxRuleZoom,
 				Paint: Paint{Role: RoleInk, Width: 0.8, Dash: []float32{5, 3}},
 			},
-		},
+		}),
 		Labels: placeLabelRules(),
 	}
+}
+
+// lineRoadsTo is the deepest zoom a road is drawn as a line; past it, as a
+// strip with edges. See wideRoads.
+const lineRoadsTo = 14
+
+// roadEdge is the width of a wide road's casing either side of its surface,
+// in output pixels: one pixel, enough to be a clear edge without becoming a
+// second, darker road beside the first.
+const roadEdge = 1.0
+
+// wideRoads draws the road network, from zoom 15, the way a street map does:
+// each road a strip as wide as it would be on paper, its surface pale and
+// its edges dark, rather than a line of one weight at every zoom.
+//
+// # Why
+//
+// A line is right far out, where a road is a thread through a district and
+// its width on the ground is a fraction of a pixel. Close in it is wrong
+// twice over. A street is several pixels wide on the ground at zoom 17 and
+// a one-pixel line in the middle of it says it is a path; and a name written
+// beside a line has nowhere to go but over the houses, where on a strip it
+// sits on the road it names.
+//
+// # How
+//
+// Two passes, every road's casing before any road's surface, so that where
+// two roads meet their surfaces run together and the junction reads as one
+// piece of tarmac rather than two strips each boxed in its own edge. The
+// surfaces go thinnest first, as the lines did, so a motorway crosses over a
+// lane rather than the reverse.
+//
+// The widths grow with the map: doubling, or nearly, each zoom, from about
+// the width of the lines they replace at zoom 15 to wide enough at 18 for a
+// street's name to sit inside its edges. They are a little short of the
+// ground's own doubling at the deep end on purpose. A residential street
+// drawn at its true width at zoom 18 would be 25 pixels, and the blocks
+// between streets would shrink to slivers on a map whose subject is
+// something drawn over it.
+func wideRoads() []Rule {
+	type road struct {
+		kinds []string
+		from  uint8
+		// surface widths at zooms 15 to 18, in output pixels.
+		w15, w16, w17, w18 float32
+	}
+	roads := []road{
+		{[]string{"minor_road", "other"}, 15, 2.0, 4.0, 8.0, 14.0},
+		{[]string{"medium_road"}, 15, 3.0, 5.5, 10.0, 17.0},
+		{[]string{"major_road"}, 15, 4.0, 7.0, 12.0, 20.0},
+		{[]string{"highway"}, 15, 5.0, 8.5, 14.0, 23.0},
+	}
+	widths := func(r road, extra float32) []WidthStop {
+		return []WidthStop{{15, r.w15 + extra}, {16, r.w16 + extra}, {17, r.w17 + extra}, {18, r.w18 + extra}}
+	}
+	var casings, surfaces []Rule
+	for _, r := range roads {
+		casings = append(casings, Rule{
+			Layer: "roads", Kinds: r.kinds, MinZoom: lineRoadsTo + 1, MaxZoom: MaxRuleZoom,
+			Paint: Paint{Role: RoleRoad, Widths: widths(r, 2*roadEdge)},
+		})
+		surfaces = append(surfaces, Rule{
+			Layer: "roads", Kinds: r.kinds, MinZoom: lineRoadsTo + 1, MaxZoom: MaxRuleZoom,
+			Paint: Paint{Role: RoleRoadFill, Widths: widths(r, 0)},
+		})
+	}
+	return append(casings, surfaces...)
 }
 
 // placeLabelRules names settlements, and nothing else yet.
@@ -147,15 +219,14 @@ func BasemapStyle() Style {
 // settles once a city and a suburb are both eligible. Splitting them lets the
 // order be stated rather than inferred.
 //
-// # What is deliberately absent
+// # Roads and water
 //
 // Roads and water carry names too -- 432 of the 466 roads in one central
-// London tile -- and neither is here. Road names want line placement, which
-// draws nothing yet, and want it only at the deepest zooms: a name per street
+// London tile -- and are named only at the deeper zooms: a name per street
 // across a five-kilometre frame is not a map, it is a wall of text over a
-// route. Water wants the same placement machinery for rivers. Both are
-// expected, which is why LabelRule already carries a Placement and why this
-// list is a list.
+// route. Their names are written along them (PlaceLine), and a street's on
+// the street, haloed in the road's surface colour (OnRoad), as a close
+// map's streets are strips wide enough to hold them.
 func placeLabelRules() []LabelRule {
 	return []LabelRule{
 		{
@@ -239,6 +310,7 @@ func placeLabelRules() []LabelRule {
 			Priority:    12,
 			Minor:       true,
 			OncePerName: true,
+			OnRoad:      true,
 		},
 		{
 			Layer:     "roads",
@@ -249,6 +321,7 @@ func placeLabelRules() []LabelRule {
 			Priority:    10,
 			Minor:       true,
 			OncePerName: true,
+			OnRoad:      true,
 		},
 		{
 			// The street you actually ran along, which is worth naming only
@@ -266,6 +339,7 @@ func placeLabelRules() []LabelRule {
 			SizeScale:   0.9,
 			Minor:       true,
 			OncePerName: true,
+			OnRoad:      true,
 		},
 		{
 			// The street outside a front door. Only at the zoom where that is
@@ -281,6 +355,7 @@ func placeLabelRules() []LabelRule {
 			SizeScale:   0.9,
 			Minor:       true,
 			OncePerName: true,
+			OnRoad:      true,
 		},
 	}
 }
@@ -315,6 +390,11 @@ func LightPalette() Palette {
 		// dark ground does not.
 		LabelMinor: color.RGBA{R: 0x58, G: 0x5e, B: 0x68, A: 0xff},
 		NoData:     color.RGBA{R: 0x8f, G: 0x2f, B: 0x20, A: 0xff},
+		// White inside a casing of Road: a close map's streets as a street
+		// map draws them. Only 4.5 from Land by colour, which rule 3 of
+		// CheckContrast would refuse for any other pair -- but a road's
+		// surface is never seen without its edges, and its edges are Road.
+		RoadFill: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
 	}
 }
 

@@ -130,7 +130,7 @@ func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, covera
 	// image, so culling on the surface alone would leave a ragged strip along
 	// every border. The whole width rather than the half is slack, and the
 	// extra pixel covers the antialiased rim.
-	pad := float64(r.style.maxStrokeWidth(p.tileZoom))*p.tileScale + 1
+	pad := float64(r.style.maxStrokeWidth(p)) + 1
 	keep := p.surface().inflate(pad)
 
 	var (

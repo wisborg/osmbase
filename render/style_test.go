@@ -1,6 +1,7 @@
 package render
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -100,10 +101,11 @@ func TestMaxStrokeWidth_OnlyCountsRulesDrawingAtThisZoom(t *testing.T) {
 		{Layer: "roads", MinZoom: 11, MaxZoom: MaxRuleZoom, Paint: Paint{Role: RoleRoad, Width: 3}},
 		{Layer: "water", MinZoom: 0, MaxZoom: MaxRuleZoom, Paint: Paint{Role: RoleWater, Fill: true}},
 	}}
-	if got := s.maxStrokeWidth(5); got != 9 {
+	at := func(z uint8) projection { return projection{zoom: float64(z), tileZoom: z, tileScale: 1} }
+	if got := s.maxStrokeWidth(at(5)); got != 9 {
 		t.Errorf("maxStrokeWidth(5) = %g, want 9", got)
 	}
-	if got := s.maxStrokeWidth(14); got != 3 {
+	if got := s.maxStrokeWidth(at(14)); got != 3 {
 		t.Errorf("maxStrokeWidth(14) = %g, want 3; the wide rule stops at zoom 10", got)
 	}
 }
@@ -128,5 +130,51 @@ func TestPaletteColour_EveryRoleHasItsOwnColour(t *testing.T) {
 		if got := p.colour(r); any(got) != want[i] {
 			t.Errorf("colour(role %d) = %v, want %v", r, got, want[i])
 		}
+	}
+}
+
+// A width given per zoom is held below its first zoom and above its last,
+// multiplies by the same factor for each zoom between two stops -- 4 to 16
+// over two zooms is 8 half way, not 10 -- and follows the view's continuous
+// zoom, not its tile zoom; a plain Width is scaled by the tile scale as it
+// always was; and the widest stroke counts a growing one at its width here.
+func TestWidthsGrowWithTheMap(t *testing.T) {
+	stops := []WidthStop{{Zoom: 15, Width: 4}, {Zoom: 17, Width: 16}}
+	for _, c := range []struct {
+		z    float64
+		want float32
+	}{{12, 4}, {15, 4}, {16, 8}, {16.5, 11.3137}, {17, 16}, {19, 16}} {
+		if got := widthAt(stops, c.z); math.Abs(float64(got-c.want)) > 0.001 {
+			t.Errorf("width at zoom %g = %g, want %g", c.z, got, c.want)
+		}
+	}
+	p := projection{zoom: 16, tileZoom: 16, tileScale: 1.2}
+	if got := (Paint{Widths: stops}).strokeWidth(p); got != 8 {
+		t.Errorf("a growing width at zoom 16 is %g, want 8 regardless of the tile scale", got)
+	}
+	// Half way between two tile zooms, the width is half way between them
+	// by ratio, not the tile zoom's.
+	if got := (Paint{Widths: stops}).strokeWidth(projection{zoom: 16.5, tileZoom: 17, tileScale: 0.71}); math.Abs(float64(got)-11.3137) > 0.001 {
+		t.Errorf("a growing width at zoom 16.5 is %g, want 11.31: the continuous zoom's", got)
+	}
+	if got := (Paint{Width: 2}).strokeWidth(p); math.Abs(float64(got-2.4)) > 1e-6 {
+		t.Errorf("a plain width at tile scale 1.2 is %g, want 2.4", got)
+	}
+	s := Style{Rules: []Rule{
+		{Layer: "roads", MinZoom: 0, MaxZoom: MaxRuleZoom, Paint: Paint{Role: RoleRoad, Width: 3}},
+		{Layer: "roads", MinZoom: 15, MaxZoom: MaxRuleZoom, Paint: Paint{Role: RoleRoad, Widths: stops}},
+	}}
+	if got := s.maxStrokeWidth(p); got != 8 {
+		t.Errorf("the widest stroke at zoom 16 is %g, want the growing one's 8", got)
+	}
+	for _, bad := range [][]WidthStop{{{Zoom: 15, Width: 0}}, {{Zoom: 16, Width: 2}, {Zoom: 15, Width: 4}}} {
+		s := Style{Name: "t", Rules: []Rule{{Layer: "roads", MinZoom: 0, MaxZoom: MaxRuleZoom, Paint: Paint{Role: RoleRoad, Widths: bad}}}}
+		if err := s.Validate(); err == nil {
+			t.Errorf("widths %v were accepted", bad)
+		}
+	}
+	ok := Style{Name: "t", Rules: []Rule{{Layer: "roads", MinZoom: 0, MaxZoom: MaxRuleZoom, Paint: Paint{Role: RoleRoad, Widths: stops}}}}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("a rule with only growing widths was refused: %v", err)
 	}
 }

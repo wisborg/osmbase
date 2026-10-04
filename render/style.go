@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"image/color"
+	"math"
 	"slices"
 
 	"github.com/wisborg/osmbase/mercator"
@@ -81,6 +82,20 @@ const (
 	// still text and still held to MinLabelRatio -- quieter than a place
 	// name, never quiet enough to be unreadable.
 	RoleLabelMinor
+
+	// RoleRoadFill is a road's surface where the map is close enough to
+	// draw a road as a strip with edges rather than as a line: the pale band
+	// inside a casing drawn in RoleRoad.
+	//
+	// Its own role because the two jobs want opposite colours on a light
+	// map. As a line, a road has to be darker than the land to be seen at
+	// all; as a strip, a road reads as a road when its surface is paler than
+	// the land and its edges are darker, which is how every printed street
+	// map draws it. A palette that names no RoadFill draws the surface in
+	// Road, so a wide road is a solid band -- which is what the dark
+	// palettes want, having no room above Road for a paler surface. See
+	// Palette.RoadFill.
+	RoleRoadFill
 )
 
 // Palette is the colour for each role.
@@ -99,6 +114,11 @@ type Palette struct {
 	Road       color.RGBA
 	Ink        color.RGBA
 	NoData     color.RGBA
+
+	// RoadFill is a wide road's surface, drawn inside a casing of Road. A
+	// zero value falls back to Road, so a palette written before this field
+	// draws wide roads as solid bands of its road colour.
+	RoadFill color.RGBA
 
 	// LabelMinor is the text for streets and water -- names of things the map
 	// draws, as against names of the places it is of. A zero value falls back
@@ -192,8 +212,29 @@ func (p Palette) colour(r Role) color.RGBA {
 		return p.Label
 	case RoleLabelMinor:
 		return p.LabelMinor
+	case RoleRoadFill:
+		return p.roadSurface()
 	}
 	return p.Ink
+}
+
+// nameHalo is the colour a street's name is haloed in: the road surface it
+// is written on, or the background where the palette draws roads solid. See
+// LabelRule.OnRoad.
+func (p Palette) nameHalo() color.RGBA {
+	if p.RoadFill != (color.RGBA{}) {
+		return p.RoadFill
+	}
+	return p.Background
+}
+
+// roadSurface is the colour a wide road's surface is drawn in: RoadFill, or
+// Road for a palette that names none.
+func (p Palette) roadSurface() color.RGBA {
+	if p.RoadFill != (color.RGBA{}) {
+		return p.RoadFill
+	}
+	return p.Road
 }
 
 // Paint is how one rule draws.
@@ -224,10 +265,61 @@ type Paint struct {
 	// A width of 0 draws no line.
 	Width float32
 
+	// Widths, when given, replaces Width with a width that grows with the
+	// map: a width at each of a few zooms, ascending, interpolated between
+	// them by ratio rather than by difference -- each zoom step multiplies
+	// the width by the same factor, as the ground under a road does -- and
+	// held at the first and last outside them. Each width is in OUTPUT
+	// pixels at its zoom, and is evaluated at the view's continuous zoom, so
+	// a road widens smoothly as the map zooms in rather than jumping at each
+	// tile zoom.
+	//
+	// It exists for the roads. Width is the right rule for a line -- the
+	// same weight at every zoom, so a map does not thicken as it gets closer
+	// -- and the wrong one for a road drawn as a strip with edges, which
+	// has to be wide enough to hold its own name: 16 pixels across at zoom
+	// 18, where Width's minor road is one.
+	Widths []WidthStop
+
 	// Dash is an alternating on/off pattern, also in tile pixels, scaled the
 	// same way as Width. Empty is a solid line. See raster.Stroke.Dash for what
 	// an odd-length pattern means.
 	Dash []float32
+}
+
+// WidthStop is a stroke's width at one zoom; see Paint.Widths.
+type WidthStop struct {
+	Zoom  float64
+	Width float32
+}
+
+// strokeWidth is the paint's stroke width in output pixels on a view
+// resolving to projection p.
+func (pt Paint) strokeWidth(p projection) float32 {
+	if len(pt.Widths) == 0 {
+		return pt.Width * float32(p.tileScale)
+	}
+	return widthAt(pt.Widths, p.zoom)
+}
+
+// widthAt is stops' width at zoom z: geometric between two stops, held at
+// the first below it and the last above it.
+func widthAt(stops []WidthStop, z float64) float32 {
+	first, last := stops[0], stops[len(stops)-1]
+	if !(z > first.Zoom) { // !(>) so a NaN zoom takes the first
+		return first.Width
+	}
+	if z >= last.Zoom {
+		return last.Width
+	}
+	for i := 1; i < len(stops); i++ {
+		a, b := stops[i-1], stops[i]
+		if z <= b.Zoom {
+			t := (z - a.Zoom) / (b.Zoom - a.Zoom)
+			return float32(float64(a.Width) * math.Pow(float64(b.Width)/float64(a.Width), t))
+		}
+	}
+	return last.Width
 }
 
 // Rule is one drawing pass: which features, at which zooms, painted how.
@@ -335,25 +427,33 @@ func (s Style) Validate() error {
 		if r.MaxZoom > MaxRuleZoom {
 			return fmt.Errorf("render: style %q rule %d (layer %q) has MaxZoom %d, deeper than zoom %d", s.Name, i, r.Layer, r.MaxZoom, MaxRuleZoom)
 		}
-		if !r.Paint.Fill && !(r.Paint.Width > 0) {
+		if !r.Paint.Fill && !(r.Paint.Width > 0) && len(r.Paint.Widths) == 0 {
 			return fmt.Errorf("render: style %q rule %d (layer %q) neither fills nor strokes, so it draws nothing", s.Name, i, r.Layer)
+		}
+		for j, w := range r.Paint.Widths {
+			if !(w.Width > 0) {
+				return fmt.Errorf("render: style %q rule %d (layer %q) has a width of %g at zoom %g; a width that grows by ratio cannot pass through nothing", s.Name, i, r.Layer, w.Width, w.Zoom)
+			}
+			if j > 0 && !(w.Zoom > r.Paint.Widths[j-1].Zoom) {
+				return fmt.Errorf("render: style %q rule %d (layer %q) has its widths out of order at zoom %g; give them in ascending zoom", s.Name, i, r.Layer, w.Zoom)
+			}
 		}
 	}
 	return nil
 }
 
-// maxStrokeWidth is the widest stroke the style can draw at this zoom, in tile
-// pixels.
+// maxStrokeWidth is the widest stroke the style draws on a view resolving to
+// p, in output pixels.
 //
 // The renderer needs it to decide how far outside the surface geometry still
 // has to be kept: a road whose centreline is just off the top of the image
 // still paints half its width into it, and culling it because its coordinates
 // are outside would leave a gap along the edge of every view.
-func (s Style) maxStrokeWidth(z uint8) float32 {
+func (s Style) maxStrokeWidth(p projection) float32 {
 	var w float32
 	for _, r := range s.Rules {
-		if r.appliesAt(z) && r.Paint.Width > w {
-			w = r.Paint.Width
+		if r.appliesAt(p.tileZoom) {
+			w = max(w, r.Paint.strokeWidth(p))
 		}
 	}
 	return w

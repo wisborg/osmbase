@@ -96,7 +96,7 @@ func (d *drawer) appendTile(rule *Rule, dt drawTile) {
 	// once per layer rather than once per feature. The scale comes from the
 	// projection's target zoom, so an overzoomed tile's roads come out the same
 	// width as the roads in the tiles beside it.
-	width := rule.Paint.Width * float32(d.p.tileScale)
+	width := rule.Paint.strokeWidth(d.p)
 	dash := d.scaleDash(rule.Paint.Dash)
 
 	for i := range layer.Features {
@@ -427,6 +427,23 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 		}
 		// Measured and placed as it will be drawn.
 		text = Visual(text)
+		if rule.Placement == PlaceLine {
+			m := face.Metrics()
+			w := float64(font.MeasureString(face, text).Ceil())
+			h := float64(m.Ascent.Ceil() + m.Descent.Ceil())
+			if x, y, angle, ok := placeAlong(f.Geometry.Lines, tr, w, h); ok {
+				*out = append(*out, candidate{
+					text: text, x: x, y: y, along: true, angle: angle, scale: rule.SizeScale, onRoad: rule.OnRoad,
+					priority: rule.Priority,
+					rank:     labelRank(f),
+					once:     rule.OncePerName,
+					minor:    rule.Minor,
+					face:     face,
+					key:      fmt.Sprintf("%d/%d/%d:%.0f,%.0f", dt.ref.z, dt.ref.x, dt.ref.y, x, y),
+				})
+			}
+			continue
+		}
 		for _, a := range labelAnchors(rule, f) {
 			p := tr.apply(a.X, a.Y)
 			*out = append(*out, candidate{

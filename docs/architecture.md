@@ -475,6 +475,34 @@ scale" and the renderer multiplies by the continuous zoom the view resolves to. 
 width written as an output-pixel constant is the same number of pixels on a 4K frame and a
 720p frame, which is two different maps.
 
+**Close in, a road is a strip, not a line.** Up to zoom 14 a road is a line of one weight,
+which is right while its width on the ground is a fraction of a pixel. From zoom 15 it is
+drawn as a street map draws it: a pale surface edged in the road ink, as wide as it would
+be on paper -- from about the width of the line it replaces at 15 to wide enough at 18 to
+hold the street's name. Those widths are `Paint.Widths`, a width at each of a few zooms
+interpolated by ratio at the view's continuous zoom, because a fixed tile-pixel width is
+exactly what keeps a road one pixel wide at every zoom. Every casing is drawn before any
+surface, so two roads meeting are one piece of tarmac, not two boxed strips. The surface is
+its own palette role, `RoleRoadFill`; a palette that names none draws wide roads solid in
+`Road`, which the dark palettes do, having no room above their road ink for a paler
+surface. The contrast check holds the surface apart from every role but the land -- its
+edge is the casing, which is held apart -- and requires a label to read on it, since a
+street's name is written there.
+
+**A line's name is written along it.** A street's or a river's name is centred on the
+line and turned to its direction, on the first straight enough stretch at least as long as
+the name, tried from the middle outwards; a line shorter on the map than its own name, or
+bending everywhere under it, is not named. Horizontal names beside the line were the first
+version, chosen because rotating glyphs meant resampling a bitmap. Once roads became strips
+that stopped being acceptable -- a level name across a diagonal street lies over two blocks
+and belongs to neither -- and the resampling is avoided rather than tolerated: the name is
+drawn by the same `font.Drawer` as every other label, at four times its size from
+`LabelFaceFor`, and averaged down as it is turned, so fallback fonts and right-to-left
+shaping are unchanged and the glyphs are as sharp as a level label's. Rotated names collide
+by their own rectangles, not the squares round them, so two names along parallel diagonals
+both fit. A street's name has a halo of the road's surface colour, so where the road is
+still narrower than the text its edges stop at the letters.
+
 ### This is where the 65% dim goes away
 
 fitdash washes third-party imagery 65% toward its background because that imagery is busy,

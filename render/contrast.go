@@ -90,6 +90,12 @@ func (p Palette) context() []namedColour {
 		{name: "Road", c: p.Road, role: RoleRoad},
 		{name: "Ink", c: p.Ink, role: RoleInk},
 	}
+	// A palette that names no surface draws it in Road, which is already
+	// here; checking the same colour twice under two names would only fail
+	// rule 3 against itself.
+	if (p.RoadFill != color.RGBA{}) {
+		all = append(all, namedColour{name: "RoadFill", c: p.RoadFill, role: RoleRoadFill})
+	}
 	drawn := make([]namedColour, 0, len(all))
 	for _, c := range all {
 		if !p.Omits(c.role) {
@@ -316,6 +322,9 @@ func (p Palette) CheckContrast(o Overlay) error {
 	inks := p.distinguishable()
 	for i, a := range inks {
 		for _, b := range inks[i+1:] {
+			if edged(a.role, b.role) {
+				continue
+			}
 			if d := ColourDistance(a.c, b.c); d < MinRoleSeparation {
 				bad = append(bad, fmt.Sprintf(
 					"%s and %s differ by only %.1f, below %.1f: the two would not be told apart",
@@ -360,6 +369,18 @@ func (p Palette) CheckContrast(o Overlay) error {
 				"%s is %.2f against Background, below %.2f: names would be a smudge rather than words",
 				l.name, r, MinLabelRatio))
 		}
+		// A street's name is written on the street, haloed in the colour
+		// it is read against there: a palette's RoadFill, which it has to
+		// read on as it does on the background. A palette with no RoadFill
+		// halos street names in the background, which the check above
+		// already covers.
+		if (p.RoadFill != color.RGBA{}) {
+			if r := ContrastRatio(l.c, p.RoadFill); r < MinLabelRatio {
+				bad = append(bad, fmt.Sprintf(
+					"%s is %.2f against the road surface, below %.2f: a street's name written on it would be a smudge",
+					l.name, r, MinLabelRatio))
+			}
+		}
 	}
 
 	if r := ContrastRatio(p.NoData, p.Background); r < MinNoDataRatio {
@@ -372,6 +393,15 @@ func (p Palette) CheckContrast(o Overlay) error {
 		return nil
 	}
 	return fmt.Errorf("palette and overlay cannot be separated:\n  %s", strings.Join(bad, "\n  "))
+}
+
+// edged reports whether two roles are the one pair rule 3 does not hold
+// apart: a road's surface and the land. A surface is never seen without the
+// casing that edges it, and the casing is Road, which rule 3 does hold apart
+// from Land; asking the surface to differ from the land as well would rule
+// out the pale road on pale ground that every street map draws.
+func edged(a, b Role) bool {
+	return a == RoleRoadFill && b == RoleLand || a == RoleLand && b == RoleRoadFill
 }
 
 // requireColour rejects a nil color.Color with a message that says what

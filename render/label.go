@@ -21,18 +21,11 @@ const (
 	// package currently draws is one of these: the places layer is points.
 	PlacePoint Placement = iota
 
-	// PlaceLine names a line feature -- a river, a road -- by anchoring the
-	// text to a point ON that line.
-	//
-	// The text stays HORIZONTAL. Setting it along the curve is what a
-	// cartographer would do and it is not what this does, for two reasons
-	// that both point the same way here. A basemap under a route is read at a
-	// glance and horizontal text is read faster than text on a slope; and
-	// rotating glyphs means rendering them to a buffer and resampling it,
-	// which at the size a map label is drawn looks worse than leaving it
-	// straight. If curved text is ever wanted it is a change to how a placed
-	// label is DRAWN, not to how one is chosen, which is why the anchor is
-	// computed separately below.
+	// PlaceLine names a line feature -- a river, a road -- by writing the
+	// text ALONG the line: centred on it and turned to its direction, on a
+	// straight enough stretch at least as long as the name. See
+	// alongline.go for why, and for why that is no longer a resampled
+	// bitmap.
 	PlaceLine
 )
 
@@ -119,6 +112,17 @@ type LabelRule struct {
 	// show both, which is why this is a per-rule choice and not a property of
 	// the placement pass.
 	OncePerName bool
+
+	// OnRoad says the name is written on a road -- a street's name along
+	// the street -- and draws it with a halo, so that where the road is
+	// narrower than the name its edges stop at the letters rather than
+	// running through them. The halo is the road's surface, RoadFill; or,
+	// for a palette that draws wide roads solid, the background, since a
+	// solid road may be as bright as the names and the background is what a
+	// label is always held to reading against. CheckContrast holds every
+	// label ink to both. Only a PlaceLine rule's labels are written on
+	// anything to halo against.
+	OnRoad bool
 }
 
 // labels reports whether a geometry type is the one this rule's placement
@@ -228,6 +232,16 @@ type candidate struct {
 	// can now be different sizes, and the box that decides the collision has
 	// to be measured in the face the label will actually be drawn in.
 	face font.Face
+
+	// along says the label is written along a line: x and y are then its
+	// centre rather than its baseline, and angle its direction in radians,
+	// clockwise on the image. scale is its rule's SizeScale, for the face it
+	// is drawn at several times its size in before being turned.
+	along bool
+	angle float64
+	scale float64
+	// onRoad carries the rule's OnRoad.
+	onRoad bool
 }
 
 // labelRank is how important a feature is among others from the same rule.
@@ -295,20 +309,30 @@ func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 		if c.once && drawn[c.text] {
 			continue
 		}
-		box := labelBox(c, c.face, pad)
-		if !box.In(bounds) {
+		var box image.Rectangle
+		var q quad
+		if c.along {
+			m := c.face.Metrics()
+			w := float64(font.MeasureString(c.face, c.text).Ceil())
+			q = alongQuad(c.x, c.y, c.angle, w, float64(m.Ascent.Ceil()+m.Descent.Ceil()), pad)
+		} else {
+			box = labelBox(c, c.face, pad)
+			q = rectQuad(box)
+		}
+		if !q.in(bounds) {
 			// Partly off the edge. Dropped rather than nudged inward: a label
 			// pulled to fit no longer sits on the thing it names, and a name
 			// in the wrong place is worse than a missing one.
 			continue
 		}
-		if slices.ContainsFunc(out, func(p placed) bool { return p.box.Overlaps(box) }) {
+		if slices.ContainsFunc(out, func(p placed) bool { return p.quad.overlaps(q) }) {
 			continue
 		}
 		if c.once {
 			drawn[c.text] = true
 		}
-		out = append(out, placed{text: c.text, box: box, face: c.face, minor: c.minor})
+		out = append(out, placed{text: c.text, box: box, quad: q, face: c.face, minor: c.minor,
+			along: c.along, x: c.x, y: c.y, angle: c.angle, scale: c.scale, onRoad: c.onRoad})
 	}
 	return out
 }
@@ -319,6 +343,15 @@ type placed struct {
 	box   image.Rectangle
 	face  font.Face
 	minor bool
+
+	// quad is the space the label takes, padded: box's corners, or a
+	// rotated rectangle for a label written along a line, which has no box
+	// and is drawn from along, x, y, angle and scale as its candidate was.
+	quad        quad
+	along       bool
+	x, y, angle float64
+	scale       float64
+	onRoad      bool
 }
 
 // labelBox is the space a candidate's text would occupy, padded.
@@ -347,8 +380,26 @@ func labelBox(c candidate, face font.Face, pad int) image.Rectangle {
 // one dense city look calm would empty the map everywhere else.
 const DefaultLabelPadding = 4
 
-// drawLabel writes one placed label onto the image.
-func drawLabel(dst *image.RGBA, l placed, p Palette, pad int) {
+// drawLabel writes one placed label onto the image. A label along a line is
+// drawn turned to it, from faceFor's face at several times its size; any
+// other as it always was. faceFor may be nil, and is then never asked.
+func drawLabel(dst *image.RGBA, l placed, p Palette, pad int, faceFor func(float64) font.Face) {
+	if l.along {
+		var big font.Face
+		if faceFor != nil {
+			scale := l.scale
+			if scale == 0 {
+				scale = 1
+			}
+			big = faceFor(scale * alongSupersample)
+		}
+		var halo color.RGBA
+		if l.onRoad {
+			halo = p.nameHalo()
+		}
+		drawAlong(dst, l, labelInk(p, l.minor), halo, big)
+		return
+	}
 	d := font.Drawer{Dst: dst, Src: image.NewUniform(labelInk(p, l.minor)), Face: l.face}
 	d.Dot = fixed.P(l.box.Min.X+pad, l.box.Min.Y+pad+l.face.Metrics().Ascent.Ceil())
 	d.DrawString(l.text)
