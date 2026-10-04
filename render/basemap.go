@@ -84,9 +84,12 @@ func BasemapStyle() Style {
 				Paint: Paint{Role: RoleWater, Fill: true},
 			},
 
+			// Buildings in their own role, so that a building inside a
+			// residential block is not the block's own colour and invisible
+			// in it. See RoleBuilding.
 			{
 				Layer: "buildings", MinZoom: 13, MaxZoom: MaxRuleZoom,
-				Paint: Paint{Role: RoleBuilt, Fill: true},
+				Paint: Paint{Role: RoleBuilding, Fill: true},
 			},
 
 			// Roads, thinnest first, so a motorway crosses over a footpath
@@ -130,6 +133,9 @@ func BasemapStyle() Style {
 			},
 		}),
 		Labels: placeLabelRules(),
+		// Names grow from zoom 17, where streets are wide enough to carry
+		// them, to twice their size at 20, roughly with the streets.
+		LabelGrowth: []WidthStop{{17, 1}, {18, 1.3}, {19, 1.65}, {20, 2}},
 	}
 }
 
@@ -183,18 +189,32 @@ func wideRoads() []Rule {
 		{[]string{"major_road"}, 15, 4.0, 7.0, 12.0, 20.0},
 		{[]string{"highway"}, 15, 5.0, 8.5, 14.0, 23.0},
 	}
-	widths := func(r road, extra float32) []WidthStop {
-		return []WidthStop{{15, r.w15 + extra}, {16, r.w16 + extra}, {17, r.w17 + extra}, {18, r.w18 + extra}}
+	// Past 18 the widths keep growing, at the factor 17 to 18 grew by, to
+	// zoom 20, and are held there. edges are the casing's width either side
+	// at each stop.
+	zooms := []float64{15, 16, 17, 18, 19, 20}
+	edges := []float32{roadEdge, roadEdge, roadEdge, 1.5 * roadEdge, 2 * roadEdge, 2.5 * roadEdge}
+	widths := func(r road, edged bool) []WidthStop {
+		g := r.w18 / r.w17
+		ws := []float32{r.w15, r.w16, r.w17, r.w18, r.w18 * g, r.w18 * g * g}
+		out := make([]WidthStop, len(ws))
+		for i, w := range ws {
+			if edged {
+				w += 2 * edges[i]
+			}
+			out[i] = WidthStop{zooms[i], w}
+		}
+		return out
 	}
 	var casings, surfaces []Rule
 	for _, r := range roads {
 		casings = append(casings, Rule{
 			Layer: "roads", Kinds: r.kinds, MinZoom: lineRoadsTo + 1, MaxZoom: MaxRuleZoom,
-			Paint: Paint{Role: RoleRoad, Widths: widths(r, 2*roadEdge)},
+			Paint: Paint{Role: RoleRoad, Widths: widths(r, true)},
 		})
 		surfaces = append(surfaces, Rule{
 			Layer: "roads", Kinds: r.kinds, MinZoom: lineRoadsTo + 1, MaxZoom: MaxRuleZoom,
-			Paint: Paint{Role: RoleRoadFill, Widths: widths(r, 0)},
+			Paint: Paint{Role: RoleRoadFill, Widths: widths(r, false)},
 		})
 	}
 	return append(casings, surfaces...)
@@ -395,6 +415,10 @@ func LightPalette() Palette {
 		// CheckContrast would refuse for any other pair -- but a road's
 		// surface is never seen without its edges, and its edges are Road.
 		RoadFill: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+		// A warm grey, out of the band of tans Built, Road and Ink share:
+		// 8.8 from the nearest of them, where a darker tan between Built and
+		// Road could not get 6 from both.
+		Building: color.RGBA{R: 0xd4, G: 0xcf, B: 0xca, A: 0xff},
 	}
 }
 

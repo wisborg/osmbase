@@ -281,7 +281,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	// collected from the same tiles the geometry came from, so a label cannot
 	// name a feature the picture does not show.
 	if r.labelFace != nil && len(r.style.Labels) > 0 {
-		cands := d.collectLabels(r.style.Labels, tiles, p.tileZoom, r.faceFor)
+		cands := d.collectLabels(r.style.Labels, r.style.LabelGrowth, tiles, p.tileZoom, r.faceFor)
 		for _, l := range placeLabels(cands, r.labelPad, surface.Bounds()) {
 			drawLabel(surface.RGBA(), l, r.palette, r.labelPad, r.faceFor)
 		}

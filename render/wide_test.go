@@ -2,8 +2,11 @@ package render
 
 import (
 	"image/color"
+	"math"
 	"strings"
 	"testing"
+
+	"golang.org/x/image/font"
 )
 
 // A palette that names no road surface draws it in Road; one that does draws
@@ -83,11 +86,64 @@ func TestBasemapRoadsAreStripsCloseIn(t *testing.T) {
 	if len(casing) != 4 || len(surface) != 4 || casing[3] > surface[0] {
 		t.Fatalf("casings %v, surfaces %v; want four of each, casings first", casing, surface)
 	}
-	at18 := projection{zoom: 18, tileZoom: 18, tileScale: 1}
+	at := func(z float64) projection { return projection{zoom: z, tileZoom: uint8(z), tileScale: 1} }
 	for k := range casing {
-		c, f := s.Rules[casing[k]].Paint.strokeWidth(at18), s.Rules[surface[k]].Paint.strokeWidth(at18)
-		if c != f+2*roadEdge || f < 14 {
-			t.Errorf("at zoom 18 casing %g around a surface %g; want the surface at least 14 and an edge of %g", c, f, roadEdge)
+		c, f := s.Rules[casing[k]].Paint, s.Rules[surface[k]].Paint
+		if c.strokeWidth(at(15)) != f.strokeWidth(at(15))+2*roadEdge {
+			t.Errorf("road %d: at zoom 15 an edge of %g, want %g", k, (c.strokeWidth(at(15))-f.strokeWidth(at(15)))/2, roadEdge)
 		}
+		if c.strokeWidth(at(18)) != f.strokeWidth(at(18))+3*roadEdge || f.strokeWidth(at(18)) < 14 {
+			t.Errorf("road %d: at zoom 18 casing %g around %g; want the surface at least 14 and an edge of %g", k, c.strokeWidth(at(18)), f.strokeWidth(at(18)), 1.5*roadEdge)
+		}
+		// Still widening past 18, as the ground does, and held from 20.
+		if !(f.strokeWidth(at(20)) > 2.5*f.strokeWidth(at(18))) || f.strokeWidth(at(22)) != f.strokeWidth(at(20)) {
+			t.Errorf("road %d: %g at 18, %g at 20, %g at 22; want it widening to 20 and held", k, f.strokeWidth(at(18)), f.strokeWidth(at(20)), f.strokeWidth(at(22)))
+		}
+	}
+}
+
+// Buildings are drawn in their own colour where a palette names one, held
+// apart from every other role, and in Built where it does not.
+func TestBuildingsHaveTheirOwnColour(t *testing.T) {
+	l := LightPalette()
+	if l.colour(RoleBuilding) != l.Building || l.Building == l.Built {
+		t.Errorf("light buildings %v, want their own %v", l.colour(RoleBuilding), l.Building)
+	}
+	if d := DarkPalette(); d.colour(RoleBuilding) != d.Built {
+		t.Errorf("dark buildings %v, want Built %v", d.colour(RoleBuilding), d.Built)
+	}
+	same := LightPalette()
+	same.Building = same.Built
+	if err := same.CheckContrast(LightOverlay()); err == nil || !strings.Contains(err.Error(), "Building") {
+		t.Errorf("buildings the colour of the built-up landuse: %v", err)
+	}
+	for _, r := range BasemapStyle().Rules {
+		if r.Layer == "buildings" && r.Paint.Role != RoleBuilding {
+			t.Errorf("the buildings rule draws in role %d", r.Paint.Role)
+		}
+	}
+}
+
+// Names grow with the map past zoom 17, by ratio at the continuous zoom:
+// a rule's face is asked for at its own scale times the growth there.
+func TestLabelsGrowWithTheMap(t *testing.T) {
+	g := BasemapStyle().LabelGrowth
+	for _, c := range []struct{ z, want float64 }{{14, 1}, {17, 1}, {18, 1.3}, {20, 2}, {23, 2}} {
+		if got := float64(widthAt(g, c.z)); math.Abs(got-c.want) > 1e-6 {
+			t.Errorf("growth at zoom %g = %g, want %g", c.z, got, c.want)
+		}
+	}
+	var asked []float64
+	faceFor := func(s float64) font.Face { asked = append(asked, s); return testFace() }
+	d := &drawer{p: projection{zoom: 18, tileZoom: 18, tileScale: 1}}
+	rules := []LabelRule{{Layer: "places", MinZoom: 0, MaxZoom: MaxRuleZoom, SizeScale: 1.5}, {Layer: "roads", MinZoom: 0, MaxZoom: MaxRuleZoom}}
+	d.collectLabels(rules, g, nil, 18, faceFor)
+	if len(asked) != 2 || math.Abs(asked[0]-1.95) > 1e-6 || math.Abs(asked[1]-1.3) > 1e-6 {
+		t.Errorf("faces asked for at %v; want 1.5×1.3 and 1×1.3", asked)
+	}
+	asked = nil
+	d.collectLabels(rules, nil, nil, 18, faceFor)
+	if len(asked) != 2 || asked[0] != 1.5 || asked[1] != 1 {
+		t.Errorf("with no growth, faces asked for at %v; want 1.5 and 1", asked)
 	}
 }

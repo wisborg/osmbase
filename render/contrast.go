@@ -96,6 +96,10 @@ func (p Palette) context() []namedColour {
 	if (p.RoadFill != color.RGBA{}) {
 		all = append(all, namedColour{name: "RoadFill", c: p.RoadFill, role: RoleRoadFill})
 	}
+	// Likewise a palette naming no Building draws buildings in Built.
+	if (p.Building != color.RGBA{}) {
+		all = append(all, namedColour{name: "Building", c: p.Building, role: RoleBuilding})
+	}
 	drawn := make([]namedColour, 0, len(all))
 	for _, c := range all {
 		if !p.Omits(c.role) {

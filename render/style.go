@@ -96,6 +96,16 @@ const (
 	// palettes want, having no room above Road for a paler surface. See
 	// Palette.RoadFill.
 	RoleRoadFill
+
+	// RoleBuilding is a building's footprint.
+	//
+	// Its own role rather than Built because a building is usually drawn on
+	// top of a built-up landuse polygon, and in one colour the two are one
+	// shape: every house in a residential block disappears into the block,
+	// and a close map reads as flat blocks of tan with the streets as gaps
+	// between them. A palette that names no Building draws buildings in
+	// Built, as before.
+	RoleBuilding
 )
 
 // Palette is the colour for each role.
@@ -114,6 +124,10 @@ type Palette struct {
 	Road       color.RGBA
 	Ink        color.RGBA
 	NoData     color.RGBA
+
+	// Building is a building's footprint. A zero value falls back to Built,
+	// so a palette written before this field draws buildings as it did.
+	Building color.RGBA
 
 	// RoadFill is a wide road's surface, drawn inside a casing of Road. A
 	// zero value falls back to Road, so a palette written before this field
@@ -214,6 +228,11 @@ func (p Palette) colour(r Role) color.RGBA {
 		return p.LabelMinor
 	case RoleRoadFill:
 		return p.roadSurface()
+	case RoleBuilding:
+		if p.Building != (color.RGBA{}) {
+			return p.Building
+		}
+		return p.Built
 	}
 	return p.Ink
 }
@@ -408,6 +427,18 @@ type Style struct {
 	//
 	// Empty draws no labels, which is every style written before this field.
 	Labels []LabelRule
+
+	// LabelGrowth multiplies every label's size by a factor that grows with
+	// the map: a factor at each of a few zooms, interpolated by ratio at the
+	// view's continuous zoom and held outside them, as Paint.Widths are.
+	// Empty is a factor of 1 at every zoom.
+	//
+	// Names are drawn at one size because a map is read at one distance:
+	// further out it shows more places, not larger ones. Close in that stops
+	// holding. Once streets are strips that keep widening with the zoom, a
+	// name of fixed size shrinks beside the road it is written on, until at
+	// zoom 19 a street is thirty pixels wide and its name a third of that.
+	LabelGrowth []WidthStop
 }
 
 // Validate refuses a style that cannot draw what it appears to say.

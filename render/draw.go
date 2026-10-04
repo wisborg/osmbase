@@ -387,25 +387,32 @@ func hatchBox(g image.Rectangle, gaps []image.Rectangle, width float64) box {
 // from an overzoomed ancestor, and the display zoom is the right one: the
 // question is how much room the reader has on screen, not which file the
 // feature arrived in.
-func (d *drawer) collectLabels(rules []LabelRule, tiles []drawTile, at uint8, faceFor func(float64) font.Face) []candidate {
+func (d *drawer) collectLabels(rules []LabelRule, growth []WidthStop, tiles []drawTile, at uint8, faceFor func(float64) font.Face) []candidate {
 	var out []candidate
 	for i := range rules {
 		rule := &rules[i]
 		if !rule.appliesAt(at) {
 			continue
 		}
-		face := faceFor(rule.SizeScale)
+		scale := rule.SizeScale
+		if scale == 0 {
+			scale = 1
+		}
+		if len(growth) > 0 {
+			scale *= float64(widthAt(growth, d.p.zoom))
+		}
+		face := faceFor(scale)
 		if face == nil {
 			continue
 		}
 		for _, dt := range tiles {
-			d.appendTileLabels(&out, rule, dt, at, face)
+			d.appendTileLabels(&out, rule, dt, at, face, scale)
 		}
 	}
 	return out
 }
 
-func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile, at uint8, face font.Face) {
+func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile, at uint8, face font.Face, scale float64) {
 	layer, ok := dt.tile.Layer(rule.Layer)
 	if !ok {
 		return
@@ -433,7 +440,7 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 			h := float64(m.Ascent.Ceil() + m.Descent.Ceil())
 			if x, y, angle, ok := placeAlong(f.Geometry.Lines, tr, w, h); ok {
 				*out = append(*out, candidate{
-					text: text, x: x, y: y, along: true, angle: angle, scale: rule.SizeScale, onRoad: rule.OnRoad,
+					text: text, x: x, y: y, along: true, angle: angle, scale: scale, onRoad: rule.OnRoad,
 					priority: rule.Priority,
 					rank:     labelRank(f),
 					once:     rule.OncePerName,

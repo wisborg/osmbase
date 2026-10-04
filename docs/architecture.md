@@ -489,6 +489,22 @@ surface. The contrast check holds the surface apart from every role but the land
 edge is the casing, which is held apart -- and requires a label to read on it, since a
 street's name is written there.
 
+**Close in, the map keeps getting closer.** Rendering Hornsby at zooms 16 to 20 found three
+things that held at 15 and 16 and failed deeper. The road widths stopped at zoom 18, so at 19
+a street was a thin strip in a wider gap between blocks; they now keep growing, by the factor
+17 to 18 grew by, to 20, and their edges thicken from one pixel to two and a half. Buildings
+were filled in `Built`, the colour of the residential landuse under them, so every house in a
+block vanished into the block and a close map was flat tan with streets as gaps; they have
+their own role, `RoleBuilding`, a warm grey in the light palette, out of the band of tans the
+built-up fill, the roads and the ink share (no tan between `Built` and `Road` gets 6 from
+both). Dropping the landuse fill close in was tried first and rejected: where OpenStreetMap
+has few buildings mapped -- the eastern half of that same view -- the suburbs went blank.
+And names were one size at every zoom, which is right while further out means more places
+and wrong once streets are strips that keep widening: at 19 a name was a third of its
+street's width. `Style.LabelGrowth` grows every name by a factor per zoom, from 1 at 17 to 2
+at 20. Past about zoom 20 there is nothing left to show: the data stops at 15, about five
+metres a pixel, and a zoom-24 frame of 4096 pixels is forty metres of ground.
+
 **A line's name is written along it.** A street's or a river's name is centred on the
 line and turned to its direction, on the first straight enough stretch at least as long as
 the name, tried from the middle outwards; a line shorter on the map than its own name, or
