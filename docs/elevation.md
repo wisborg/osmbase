@@ -118,14 +118,56 @@ attribution. AWS Terrain Tiles as the documented fallback if Mapterhorn's hostin
 unreliable. Copernicus GLO-30 directly only if both fail, since it means building the tiling
 pipeline Mapterhorn already runs.
 
-Before building:
+## What the checks found
 
-1. Confirm how a view's sources are known -- from the tiles, the coverage data, or the
-   per-source extents in `attribution.json` -- so the credit line can be exact.
-2. Fetch one Sydney and one Copenhagen cell and decode them, to check the resolution claims
-   and the WebP encoding (lossless or not: lossy WebP would put noise into a hillshade).
-3. Check for any usage policy on the hosted endpoints; the project expects heavy users to
-   copy archives rather than hammer its servers.
+Three things were left open above; all three were checked in October 2026.
+
+**The tiles are lossless and the resolution is as claimed.** Every tile fetched was WebP's
+lossless `VP8L`, 512 pixels square, 57-118 KB. Decoded as Terrarium they read Hornsby as a
+plateau at 200 m cut by gullies to 37 m and Copenhagen as 0 to 12 m. Hornsby's zoom-14 tile is
+4 m a pixel, the 5 m LiDAR, and there is no zoom 15 there -- a closer view scales zoom 14 up.
+Copenhagen's zoom 17 is 0.34 m a pixel. A test hillshade of Hornsby shows the quarry, the
+gullies, the railway cutting and the terraced house lots. One of Copenhagen shows the cost
+of bare-earth city data: where buildings were taken out, the ground under them was filled
+with flat triangles, which a hillshade on ground that flat turns into facets. Shading has to
+be weighed by how much relief there actually is, and the deepest zooms smoothed.
+
+**A view's sources come from a coverage tileset.** Mapterhorn publishes `coverage.pmtiles`
+(342 MB), vector tiles with one polygon per source in a layer `coverage` and the source's id
+in a `source` property: around Hornsby `au5i`, Geoscience Australia's LiDAR, and `glo30`;
+around Copenhagen `dk` and `glo30`. The ids are those of `attribution.json`, which names the
+producer and licence of each. A view's credit is the sources whose polygons it crosses --
+decoded by the same MVT reader that reads the map.
+
+**No usage policy is published**, for the tile endpoint or the download servers. The archives
+-- the global one, the regional ones, the coverage -- answer HTTP range requests, so osmbase
+can read them exactly as it reads the Protomaps basemap: only the cells a view needs, kept in
+the local store for good, behind the same opt-in, with an honest User-Agent and a backoff on
+429. That is the behaviour a static archive on object storage is built for, and asks less of
+the host than a tile endpoint would.
+
+## Build plan
+
+Each step is useful on its own and ends in something that can be looked at.
+
+1. **Terrain in the store.** `fetch` refuses an archive that is not vector tiles and the
+   store names every tile `.mvt`; a source's tile type has to decide both. Terrain also
+   comes from several archives: zooms 0-12 from `planet.pmtiles`, 13-17 from the regional
+   archive named for the cell's zoom-6 ancestor, where one exists (`download_urls.json` lists
+   them). So a terrain source is a small set of archives chosen per cell, rather than one.
+   Coverage is a third, vector, source.
+2. **Decoding.** A Terrarium tile to a grid of metres, through `golang.org/x/image/webp`, which
+   this module already has the dependency for. Scaling up past a region's deepest zoom, as the
+   vector tiles already do.
+3. **Hillshading.** A shade per pixel under the map's fills, from the slope and its direction
+   in the view's own pixels; its strength set by the relief in view, so a flat city is not
+   faceted and a mountain not burnt out; a palette role for the shade colour; off unless
+   asked for, since it needs the opt-in fetch. Attribution from the coverage, alongside
+   OpenStreetMap's.
+4. **Contours.** Traced from the same grid by marching squares at an interval for the zoom,
+   every fifth line heavier and labelled along the line with the street-name placement.
+
+Then, separately and later, the tilted view and the flyover.
 
 Then the order from the original sketch: hillshading under the map, contours with labels
 (reusing the along-line placement built for street names), and only later a tilted terrain
