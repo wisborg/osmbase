@@ -50,6 +50,14 @@ hundred kilobytes out of 125 GiB, and nothing stored — which tells that host w
 kilometres of map you asked about. Give a local `.pmtiles` file as SOURCE instead and
 nothing leaves the machine. `osmbase help` says the same thing in the terminal.
 
+`osmbase fetch ... --terrain` also copies the shape of the ground for the same area --
+elevation, for hillshading still to come -- from [Mapterhorn](https://mapterhorn.com/), a
+second host that learns the same cells. It is kept in a store of its own beside the map's
+(`osmbase-terrain` in your user cache directory), so nothing that draws from the map's store
+has to choose between them. `--terrain-source DIR` reads a directory of Mapterhorn's archives
+already on disk instead, and asks nobody. The choice of source is in
+[docs/elevation.md](docs/elevation.md).
+
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).

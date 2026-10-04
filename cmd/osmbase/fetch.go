@@ -12,6 +12,7 @@ import (
 	"github.com/wisborg/osmbase/acquire"
 	osmlocate "github.com/wisborg/osmbase/locate"
 	"github.com/wisborg/osmbase/slice"
+	"github.com/wisborg/osmbase/terrain"
 )
 
 func fetchUsage(w io.Writer, fs *flag.FlagSet) {
@@ -37,6 +38,12 @@ examples:
   osmbase fetch --world --max-zoom 5      # every tile on earth, shallow
   osmbase fetch --place Denmark           # what "render --place Denmark" draws
   osmbase fetch --place Denmark --max-zoom 10   # deep enough to find its towns by name
+  osmbase fetch --lat -33.70 --lon 151.10 --radius 3 --terrain   # and the shape of the ground
+
+--terrain adds elevation for the same area -- what a hillshaded map draws its
+hills from -- from a second host, Mapterhorn, kept in a store of its own beside
+the map's. It tells that host the same cells. --terrain-source can name a
+directory of its archives already on disk instead, and then nobody is asked.
 
 `)
 	printFlags(w, fs)
@@ -52,6 +59,10 @@ type fetchFlags struct {
 	dryRun   bool
 	yes      bool
 	place    placeFlags
+
+	terrain       bool
+	terrainSource string
+	terrainStore  string
 
 	// placeZoom is the zoom a default render of --place is drawn from,
 	// when --place chose the depth; -1 otherwise.
@@ -71,6 +82,9 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs.BoolVar(&f.dryRun, "dry-run", false, "say exactly what would be downloaded, then stop")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask before downloading")
 	f.place.bind(fs)
+	fs.BoolVar(&f.terrain, "terrain", false, "also fetch elevation for the same area, for a map that shows hills")
+	fs.StringVar(&f.terrainSource, "terrain-source", defaultTerrainSource, "where terrain comes from: a host's address, or a directory of its archives")
+	fs.StringVar(&f.terrainStore, "terrain-store", "", "directory to keep terrain in (default: beside the map's store, its name ending -terrain)")
 
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil || fs.Parsed() && isHelpRequest(args) {
@@ -131,7 +145,32 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	writePlan(stdout, plan, root)
-	if plan.Empty() {
+
+	var tp *terrain.Plan
+	tRoot := f.terrainStore
+	if f.terrain {
+		if tRoot == "" {
+			tRoot = terrainRoot(root)
+		}
+		layout, err := terrainLayout(ctx, f.terrainSource, stderr)
+		if err != nil {
+			return err
+		}
+		tst, err := slice.Create(tRoot, slice.Config{})
+		if err != nil {
+			return fmt.Errorf("opening the terrain store at %s: %w", tRoot, err)
+		}
+		tp, err = terrain.Prepare(ctx, layout, tst, acquire.Request{
+			Bounds: bounds, World: f.world, MaxZoom: f.maxZoom, CellZoom: tst.CellZoom(),
+		}, terrainOpener(stderr))
+		if err != nil {
+			return err
+		}
+		defer tp.Close()
+		writeTerrainPlan(stdout, tp, f.terrainSource, tRoot)
+	}
+
+	if plan.Empty() && (tp == nil || tp.Empty()) {
 		fmt.Fprintln(stdout, "\nnothing to fetch: the store already holds this area.")
 		return nil
 	}
@@ -139,8 +178,16 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stdout, "\ndry run: nothing was downloaded and nothing was written.")
 		return nil
 	}
-	if !f.yes && a.Remote() {
-		ok, err := confirm(stdout, plan)
+	if !f.yes && (a.Remote() && !plan.Empty() || tp != nil && tp.Remote() && !tp.Empty()) {
+		var hosts []string
+		var transfer int64
+		if a.Remote() && !plan.Empty() {
+			hosts, transfer = append(hosts, hostOf(plan.Archive)), plan.Transfer
+		}
+		if tp != nil && tp.Remote() && !tp.Empty() {
+			hosts, transfer = append(hosts, hostOf(tp.Global.Archive)), transfer+tp.Totals().Transfer
+		}
+		ok, err := confirm(stdout, hosts, transfer)
 		if err != nil {
 			return err
 		}
@@ -155,12 +202,24 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// before there is a progress line to fight with and is the slowest silent
 	// part.
 	a.Silence()
-	res, err := a.Fetch(ctx, plan, src, progressTo(stderr))
-	if err != nil {
-		return err
+	if !plan.Empty() {
+		res, err := a.Fetch(ctx, plan, src, progressTo(stderr))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "\n")
+		writeFetchResult(stdout, res, plan, root, st)
 	}
-	fmt.Fprintf(stderr, "\n")
-	writeFetchResult(stdout, res, plan, root, st)
+	if tp != nil && !tp.Empty() {
+		tp.Silence()
+		res, err := tp.Fetch(ctx, progressTo(stderr))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "\n")
+		fmt.Fprintf(stdout, "%-12s %d terrain tiles in %d requests, %s in %s, at %s\n",
+			"terrain", res.Written, res.Requests, humanBytes(res.Transfer), res.Elapsed.Round(time.Millisecond), tRoot)
+	}
 	return nil
 }
 
@@ -289,9 +348,16 @@ func writePlan(w io.Writer, p *acquire.Plan, root string) {
 	fmt.Fprintln(w)
 }
 
-func confirm(w io.Writer, p *acquire.Plan) (bool, error) {
-	fmt.Fprintf(w, "\nThis contacts %s and downloads %s.\n", hostOf(p.Archive), humanBytes(p.Transfer))
-	fmt.Fprintf(w, "It tells that host which cells you asked for, once. Rendering afterwards contacts nobody.\n")
+// confirm asks before downloading transfer bytes from hosts: the map's, and
+// the terrain's when --terrain asked for it, in one question, since the
+// answer is about the one fetch.
+func confirm(w io.Writer, hosts []string, transfer int64) (bool, error) {
+	fmt.Fprintf(w, "\nThis contacts %s and downloads %s.\n", strings.Join(hosts, " and "), humanBytes(transfer))
+	if len(hosts) > 1 {
+		fmt.Fprintf(w, "It tells those hosts which cells you asked for, once. Rendering afterwards contacts nobody.\n")
+	} else {
+		fmt.Fprintf(w, "It tells that host which cells you asked for, once. Rendering afterwards contacts nobody.\n")
+	}
 	fmt.Fprintf(w, "Continue? [y/N] ")
 
 	var answer string
