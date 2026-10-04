@@ -423,7 +423,7 @@ func checkCellZoom(z uint8) error {
 func (s *Source) sourceDir() string { return filepath.Join(s.store.root, s.id) }
 
 func (s *Source) overviewPath(t TileRef) string {
-	return filepath.Join(s.sourceDir(), "overview", u8(t.Z), u32(t.X), u32(t.Y)+tileExt)
+	return filepath.Join(s.sourceDir(), "overview", u8(t.Z), u32(t.X), u32(t.Y)+s.ext)
 }
 
 func (s *Source) cellsDir() string { return filepath.Join(s.sourceDir(), "cells") }
@@ -439,17 +439,30 @@ func (s *Source) tilePath(t TileRef) string {
 	if !ok {
 		return s.overviewPath(t)
 	}
-	return filepath.Join(s.cellDir(c), u8(t.Z), u32(t.X), u32(t.Y)+tileExt)
+	return filepath.Join(s.cellDir(c), u8(t.Z), u32(t.X), u32(t.Y)+s.ext)
 }
 
-// tileExt names what is in the file and not how it is encoded.
+// TileExt is the file extension tiles of tileType -- a PMTiles tile type as
+// a manifest records it, "mvt", "webp", "png" -- are stored under: what is in
+// the file, not how it is encoded.
 //
-// The bytes are stored exactly as the archive held them, which for every real
+// The bytes are stored exactly as the archive held them, which for a vector
 // build means gzip-compressed MVT -- so the file is not directly readable and
 // the extension does not say so. The encoding is in the manifest, once per
 // source, because that is where it can be changed by a source that uses
 // another one rather than by renaming ten thousand files.
-const tileExt = ".mvt"
+//
+// A raster source -- terrain, as WebP images of elevation -- is named for
+// its images, so that a terrain store's files say what they are. Anything
+// else, a tile type left empty by a store written before the field existed
+// included, is ".mvt", which is every vector store on disk.
+func TileExt(tileType string) string {
+	switch tileType {
+	case "webp", "png", "jpeg", "avif":
+		return "." + tileType
+	}
+	return ".mvt"
+}
 
 // parseCellDir reads a cell directory name back into a Cell.
 func parseCellDir(name string) (Cell, bool) {

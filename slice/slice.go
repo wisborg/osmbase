@@ -320,7 +320,7 @@ func (s *Store) attach(m Manifest) (*Source, error) {
 		src.mu.Unlock()
 		return src, nil
 	}
-	src := &Source{store: s, id: m.ID, compression: m.TileCompression, manifest: m}
+	src := &Source{store: s, id: m.ID, compression: m.TileCompression, ext: TileExt(m.TileType), manifest: m}
 	s.sources[m.ID] = src
 	return src, nil
 }

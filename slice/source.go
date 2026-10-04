@@ -31,6 +31,10 @@ type Source struct {
 	// directory holding two encodings would need a flag per file.
 	compression Compression
 
+	// ext is the file extension its tiles are stored under, fixed by its
+	// tile type for the same reason: see TileExt.
+	ext string
+
 	mu       sync.Mutex
 	manifest Manifest
 }
@@ -138,8 +142,8 @@ func (s *Source) TilesAt(zoom uint8, limit int) (tiles []TileRef, more bool, err
 				return nil, false, err
 			}
 			for _, ye := range ys {
-				y, err := strconv.ParseUint(strings.TrimSuffix(ye.Name(), tileExt), 10, 32)
-				if err != nil || !strings.HasSuffix(ye.Name(), tileExt) {
+				y, err := strconv.ParseUint(strings.TrimSuffix(ye.Name(), s.ext), 10, 32)
+				if err != nil || !strings.HasSuffix(ye.Name(), s.ext) {
 					continue
 				}
 				if len(tiles) == limit {

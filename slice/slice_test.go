@@ -1159,3 +1159,55 @@ func TestAncestorTiles_IsOneTilePerZoomAboveTheCell(t *testing.T) {
 		}
 	}
 }
+
+// A raster source's tiles are stored under its own extension -- a terrain
+// store's files say they are WebP -- and read back as stored; a vector
+// source, or one written before the tile type was recorded, keeps ".mvt".
+func TestFill_ARasterSourceIsStoredUnderItsOwnExtension(t *testing.T) {
+	for typ, want := range map[string]string{"webp": ".webp", "png": ".png", "mvt": ".mvt", "": ".mvt", "unknown": ".mvt"} {
+		if got := slice.TileExt(typ); got != want {
+			t.Errorf("TileExt(%q) = %q, want %q", typ, got, want)
+		}
+	}
+	st := newStore(t, slice.Config{})
+	src, err := st.AddSource(slice.SourceDesc{
+		Source: "terrain", TileType: "webp", TileCompression: slice.CompressionNone,
+		SourceZoom: slice.ZoomRange{Min: 0, Max: 14},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := slice.Cell{X: 3767, Y: 2455}
+	tiles := map[slice.TileRef][]byte{{Z: 12, X: c.X, Y: c.Y}: []byte("RIFF....WEBPVP8L")}
+	if _, err := src.Fill(context.Background(), &rawArchive{tiles: tiles}, c, slice.ZoomRange{Min: 12, Max: 12}); err != nil {
+		t.Fatal(err)
+	}
+	files := countFiles(t, st.Root())
+	webp := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, ".webp") {
+			webp++
+		}
+		if strings.HasSuffix(f, ".mvt") {
+			t.Errorf("a terrain tile stored as %s", f)
+		}
+	}
+	if webp != 1 {
+		t.Errorf("%d .webp files in %v, want 1", webp, files)
+	}
+	data, ok, err := src.Tile(12, c.X, c.Y)
+	if err != nil || !ok || string(data) != "RIFF....WEBPVP8L" {
+		t.Errorf("read back %q, %v, %v", data, ok, err)
+	}
+	reopened, err := slice.Open(st.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := reopened.Source(src.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := again.Tile(12, c.X, c.Y); !ok {
+		t.Error("the tile is not found after reopening the store")
+	}
+}
