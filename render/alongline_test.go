@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -8,6 +9,15 @@ import (
 
 	"github.com/wisborg/osmbase/mvt"
 )
+
+// placeOne is placeAlong's first spot, the one nearest the line's middle.
+func placeOne(lines [][]mvt.Point, tr tileTransform, w, h float64) (x, y, angle float64, ok bool) {
+	spots := placeAlong(lines, tr, w, h)
+	if len(spots) == 0 {
+		return 0, 0, 0, false
+	}
+	return spots[0].x, spots[0].y, spots[0].angle, true
+}
 
 // identity places tile coordinates on the surface as they are.
 var identity = tileTransform{ax: 1, ay: 1}
@@ -25,33 +35,33 @@ func tileLine(ps ...[2]int32) [][]mvt.Point {
 // across a bend; and not at all on a line shorter than itself.
 func TestPlaceAlong(t *testing.T) {
 	near := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
-	x, y, a, ok := placeAlong(tileLine([2]int32{0, 100}, [2]int32{400, 100}), identity, 100, 12)
+	x, y, a, ok := placeOne(tileLine([2]int32{0, 100}, [2]int32{400, 100}), identity, 100, 12)
 	if !ok || !near(x, 200) || !near(y, 100) || !near(a, 0) {
 		t.Errorf("along a level line: %v,%v at %v, %v; want 200,100 at 0", x, y, a, ok)
 	}
 	// Down and to the right at 45°: the angle is +45°, clockwise on the image.
-	_, _, a, ok = placeAlong(tileLine([2]int32{0, 0}, [2]int32{300, 300}), identity, 100, 12)
+	_, _, a, ok = placeOne(tileLine([2]int32{0, 0}, [2]int32{300, 300}), identity, 100, 12)
 	if !ok || !near(a, math.Pi/4) {
 		t.Errorf("down a diagonal: %v°", a*180/math.Pi)
 	}
 	// The same line drawn from its far end reads the same way, not upside
 	// down.
-	_, _, b, _ := placeAlong(tileLine([2]int32{300, 300}, [2]int32{0, 0}), identity, 100, 12)
+	_, _, b, _ := placeOne(tileLine([2]int32{300, 300}, [2]int32{0, 0}), identity, 100, 12)
 	if !near(a, b) {
 		t.Errorf("the line drawn backwards turns the name to %v°, want %v°", b*180/math.Pi, a*180/math.Pi)
 	}
 	// Straight up: -90° either way, never +90°, which would be upside down
 	// for a reader turning their head the usual way.
-	_, _, a, _ = placeAlong(tileLine([2]int32{50, 400}, [2]int32{50, 0}), identity, 100, 12)
+	_, _, a, _ = placeOne(tileLine([2]int32{50, 400}, [2]int32{50, 0}), identity, 100, 12)
 	if !near(a, -math.Pi/2) && !near(a, math.Pi/2) {
 		t.Errorf("up a vertical line: %v°", a*180/math.Pi)
 	}
-	if _, _, _, ok := placeAlong(tileLine([2]int32{0, 0}, [2]int32{80, 0}), identity, 100, 12); ok {
+	if _, _, _, ok := placeOne(tileLine([2]int32{0, 0}, [2]int32{80, 0}), identity, 100, 12); ok {
 		t.Error("a name longer than its line was placed")
 	}
 	// A right angle in the middle of a line 400 long: the name goes on
 	// one of the straight arms, not round the corner.
-	x, y, a, ok = placeAlong(tileLine([2]int32{0, 0}, [2]int32{200, 0}, [2]int32{200, 200}), identity, 100, 12)
+	x, y, a, ok = placeOne(tileLine([2]int32{0, 0}, [2]int32{200, 0}, [2]int32{200, 200}), identity, 100, 12)
 	// It may overrun the corner by the little the bend allows, turning
 	// it a degree or two.
 	level, upright := math.Abs(a) < 3*math.Pi/180, math.Abs(math.Abs(a)-math.Pi/2) < 3*math.Pi/180
@@ -63,7 +73,7 @@ func TestPlaceAlong(t *testing.T) {
 	for i := int32(0); i <= 40; i++ {
 		zig = append(zig, [2]int32{i * 10, (i % 2) * 30})
 	}
-	if _, _, _, ok := placeAlong(tileLine(zig...), identity, 100, 12); ok {
+	if _, _, _, ok := placeOne(tileLine(zig...), identity, 100, 12); ok {
 		t.Error("a name was written along a zigzag")
 	}
 }
@@ -166,4 +176,62 @@ func TestDrawAlongTurnsTheText(t *testing.T) {
 		t.Error("no halo round the glyphs")
 	}
 	_ = white
+}
+
+// A long line's name goes at its middle first and then every repeatSpacing
+// either side, as far as the line reaches; a short one's once.
+func TestPlaceAlongRepeatsOnALongLine(t *testing.T) {
+	spots := placeAlong(tileLine([2]int32{0, 100}, [2]int32{3000, 100}), identity, 100, 12)
+	var xs []float64
+	for _, sp := range spots {
+		xs = append(xs, sp.x)
+	}
+	// 3000 long, a 600 spacing: 1500, then 2100 and 900, then 2700 and 300.
+	want := []float64{1500, 2100, 900, 2700, 300}
+	if len(xs) != len(want) {
+		t.Fatalf("spots at %v, want %v", xs, want)
+	}
+	for i := range want {
+		if math.Abs(xs[i]-want[i]) > 1e-6 {
+			t.Errorf("spot %d at %v, want %v", i, xs[i], want[i])
+		}
+	}
+	if n := len(placeAlong(tileLine([2]int32{0, 100}, [2]int32{500, 100}), identity, 100, 12)); n != 1 {
+		t.Errorf("a 500-long line has %d spots, want 1", n)
+	}
+	// A long name is spaced by four of its own lengths instead.
+	if s := repeatSpacing(200); s != 800 {
+		t.Errorf("a 200-wide name repeats every %g, want 800", s)
+	}
+}
+
+// Copies of a road's name are placed no closer than repeatSpacing, however
+// many features the road arrived as; a point's name still only once; and
+// the middle copy goes first.
+func TestPlaceLabelsRepeatsRoadNamesApart(t *testing.T) {
+	along := func(x float64, nth int) candidate {
+		c := cand("Long Road", x, 100, 10, 1)
+		c.along, c.once, c.nth = true, true, nth
+		c.key = fmt.Sprintf("%v", x)
+		return c
+	}
+	got := placeLabelsT([]candidate{
+		along(1500, 0), along(2100, 1), along(900, 2),
+		along(1800, 0), // the same road again from another tile, too near
+	}, testFace(), DefaultLabelPadding, image.Rect(0, 0, 3000, 200))
+	var xs []float64
+	for _, p := range got {
+		xs = append(xs, p.x)
+	}
+	if len(got) != 3 || xs[0] != 1500 {
+		t.Errorf("placed at %v; want 1500 first, then 900 and 2100, and not 1800", xs)
+	}
+	point := func(x float64) candidate {
+		c := cand("Hornsby", x, 100, 10, 1)
+		c.once = true
+		return c
+	}
+	if got := placeLabelsT([]candidate{point(100), point(2900)}, testFace(), DefaultLabelPadding, image.Rect(0, 0, 3000, 200)); len(got) != 1 {
+		t.Errorf("a place's name drawn %d times, want once", len(got))
+	}
 }

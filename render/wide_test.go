@@ -3,6 +3,7 @@ package render
 import (
 	"image/color"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -68,7 +69,7 @@ func TestBasemapRoadsAreStripsCloseIn(t *testing.T) {
 	s := BasemapStyle()
 	var casing, surface []int
 	for i, r := range s.Rules {
-		if r.Layer != "roads" || !r.appliesAt(lineRoadsTo+1) {
+		if r.Layer != "roads" || !r.appliesAt(lineRoadsTo+1) || slices.Contains(r.Kinds, "rail") {
 			continue
 		}
 		switch r.Paint.Role {
@@ -145,5 +146,43 @@ func TestLabelsGrowWithTheMap(t *testing.T) {
 	d.collectLabels(rules, nil, nil, 18, faceFor)
 	if len(asked) != 2 || asked[0] != 1.5 || asked[1] != 1 {
 		t.Errorf("with no growth, faces asked for at %v; want 1.5 and 1", asked)
+	}
+}
+
+// Close in, a railway is a solid line of ink that widens with the map with
+// dashes of the road surface along it, the dashes in multiples of their own
+// width so they keep their shape as it grows; further out the thin dashed
+// line it always was.
+func TestRailCloseIn(t *testing.T) {
+	var line, base, dashes *Rule
+	for i, r := range BasemapStyle().Rules {
+		if !slices.Contains(r.Kinds, "rail") {
+			continue
+		}
+		switch {
+		case r.appliesAt(lineRoadsTo):
+			line = &BasemapStyle().Rules[i]
+		case r.Paint.Role == RoleInk:
+			base = &BasemapStyle().Rules[i]
+		case r.Paint.Role == RoleRoadFill:
+			dashes = &BasemapStyle().Rules[i]
+		}
+	}
+	if line == nil || base == nil || dashes == nil || line.appliesAt(lineRoadsTo+1) {
+		t.Fatalf("rail rules: line %v, base %v, dashes %v", line, base, dashes)
+	}
+	at19 := projection{zoom: 19, tileZoom: 19, tileScale: 1}
+	if w := base.Paint.strokeWidth(at19); w < 4 {
+		t.Errorf("the rail at zoom 19 is %g wide, want at least 4", w)
+	}
+	if b, d := base.Paint.strokeWidth(at19), dashes.Paint.strokeWidth(at19); !(d < b) || len(dashes.Paint.Dash) == 0 {
+		t.Errorf("dashes %g wide inside a rail %g, pattern %v", d, b, dashes.Paint.Dash)
+	}
+	w := dashes.Paint.strokeWidth(at19)
+	if s := dashes.Paint.dashScale(at19, w); s != w {
+		t.Errorf("a growing stroke's dashes scale by %g, want its width %g", s, w)
+	}
+	if s := line.Paint.dashScale(projection{tileScale: 1.3}, 1); s != 1.3 {
+		t.Errorf("a fixed stroke's dashes scale by %g, want the tile scale", s)
 	}
 }

@@ -123,8 +123,22 @@ func BasemapStyle() Style {
 		}, wideRoads(), []Rule{
 			{
 				Layer: "roads", Kinds: []string{"rail"},
-				MinZoom: 11, MaxZoom: MaxRuleZoom,
+				MinZoom: 11, MaxZoom: lineRoadsTo,
 				Paint: Paint{Role: RoleInk, Width: 0.7, Dash: []float32{4, 3}},
+			},
+			// Close in, a railway as a street map draws one: a solid line in
+			// the ink, wider with the map, with dashes of the road surface
+			// along its middle. As a thin dashed line it held at zoom 15 and
+			// was lost at 19 among roads twenty pixels wide.
+			{
+				Layer: "roads", Kinds: []string{"rail"},
+				MinZoom: lineRoadsTo + 1, MaxZoom: MaxRuleZoom,
+				Paint: Paint{Role: RoleInk, Widths: []WidthStop{{15, 1.6}, {17, 2.6}, {19, 5}, {20, 6}}},
+			},
+			{
+				Layer: "roads", Kinds: []string{"rail"},
+				MinZoom: lineRoadsTo + 1, MaxZoom: MaxRuleZoom,
+				Paint: Paint{Role: RoleRoadFill, Widths: []WidthStop{{15, 0.6}, {17, 1.1}, {19, 2.4}, {20, 3}}, Dash: []float32{5, 5}},
 			},
 
 			{

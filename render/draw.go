@@ -97,7 +97,7 @@ func (d *drawer) appendTile(rule *Rule, dt drawTile) {
 	// projection's target zoom, so an overzoomed tile's roads come out the same
 	// width as the roads in the tiles beside it.
 	width := rule.Paint.strokeWidth(d.p)
-	dash := d.scaleDash(rule.Paint.Dash)
+	dash := d.scaleDash(rule.Paint.Dash, rule.Paint.dashScale(d.p, width))
 
 	for i := range layer.Features {
 		f := &layer.Features[i]
@@ -138,11 +138,10 @@ func featureKind(f *mvt.Feature) (string, bool) {
 
 // scaleDash converts a dash pattern from tile pixels to surface pixels, into a
 // buffer reused for the whole render.
-func (d *drawer) scaleDash(dash []float32) []float32 {
+func (d *drawer) scaleDash(dash []float32, s float32) []float32 {
 	if len(dash) == 0 {
 		return nil
 	}
-	s := float32(d.p.tileScale)
 	d.dash = d.dash[:0]
 	for _, v := range dash {
 		d.dash = append(d.dash, v*s)
@@ -438,15 +437,16 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 			m := face.Metrics()
 			w := float64(font.MeasureString(face, text).Ceil())
 			h := float64(m.Ascent.Ceil() + m.Descent.Ceil())
-			if x, y, angle, ok := placeAlong(f.Geometry.Lines, tr, w, h); ok {
+			for n, sp := range placeAlong(f.Geometry.Lines, tr, w, h) {
 				*out = append(*out, candidate{
-					text: text, x: x, y: y, along: true, angle: angle, scale: scale, onRoad: rule.OnRoad,
+					text: text, x: sp.x, y: sp.y, along: true, angle: sp.angle, scale: scale, onRoad: rule.OnRoad,
 					priority: rule.Priority,
 					rank:     labelRank(f),
+					nth:      n,
 					once:     rule.OncePerName,
 					minor:    rule.Minor,
 					face:     face,
-					key:      fmt.Sprintf("%d/%d/%d:%.0f,%.0f", dt.ref.z, dt.ref.x, dt.ref.y, x, y),
+					key:      fmt.Sprintf("%d/%d/%d:%.0f,%.0f", dt.ref.z, dt.ref.x, dt.ref.y, sp.x, sp.y),
 				})
 			}
 			continue

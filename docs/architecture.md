@@ -503,11 +503,16 @@ And names were one size at every zoom, which is right while further out means mo
 and wrong once streets are strips that keep widening: at 19 a name was a third of its
 street's width. `Style.LabelGrowth` grows every name by a factor per zoom, from 1 at 17 to 2
 at 20. Past about zoom 20 there is nothing left to show: the data stops at 15, about five
-metres a pixel, and a zoom-24 frame of 4096 pixels is forty metres of ground.
+metres a pixel, and a zoom-24 frame of 4096 pixels is forty metres of ground. Railways
+were the last thing lost close in, a 0.7-pixel dashed line among roads twenty pixels wide;
+from zoom 15 they are a solid line of ink that widens with the map, with dashes of the road
+surface along it, the dashes measured in multiples of the line's width so they keep their
+shape as it grows.
 
 **A line's name is written along it.** A street's or a river's name is centred on the
 line and turned to its direction, on the first straight enough stretch at least as long as
-the name, tried from the middle outwards; a line shorter on the map than its own name, or
+the name, tried from the middle outwards, and again every 600 pixels or four lengths of the
+name either side along a long street, so its name is near wherever it is met; a line shorter on the map than its own name, or
 bending everywhere under it, is not named. Horizontal names beside the line were the first
 version, chosen because rotating glyphs meant resampling a bitmap. Once roads became strips
 that stopped being acceptable -- a level name across a diagonal street lies over two blocks

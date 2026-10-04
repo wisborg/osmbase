@@ -41,22 +41,44 @@ const alongSupersample = 4
 // bends more than that under its own name is not where the name goes.
 const maxBend = 0.35
 
-// alongFractions are where along its line a name is tried, in order: the
-// middle first, as lineAnchor always chose, and then further out either
-// side, for a road whose middle is a bend.
-var alongFractions = []float64{0.5, 0.38, 0.62, 0.26, 0.74, 0.14, 0.86}
+// repeatEvery is the least distance between two copies of one name along a
+// road, in output pixels, and repeatNames how many of the name's own lengths
+// it is at least: a long street is named every so often along it, so that
+// wherever on the map it is met its name is near, but never so often that
+// the map turns into one name.
+const (
+	repeatEvery = 600.0
+	repeatNames = 4.0
+)
+
+// repeatSpacing is how far apart copies of a name w pixels long are kept.
+func repeatSpacing(w float64) float64 { return math.Max(repeatEvery, repeatNames*w) }
+
+// alongNudges are how far, as a share of the spacing, a copy may move from
+// where it was meant to go to find a straight stretch: the middle first.
+var alongNudges = []float64{0, -0.12, 0.12, -0.24, 0.24, -0.36, 0.36}
+
+// middleNudges are how far, as a share of the line, the copy at its middle
+// may move to find a straight stretch: as far as the line goes.
+var middleNudges = []float64{0, -0.12, 0.12, -0.24, 0.24, -0.36, 0.36, -0.48, 0.48}
+
+// spot is where a name goes along a line: its centre and its direction.
+type spot struct{ x, y, angle float64 }
 
 // placeAlong finds where along the longest part of lines -- in tile
 // coordinates, placed on the surface by tr -- a name w pixels long and h
 // high can be written straight: the middle of a stretch of the line at
-// least that long that bends no more than maxBend of h under it. The angle
-// is the stretch's direction, turned if need be so the text reads left to
-// right, never upside down.
+// least that long that bends no more than maxBend of h under it, for the
+// middle of the line and then every repeatSpacing either side of it, each
+// nudged to the nearest straight stretch. The angle is the stretch's
+// direction, turned if need be so the text reads left to right, never
+// upside down.
 //
-// ok is false when the line is shorter on the map than its own name, or
+// There are none when the line is shorter on the map than its own name, or
 // bends everywhere: a name longer than its street, or wrapped round a
-// corner, labels nothing and is clutter, so it is not drawn.
-func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h float64) (x, y, angle float64, ok bool) {
+// corner, labels nothing and is clutter, so it is not drawn. The first spot
+// is the one nearest the middle.
+func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h float64) []spot {
 	var best []pt
 	var bestLen float64
 	for _, line := range lines {
@@ -76,7 +98,7 @@ func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h float64) (x, y, angl
 		}
 	}
 	if best == nil {
-		return 0, 0, 0, false
+		return nil
 	}
 	at := func(s float64) (pt, int) {
 		var run float64
@@ -93,41 +115,68 @@ func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h float64) (x, y, angl
 		}
 		return best[len(best)-1], len(best) - 1
 	}
-	for _, f := range alongFractions {
-		s0 := f*bestLen - w/2
-		s1 := s0 + w
+	// try is the spot for a name centred s along the line, if the stretch
+	// under it is straight enough.
+	try := func(s float64) (spot, bool) {
+		s0, s1 := s-w/2, s+w/2
 		if s0 < 0 || s1 > bestLen {
-			continue
+			return spot{}, false
 		}
 		a, i0 := at(s0)
 		b, i1 := at(s1)
 		dx, dy := b.X-a.X, b.Y-a.Y
 		chord := math.Hypot(dx, dy)
 		if chord == 0 {
-			continue
+			return spot{}, false
 		}
-		straight := true
 		for i := i0; i < i1; i++ {
 			p := best[i]
 			if math.Abs((p.X-a.X)*dy-(p.Y-a.Y)*dx)/chord > maxBend*h {
-				straight = false
-				break
+				return spot{}, false
 			}
 		}
-		if !straight {
-			continue
-		}
-		mid, _ := at(f * bestLen)
-		angle = math.Atan2(dy, dx)
+		mid, _ := at(s)
+		angle := math.Atan2(dy, dx)
 		if math.Cos(angle) < 0 {
 			angle += math.Pi
 			if angle > math.Pi {
 				angle -= 2 * math.Pi
 			}
 		}
-		return mid.X, mid.Y, angle, true
+		return spot{mid.X, mid.Y, angle}, true
 	}
-	return 0, 0, 0, false
+	spacing := repeatSpacing(w)
+	var out []spot
+	for k := 0; ; k++ {
+		any := false
+		for _, side := range []float64{1, -1} {
+			if k == 0 && side < 0 {
+				continue
+			}
+			target := bestLen/2 + side*float64(k)*spacing
+			if target < w/2-spacing/2 || target > bestLen-w/2+spacing/2 {
+				continue
+			}
+			any = true
+			// The middle copy may move anywhere along the line to find a
+			// straight stretch, as the one name always could -- its nudges
+			// are shares of the whole line; the others only so far that
+			// they stay most of a spacing apart.
+			nudges, by := alongNudges, spacing
+			if k == 0 {
+				nudges, by = middleNudges, bestLen
+			}
+			for _, n := range nudges {
+				if sp, ok := try(target + n*by); ok {
+					out = append(out, sp)
+					break
+				}
+			}
+		}
+		if !any {
+			return out
+		}
+	}
 }
 
 // quad is a label's space on the map: the four corners of a rectangle,

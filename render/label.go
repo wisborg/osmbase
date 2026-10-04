@@ -222,6 +222,11 @@ type candidate struct {
 	// once carries the rule's OncePerName to the placement pass.
 	once bool
 
+	// nth is which copy of its feature's name this is along the feature,
+	// 0 the one nearest the middle; compared after rank, so the middle copy
+	// of a road is placed before its repeats.
+	nth int
+
 	// minor selects the quieter label ink. Carried per candidate for the same
 	// reason the face is: two labels competing for one space can come from
 	// rules that differ in both.
@@ -290,6 +295,9 @@ func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 		if c := cmp.Compare(b.rank, a.rank); c != 0 {
 			return c
 		}
+		if c := cmp.Compare(a.nth, b.nth); c != 0 {
+			return c
+		}
 		return cmp.Compare(a.key, b.key)
 	})
 
@@ -302,11 +310,16 @@ func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 	// both of.
 	// Names already drawn for rules that ask for one label each. Not a
 	// property of the pass: see LabelRule.OncePerName.
-	drawn := map[string]bool{}
+	//
+	// A name written along a line is the exception: a long street is named
+	// again every repeatSpacing along it, so OncePerName means "never two
+	// copies closer than that" for it, which also catches the same street
+	// arriving as several features cut by the tiles.
+	drawn := map[string][]pt{}
 
 	var out []placed
 	for _, c := range cands {
-		if c.once && drawn[c.text] {
+		if c.once && tooNear(drawn[c.text], c) {
 			continue
 		}
 		var box image.Rectangle
@@ -329,12 +342,31 @@ func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 			continue
 		}
 		if c.once {
-			drawn[c.text] = true
+			drawn[c.text] = append(drawn[c.text], pt{X: c.x, Y: c.y})
 		}
 		out = append(out, placed{text: c.text, box: box, quad: q, face: c.face, minor: c.minor,
 			along: c.along, x: c.x, y: c.y, angle: c.angle, scale: c.scale, onRoad: c.onRoad})
 	}
 	return out
+}
+
+// tooNear reports whether a label of OncePerName may not go at c, with its
+// name already drawn at others: anywhere at all, for a point's name; within
+// repeatSpacing of a copy, for a name written along a line.
+func tooNear(others []pt, c candidate) bool {
+	if len(others) == 0 {
+		return false
+	}
+	if !c.along {
+		return true
+	}
+	min := repeatSpacing(float64(font.MeasureString(c.face, c.text).Ceil()))
+	for _, o := range others {
+		if math.Hypot(o.X-c.x, o.Y-c.y) < min {
+			return true
+		}
+	}
+	return false
 }
 
 // placed is a label that will be drawn, with the space it occupies.

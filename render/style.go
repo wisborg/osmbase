@@ -303,6 +303,10 @@ type Paint struct {
 	// Dash is an alternating on/off pattern, also in tile pixels, scaled the
 	// same way as Width. Empty is a solid line. See raster.Stroke.Dash for what
 	// an odd-length pattern means.
+	//
+	// With Widths, the pattern is in multiples of the stroke's own width
+	// instead, so that a line that grows with the map keeps the proportions
+	// of its dashes rather than turning into dots.
 	Dash []float32
 }
 
@@ -310,6 +314,16 @@ type Paint struct {
 type WidthStop struct {
 	Zoom  float64
 	Width float32
+}
+
+// dashScale is what the paint's Dash is multiplied by on a view resolving to
+// p, where its stroke is width pixels wide: the tile scale, or for a paint
+// with Widths the width itself. See Paint.Dash.
+func (pt Paint) dashScale(p projection, width float32) float32 {
+	if len(pt.Widths) > 0 {
+		return width
+	}
+	return float32(p.tileScale)
 }
 
 // strokeWidth is the paint's stroke width in output pixels on a view
