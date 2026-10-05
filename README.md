@@ -51,12 +51,20 @@ kilometres of map you asked about. Give a local `.pmtiles` file as SOURCE instea
 nothing leaves the machine. `osmbase help` says the same thing in the terminal.
 
 `osmbase fetch ... --terrain` also copies the shape of the ground for the same area --
-elevation, for hillshading still to come -- from [Mapterhorn](https://mapterhorn.com/), a
-second host that learns the same cells. It is kept in a store of its own beside the map's
+elevation -- from [Mapterhorn](https://mapterhorn.com/), a second host that learns the same
+cells, and `osmbase render ... --terrain` then shades the hills under the map from it,
+reading only the disk. It is kept in a store of its own beside the map's
 (`osmbase-terrain` in your user cache directory), so nothing that draws from the map's store
 has to choose between them. `--terrain-source DIR` reads a directory of Mapterhorn's archives
 already on disk instead, and asks nobody. The choice of source is in
 [docs/elevation.md](docs/elevation.md).
+
+A shaded map owes its elevation sources a credit as well as OpenStreetMap, and which ones
+depends on where it is: Mapterhorn, the national survey whose data covers the view
+(Geoscience Australia around Sydney, Klimadatastyrelsen in Denmark, under CC BY 4.0), and
+Copernicus GLO-30 nearly everywhere, whose licence dictates its own sentence. `render`
+works the list out from Mapterhorn's coverage data and writes it into the image beside
+OpenStreetMap's.
 
 ## Licence
 
@@ -65,3 +73,9 @@ Apache-2.0. See [LICENSE](LICENSE).
 Map data rendered through this library is © OpenStreetMap contributors, under the Open
 Database License. That obligation attaches to the **images you produce**, not only to this
 program, and it travels with them. See [NOTICE](NOTICE).
+
+Hillshading is drawn from elevation data under its own licences, listed in [NOTICE](NOTICE),
+and credited in the image in the same way. Where it uses Copernicus GLO-30, its licence asks
+every notice covering distribution to say: *The organisations in charge of the Copernicus
+programme by law or by delegation do not incur any liability for any use of the Copernicus
+WorldDEM-30.* Nothing here implies any endorsement by Copernicus, ESA or Airbus.

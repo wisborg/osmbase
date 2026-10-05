@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,4 +92,69 @@ func countTerrain(t *testing.T, root string) int {
 		return nil
 	})
 	return n
+}
+
+// terrainPNG is a Terrarium PNG tile of a ridge running north to south,
+// rising 400 m from either edge to the middle.
+func terrainPNG(t *testing.T) []byte {
+	t.Helper()
+	const n = 64
+	img := image.NewNRGBA(image.Rect(0, 0, n, n))
+	for y := 0; y < n; y++ {
+		for x := 0; x < n; x++ {
+			h := 400 - math.Abs(float64(x)-n/2)*400/(n/2) + 32768
+			img.SetNRGBA(x, y, color.NRGBA{uint8(int(h) >> 8), uint8(int(h)), 0, 0xff})
+		}
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// render --terrain shades from the terrain store beside the map's and says
+// so, credits the elevation in the report as well as in the image, and
+// refuses to guess: no terrain store is an error naming the fetch, and
+// --terrain-store alone draws nothing.
+func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
+	archive := fixtureArchive(t, 0, 0, 0, worldTile())
+	store := filepath.Join(t.TempDir(), "s")
+	out := filepath.Join(t.TempDir(), "map.png")
+
+	if r := runCLI(t, "fetch", archive, "--world", "--max-zoom", "0", "--store", store, "--yes"); r.code != 0 {
+		t.Fatalf("fetch: exit %d\n%s", r.code, r.stderr)
+	}
+	r := runCLI(t, "render", "--store", store, "--terrain", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
+	if r.code == 0 || !strings.Contains(r.stderr, "osmbase fetch --terrain") {
+		t.Errorf("no terrain: exit %d, want a refusal naming the fetch\nstderr: %s\nstdout: %s", r.code, r.stderr, r.stdout)
+	}
+	r = runCLI(t, "render", "--store", store, "--terrain-store", store+"-terrain", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
+	if r.code == 0 || !strings.Contains(r.stderr, "add --terrain") {
+		t.Errorf("--terrain-store alone: exit %d\n%s", r.code, r.stderr)
+	}
+
+	built, err := osmbasetest.BuildArchive(osmbasetest.Archive{
+		Tiles:           []osmbasetest.ArchiveTile{{ID: 0, Data: terrainPNG(t)}},
+		TileType:        pmtiles.TileTypePNG,
+		TileCompression: pmtiles.CompressionNone,
+		MinZoom:         0, MaxZoom: 12,
+		MinLon: -180, MinLat: -85, MaxLon: 180, MaxLat: 85,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "planet.pmtiles"), built.Bytes, 0o644)
+	if r := runCLI(t, "fetch", archive, "--world", "--max-zoom", "0", "--store", store, "--terrain", "--terrain-source", dir, "--yes"); r.code != 0 {
+		t.Fatalf("terrain fetch: exit %d\n%s", r.code, r.stderr)
+	}
+
+	r = runCLI(t, "render", "--store", store, "--terrain", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
+	if r.code != 0 {
+		t.Fatalf("render: exit %d\n%s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "100.0% of the image shaded") || !strings.Contains(r.stdout, "Elevation: "+dir) {
+		t.Errorf("the report says nothing of the terrain:\n%s", r.stdout)
+	}
 }

@@ -70,6 +70,10 @@ examples:
       --width 1920 --height 1080 --palette dark --out sydney.png
       a 1080p dark map from a local archive, contacting nobody
 
+  osmbase render --lat -33.70 --lon 151.10 --terrain --out hornsby.png
+      with the hills shaded, from terrain "osmbase fetch --terrain" kept;
+      the image credits the elevation sources as well as OpenStreetMap
+
 `)
 	printFlags(w, fs)
 	fmt.Fprint(w, "\n"+sourceHelp)
@@ -87,6 +91,8 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		bbox          string
 		place         placeFlags
 		yes           bool
+		withTerrain   bool
+		terrainDir    string
 	)
 	fs := newFlagSet("render", renderUsage)
 	coords.bind(fs)
@@ -101,6 +107,8 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		"the zoom is the deepest that holds all of it, unless --zoom says otherwise")
 	place.bind(fs)
 	fs.BoolVar(&yes, "yes", false, "with --store, fetch what the view lacks at its zoom without asking first")
+	fs.BoolVar(&withTerrain, "terrain", false, "shade the shape of the ground under the map, from terrain \"osmbase fetch --terrain\" kept; nothing reaches the network")
+	fs.StringVar(&terrainDir, "terrain-store", "", "where the terrain is kept (default: beside the map's store, its name ending -terrain)")
 
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil {
@@ -148,11 +156,33 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// nobody. They are separate flags rather than one SOURCE that guesses,
 	// because guessing wrong here means quietly reaching the network on a
 	// machine the user believed was offline.
-	if store != "" {
-		if source != "" {
-			return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
+	if store != "" && source != "" {
+		return usageErrorf("--store and a SOURCE are two different places to read from; give one or the other")
+	}
+
+	// Terrain is read from its own store, which sits beside the map's: the
+	// one drawn from, or the default one when the map is an archive.
+	var ts *terrainStore
+	if withTerrain {
+		root := terrainDir
+		if root == "" {
+			base := store
+			if base == "" {
+				if base, err = slice.DefaultRoot(); err != nil {
+					return err
+				}
+			}
+			root = terrainRoot(base)
 		}
-		return renderFromStore(ctx, store, archive, view, colours, style, palette, out, yes, stdout, stderr)
+		if ts, err = openTerrainStore(root); err != nil {
+			return err
+		}
+	} else if terrainDir != "" {
+		return usageErrorf("--terrain-store says where terrain is, and --terrain is what draws it; add --terrain")
+	}
+
+	if store != "" {
+		return renderFromStore(ctx, store, archive, view, colours, style, palette, out, yes, ts, stdout, stderr)
 	}
 
 	a, err := openArchive(source, stderr)
@@ -179,13 +209,17 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "osmbase: zoom %d is deeper than the %d this archive holds, so the map is drawn from zoom %d and overzoomed\n", z, h.MaxZoom, h.MaxZoom)
 	}
 
-	r, err := render.New(a.Reader(), render.Options{
+	o := render.Options{
 		Style:        style,
 		Palette:      colours,
 		Attribution:  attributionOf(a, stderr),
 		LabelFace:    labelFace(),
 		LabelFaceFor: labelFaceFor,
-	})
+	}
+	if err := ts.into(&o, view); err != nil {
+		return err
+	}
+	r, err := render.New(a.Reader(), o)
 	if err != nil {
 		return err
 	}
@@ -494,6 +528,9 @@ func writeRenderReport(w io.Writer, out string, v render.View, res *render.Resul
 	t.row("covered", percent(res.Covered))
 	t.row("overzoomed", fmt.Sprintf("%s of the image, drawn from a shallower tile", percent(res.Overzoomed)))
 	t.row("no data", fmt.Sprintf("%s of the image, hatched in %d rectangles", percent(1-res.Covered), len(res.Gaps)))
+	if res.Shaded > 0 {
+		t.row("terrain", fmt.Sprintf("%s of the image shaded, from zoom %d", percent(res.Shaded), res.TerrainZoom))
+	}
 	// Converted, like the credit drawn into the image and for the same
 	// reason: the archive writes its attribution as HTML because in a browser
 	// the credit is a link, and an anchor tag printed into a terminal credits
@@ -516,7 +553,7 @@ func percent(f float64) string {
 // here, no URL, and nothing that could contact anyone. slice imports neither
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
-func renderFromStore(ctx context.Context, root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, stdout, stderr io.Writer) error {
+func renderFromStore(ctx context.Context, root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, ts *terrainStore, stdout, stderr io.Writer) error {
 	// The zoom the renderer will ask the store for, from the renderer.
 	z, _, err := view.Zoom()
 	if err != nil {
@@ -552,7 +589,7 @@ func renderFromStore(ctx context.Context, root, archive string, view render.View
 		return err
 	}
 
-	r, err := render.New(src, render.Options{
+	o := render.Options{
 		Style:   style,
 		Palette: colours,
 		// The archive drawn from, not the first one listed: a store may hold
@@ -561,7 +598,11 @@ func renderFromStore(ctx context.Context, root, archive string, view render.View
 		Attribution:  chosen.Attribution,
 		LabelFace:    labelFace(),
 		LabelFaceFor: labelFaceFor,
-	})
+	}
+	if err := ts.into(&o, view); err != nil {
+		return err
+	}
+	r, err := render.New(src, o)
 	if err != nil {
 		return err
 	}

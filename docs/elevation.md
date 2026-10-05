@@ -1,9 +1,10 @@
 # Elevation: where terrain would come from
 
-Not built. This is the comparison behind choosing an elevation source, for two things that
-might come later: a map that shows the shape of the ground -- hillshading and contour lines
-under the streets, the look of Thunderforest's Outdoors style -- and, much further out, a
-flyover video of an activity over a 3D landscape, in the manner of Relive.
+Hillshading is built and contours are not; see "Where it stands" at the end. This is the
+comparison behind choosing an elevation source, for two things that might come later: a map
+that shows the shape of the ground -- hillshading and contour lines under the streets, the
+look of Thunderforest's Outdoors style -- and, much further out, a flyover video of an
+activity over a 3D landscape, in the manner of Relive.
 
 OpenStreetMap has no elevation surface. Buildings carry heights (in the Protomaps tiles this
 module reads, `height` is on 115 of 1,075 buildings in one zoom-15 tile of Hornsby) and roads
@@ -169,9 +170,39 @@ Each step is useful on its own and ends in something that can be looked at.
 
 Then, separately and later, the tilted view and the flyover.
 
-Then the order from the original sketch: hillshading under the map, contours with labels
-(reusing the along-line placement built for street names), and only later a tilted terrain
-view and a flyover.
+### Where it stands
+
+Steps 1 to 3 are built. `osmbase fetch --terrain` fills a terrain store beside the map's and
+copies the source list into it; the `dem` package decodes the tiles; and `osmbase render
+--terrain` shades under the map.
+
+What the hillshade does, and why:
+
+- **Heights at one sample per pixel.** The elevation zoom is the view's tile zoom less one, since
+  an elevation tile is 512 pixels; a zoom the store lacks is interpolated from the nearest
+  shallower one, as the vector tiles overzoom.
+- **Under the roads and the buildings.** The shade tints the style's leading run of area fills --
+  the ground and its cover -- and stops at the first line or building. A building is not ground:
+  bare-earth data fills the ground under a removed building with flat triangles, and shading a
+  footprint drew them as smudges on its roof.
+- **Strength from the slopes themselves, eased.** A tint toward the palette's Shade on slopes
+  facing away from a north-west sun 45° up and toward its Highlight on slopes facing it, eased
+  past a knee so a mountain is darker than a hillside but not burnt out. Flat ground stays flat:
+  central Copenhagen is barely tinted, where the first probe -- a plain hillshade at full
+  strength -- turned its triangles into facets. Slopes are steepened at shallow zooms, where coarse
+  data flattens them, and drawn as measured from zoom 13.
+- **A blur of 5 m.** At street zooms the heights are blurred over about five metres of ground,
+  which removes what is left of the triangles around footprints and keeps any slope a reader
+  would call a hill. Coarser than a few metres a pixel it is under a pixel and skipped.
+- **The contrast check sees the shade.** The steepest slopes go 45% of the way to Shade or
+  Highlight, and the check holds every shaded surface at those extremes to the same overlay
+  and context rules as on flat ground. It is what set the light palette's shade: the slate
+  first tried left the overlay's accent at 2.3:1 on water in shadow.
+- **The credit from the coverage.** The sources whose coverage polygons cross the view, holes
+  and all, with Copernicus's dictated sentence for GLO-30. Mapterhorn's coverage places GLO-30
+  under the national data too -- its footprint is the whole world, with no holes where finer
+  data exists -- so in practice GLO-30 is credited everywhere, and a credit wider than the image
+  wraps onto a second line rather than being cut off.
 
 ## Sources
 

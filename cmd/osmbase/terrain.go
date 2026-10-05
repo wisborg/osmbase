@@ -3,14 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/wisborg/osmbase/acquire"
+	"github.com/wisborg/osmbase/dem"
 	"github.com/wisborg/osmbase/fetch"
+	"github.com/wisborg/osmbase/render"
+	"github.com/wisborg/osmbase/slice"
 	"github.com/wisborg/osmbase/terrain"
 )
 
@@ -84,6 +90,106 @@ func writeTerrainPlan(w io.Writer, p *terrain.Plan, source, root string) {
 	if c := p.Coverage; c != nil {
 		line("coverage", c.Tiles, c.Held, c.Absent, c.Transfer)
 	}
+	if p.Sources != "" {
+		what := "copied from " + p.Sources
+		if strings.Contains(p.Sources, "://") {
+			what = "one more request, for " + p.Sources
+		}
+		fmt.Fprintf(w, "%-12s who made each source, for the credit: %s\n", "sources", what)
+	}
 	t := p.Totals()
 	fmt.Fprintf(w, "%-12s %s in %d range requests\n", "download", humanBytes(t.Transfer), t.Requests)
+}
+
+// terrainStore is a terrain store opened for drawing: its elevation, and its
+// coverage for the credit.
+type terrainStore struct {
+	root      string
+	elevation *slice.Source
+	heights   *dem.Source
+	coverage  *slice.Source // nil when the store holds none
+	sources   []dem.Attribution
+}
+
+// openTerrainStore opens the terrain store at root for drawing. It reads the
+// disk and nothing else: a render never fetches terrain, as it never fetches
+// a map without asking, and an empty store is refused with the command that
+// fills it.
+func openTerrainStore(root string) (*terrainStore, error) {
+	refuse := fmt.Errorf("there is no terrain at %s; fetch it with \"osmbase fetch --terrain\" over the same area first", root)
+	st, err := slice.Open(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, refuse
+		}
+		return nil, fmt.Errorf("opening the terrain store at %s: %w", root, err)
+	}
+	sources, err := st.Sources()
+	if err != nil {
+		return nil, err
+	}
+	t := &terrainStore{root: root}
+	for _, m := range sources {
+		switch m.TileType {
+		case "webp", "png":
+			if t.elevation != nil {
+				return nil, fmt.Errorf("the terrain store at %s holds more than one elevation source; give each its own --terrain-store", root)
+			}
+			if t.elevation, err = st.Source(m.ID); err != nil {
+				return nil, err
+			}
+		case "mvt":
+			if t.coverage, err = st.Source(m.ID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if t.elevation == nil {
+		return nil, refuse
+	}
+	t.heights = dem.NewSource(t.elevation)
+	// The list of who made each source, which a fetch keeps. A store
+	// without one still credits each source, by its id.
+	if f, err := os.Open(filepath.Join(root, terrain.SourcesName)); err == nil {
+		t.sources, err = dem.ReadAttributions(f)
+		f.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return t, nil
+}
+
+// into sets a render's terrain options from the store, for a view: nothing
+// when there is no store.
+func (t *terrainStore) into(o *render.Options, view render.View) error {
+	if t == nil {
+		return nil
+	}
+	credit, err := t.credit(view)
+	if err != nil {
+		return err
+	}
+	o.Terrain = t.heights
+	o.TerrainAttribution = credit
+	return nil
+}
+
+// credit is what the terrain under view owes: Mapterhorn, and each source
+// the coverage puts under the view. A store with no coverage can say only
+// where the terrain came from, which is still owed.
+func (t *terrainStore) credit(view render.View) (string, error) {
+	if t.coverage == nil {
+		return "Elevation: " + t.elevation.Manifest().Source, nil
+	}
+	z, _, err := view.Zoom()
+	if err != nil {
+		return "", err
+	}
+	b := view.Bounds
+	ids, err := dem.SourcesIn(t.coverage, max(z, 1)-1, b.West, b.South, b.East, b.North)
+	if err != nil {
+		return "", err
+	}
+	return dem.Credit(ids, t.sources), nil
 }
