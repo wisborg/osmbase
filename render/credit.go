@@ -175,14 +175,21 @@ func DrawCredit(img *image.RGBA, credit string, face font.Face) {
 	b := img.Bounds()
 
 	const pad = 4
-	w := font.MeasureString(face, credit).Ceil()
-	h := face.Metrics().Height.Ceil()
+	lines := wrapCredit(credit, face, b.Dx()-3*pad)
+	w := 0
+	for _, l := range lines {
+		w = max(w, font.MeasureString(face, l).Ceil())
+	}
+	lh := face.Metrics().Height.Ceil()
+	h := lh * len(lines)
 
 	// Bottom right, which is where every map service asks for it and where a
-	// reader looks for it. Clamped to the image so a credit wider than a
-	// narrow picture is truncated at the left rather than drawn off the edge:
-	// a partly visible credit is a bug to fix, an invisible one is a licence
-	// breach nobody notices.
+	// reader looks for it. A credit wider than the picture is wrapped onto
+	// more lines rather than run off the edge: a partly visible credit is a
+	// licence half met, and some credits -- Copernicus's is a sentence the
+	// licence dictates word for word -- are longer than a picture is wide.
+	// Only a single word wider than the picture is still clamped, truncated
+	// at the left.
 	x1, y1 := b.Max.X-pad, b.Max.Y-pad
 	x0, y0 := x1-w-pad, y1-h-pad
 	if x0 < b.Min.X {
@@ -208,14 +215,46 @@ func DrawCredit(img *image.RGBA, credit string, face font.Face) {
 	draw.Draw(img, plate, &image.Uniform{C: color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xdd}},
 		image.Point{}, draw.Over)
 
-	d := font.Drawer{
-		Dst:  img,
-		Src:  image.NewUniform(color.RGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff}),
-		Face: face,
-		Dot: fixed.Point26_6{
-			X: fixed.I(x0 + pad),
-			Y: fixed.I(y0 + pad + face.Metrics().Ascent.Ceil()),
-		},
+	// Each line right-aligned, so the block's ragged edge is on the side
+	// away from the corner it is anchored to.
+	for i, l := range lines {
+		lx := x1 - font.MeasureString(face, l).Ceil()
+		if lx < x0+pad {
+			lx = x0 + pad
+		}
+		d := font.Drawer{
+			Dst:  img,
+			Src:  image.NewUniform(color.RGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff}),
+			Face: face,
+			Dot: fixed.Point26_6{
+				X: fixed.I(lx),
+				Y: fixed.I(y0 + pad + i*lh + face.Metrics().Ascent.Ceil()),
+			},
+		}
+		d.DrawString(l)
 	}
-	d.DrawString(credit)
+}
+
+// wrapCredit breaks a credit into lines no wider than width, at spaces. A
+// line holds at least one word, however wide.
+func wrapCredit(credit string, face font.Face, width int) []string {
+	words := strings.Fields(credit)
+	var lines []string
+	line := ""
+	for _, w := range words {
+		try := w
+		if line != "" {
+			try = line + " " + w
+		}
+		if line != "" && font.MeasureString(face, try).Ceil() > width {
+			lines = append(lines, line)
+			line = w
+			continue
+		}
+		line = try
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }

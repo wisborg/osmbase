@@ -1,6 +1,15 @@
 package render
 
-import "testing"
+import (
+	"image"
+	"image/color"
+	"image/draw"
+	"strings"
+	"testing"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+)
 
 // TestPlainCredit_HTMLAttributionBecomesTheTextAViewerWouldHaveRead is the
 // legal obligation rather than a formatting nicety, which is why the wanted
@@ -100,5 +109,39 @@ func TestPlainCredit_HTMLAttributionBecomesTheTextAViewerWouldHaveRead(t *testin
 				t.Errorf("PlainCredit(%q)\n = %q\nwant %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// A credit wider than the picture is drawn on as many lines as it takes,
+// every word of it inside the image, rather than truncated.
+func TestDrawCredit_WrapsACreditWiderThanThePicture(t *testing.T) {
+	face := basicfont.Face7x13
+	img := image.NewRGBA(image.Rect(0, 0, 240, 200))
+	grey := color.RGBA{0x80, 0x80, 0x80, 0xff}
+	draw.Draw(img, img.Bounds(), image.NewUniform(grey), image.Point{}, draw.Src)
+	credit := "Elevation: Mapterhorn; produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018"
+	DrawCredit(img, credit, face)
+
+	lines := wrapCredit(credit, face, 240-12)
+	if len(lines) < 3 {
+		t.Fatalf("%d lines: %q", len(lines), lines)
+	}
+	if strings.Join(lines, " ") != credit {
+		t.Errorf("wrapping lost words: %q", lines)
+	}
+	for _, l := range lines {
+		if w := font.MeasureString(face, l).Ceil(); w > 240-12 {
+			t.Errorf("line %q is %d pixels, wider than the picture allows", l, w)
+		}
+	}
+	// The plate is as tall as the lines.
+	plate := 0
+	for y := 0; y < 200; y++ {
+		if img.RGBAAt(239, y) != grey {
+			plate++
+		}
+	}
+	if want := len(lines) * face.Metrics().Height.Ceil(); plate < want {
+		t.Errorf("plate %d pixels tall, want at least %d for %d lines", plate, want, len(lines))
 	}
 }
