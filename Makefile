@@ -83,27 +83,38 @@ tidy:
 	@echo "--- requires ---"
 	@go list -m all | tail -n +2
 
-# The module admits exactly one non-standard-library dependency. That is a
-# deliberate constraint rather than an accident of scope: this library is
-# depended on by public Apache-2.0 programs whose NOTICE files are maintained
-# by hand, and every module arriving here arrives in all of them.
-# Asked of the DIRECT requires and of what is actually compiled, not of the
-# whole module graph. golang.org/x/image names golang.org/x/text in its own
-# go.mod, so the graph lists it, but `go mod why` reports the main module does
-# not need it and nothing here imports it -- a graph check would fail on a
-# module that never reaches the binary.
-## deps: check nothing but the two admitted modules crept in
+# The LIBRARY admits two non-standard-library modules, by name: x/image, and
+# x/text beneath it. That is a deliberate constraint rather than an accident
+# of scope: this library is depended on by public Apache-2.0 programs whose
+# NOTICE files are maintained by hand, and every module a library package
+# compiles in arrives in all of them.
+#
+# The COMMAND admits one more, github.com/wisborg/output, for its progress
+# bars, with the two modules that package needs: go-runewidth and uax29. It
+# is admitted for cmd/ only, and checked as such: a library package that
+# began importing it would fail here. The programs built on this library
+# already depend on output themselves, which is why the command may.
+#
+# Asked of the DIRECT and indirect requires and of what is actually compiled,
+# not of the whole module graph, which lists modules nothing here reaches.
+## deps: check nothing but the admitted modules crept in, and output only into cmd/
 ##
-## Two, not one, since the command started drawing place names. x/text arrives
-## under x/image/font/opentype -> sfnt -> encoding/charmap, and is admitted BY
-## NAME rather than by loosening the pattern, so a third module is still a
-## failure here and a visible edit to this file and to NOTICE.
+## A module beyond these is still a failure here, and a visible edit to this
+## file, to NOTICE and to docs/architecture.md.
+LIBRARY_MODULES := golang.org/x/image golang.org/x/text
+COMMAND_MODULES := github.com/wisborg/output github.com/mattn/go-runewidth github.com/clipperhouse/uax29
 deps:
-	@bad=$$(go mod edit -json | sed -n 's/.*"Path": "\(.*\)".*/\1/p' | grep -v '^golang.org/x/image$$' | grep -v '^golang.org/x/text$$' | grep -v '^github.com/wisborg/osmbase$$' || true); \
-	  if [ -n "$$bad" ]; then echo "deps: FAILED -- go.mod requires more than x/image and x/text:"; echo "$$bad"; exit 1; fi
-	@bad=$$(go list -deps ./... | grep -E '^[a-z0-9-]+\.[a-z]+/' | grep -v '^golang.org/x/image' | grep -v '^golang.org/x/text' | grep -v '^github.com/wisborg/osmbase' || true); \
-	  if [ -n "$$bad" ]; then echo "deps: FAILED -- these non-stdlib packages are compiled in:"; echo "$$bad"; exit 1; fi
-	@echo "deps: golang.org/x/image and x/text only, in go.mod and in the binary"
+	@admitted='^github.com/wisborg/osmbase$$'; for m in $(LIBRARY_MODULES) $(COMMAND_MODULES); do admitted="$$admitted|^$$m(/v[0-9]+)?$$"; done; \
+	  bad=$$(go mod edit -json | sed -n 's/.*"Path": "\(.*\)".*/\1/p' | grep -Ev "$$admitted" || true); \
+	  if [ -n "$$bad" ]; then echo "deps: FAILED -- go.mod requires modules not admitted:"; echo "$$bad"; exit 1; fi
+	@lib=$$(go list ./... | grep -v '/cmd/'); \
+	  admitted='^github.com/wisborg/osmbase'; for m in $(LIBRARY_MODULES); do admitted="$$admitted|^$$m"; done; \
+	  bad=$$(go list -deps $$lib | grep -E '^[a-z0-9-]+\.[a-z]+/' | grep -Ev "$$admitted" || true); \
+	  if [ -n "$$bad" ]; then echo "deps: FAILED -- these non-stdlib packages are compiled into the library:"; echo "$$bad"; exit 1; fi
+	@admitted='^github.com/wisborg/osmbase'; for m in $(LIBRARY_MODULES) $(COMMAND_MODULES); do admitted="$$admitted|^$$m"; done; \
+	  bad=$$(go list -deps ./cmd/... | grep -E '^[a-z0-9-]+\.[a-z]+/' | grep -Ev "$$admitted" || true); \
+	  if [ -n "$$bad" ]; then echo "deps: FAILED -- these non-stdlib packages are compiled into the command:"; echo "$$bad"; exit 1; fi
+	@echo "deps: the library compiles in x/image and x/text only; the command adds output, go-runewidth and uax29"
 
 ## clean: remove the binary and empty .scratch/
 clean:

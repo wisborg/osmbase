@@ -136,7 +136,24 @@ maintained by hand, and every module that arrives here arrives in both of them.
 | `github.com/paulmach/orb` | MIT, but its MVT path routes every geometry through GeoJSON, and the module pulls `go.mongodb.org/mongo-driver` for BSON. |
 | `github.com/paulmach/osm` | MIT and pure Go, and it pulls `orb`, and thence the above. |
 | `github.com/fogleman/gg` | MIT, and already in fitdash's tree so it would have been free *there*. It reaches `github.com/golang/freetype`, which is FTL/GPLv2 dual-licensed and whose advertising clause makes the credit mandatory rather than courteous. Text arrived here eventually, and went through `x/image/font/opentype` instead — same capability, no new licence to weigh. |
-| `github.com/wisborg/output` | Would give the `locate` command CSV, YAML and table output for free. It brings `uax29` and `go-runewidth`, taking this module from two dependencies to five, and the consumer that wants those formats also wants FIT decoding, which is a sixth. Both belong in a program built on this library rather than in it. See [locate.md](locate.md). |
+| `github.com/wisborg/output` as a LIBRARY dependency | Would give the `locate` command CSV, YAML and table output for free. It brings `uax29` and `go-runewidth`, taking this module from two dependencies to five, and the consumer that wants those formats also wants FIT decoding, which is a sixth. Both belong in a program built on this library rather than in it. See [locate.md](locate.md). The command does use its progress package; see below. |
+
+### The command's one exception
+
+The command draws its fetch progress with `github.com/wisborg/output/progress`, which
+brings `go-runewidth` and `uax29` with it. It is admitted for `cmd/osmbase` only, and `make
+deps` checks that: the library packages may compile in `x/image` and `x/text` and nothing
+else, so a program built on this library links none of the three, and a library package
+that began importing them fails the check.
+
+The rule above exists because every module this library takes on lands in every program
+built on it, and here that cost is already paid: fitdash and course both depend on `output`,
+and fitdash draws its fetch bar with the same package. What it buys is a progress line that
+is safe anywhere. The ten lines it replaced wrote carriage returns whether or not stderr was
+a terminal, so a piped or logged fetch was its redraws run together on one line, and they
+never measured the terminal, so a long label wrapped and every redraw after it was
+misplaced. The package draws in place on a terminal, never wider than it, and plain periodic
+lines everywhere else -- the same look in all three programs.
 
 `golang.org/x/image` is treated as materially different from a third-party module: it is
 Go-team BSD-3, versioned and released with the toolchain, and already present in the

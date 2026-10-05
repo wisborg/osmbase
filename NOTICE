@@ -12,12 +12,22 @@ gets forgotten by whoever ships the image.
 Software
 -------------------------------------------------------------------------------
 
-go.mod requires two modules, both from the Go project, and both are written
-out in full here so that a third arriving is a visible edit to this file
-rather than a quiet line in go.sum.  The dependency target in the Makefile
-admits these two BY NAME for the same reason.
+The LIBRARY requires two modules, both from the Go project.  The COMMAND
+requires three more, for its progress bars.  All five are written out in full
+here so that another arriving is a visible edit to this file rather than a
+quiet line in go.sum, and the dependency target in the Makefile admits them
+BY NAME for the same reason -- and checks that the command's three are
+compiled into the command alone, never into a library package, so a program
+built on this library links none of them.
+
+Library and command:
 
 golang.org/x/image         Copyright (c) 2009 The Go Authors.  BSD 3-Clause.
+                           The `vector` package rasterizes every filled path
+                           this library draws.  Keeping the library to this
+                           and x/text is a deliberate constraint -- see
+                           docs/architecture.md, "Almost zero third-party
+                           modules".
 
 golang.org/x/text          Copyright (c) 2009 The Go Authors.  BSD 3-Clause.
 
@@ -32,11 +42,26 @@ golang.org/x/text          Copyright (c) 2009 The Go Authors.  BSD 3-Clause.
   The LIBRARY still parses no font and draws no text without one being handed
   in, so a consumer that supplies its own face links neither the parser nor
   the font data.  This dependency is the command's.
-                           The `vector` package rasterizes every filled path
-                           this library draws.  It is the only non-standard-
-                           library import in the module, and keeping it that
-                           way is a deliberate constraint -- see
-                           docs/architecture.md, "Zero third-party modules".
+
+Command only (cmd/osmbase):
+
+github.com/wisborg/output  Copyright 2026 Jesper Wisborg Krogh.  Apache
+                           License 2.0, the same licence as this project.
+                           Its progress package draws the fetch progress
+                           bars: redrawn in place on a terminal and never
+                           wider than it, plain periodic lines when the
+                           output is redirected.  fitdash and course draw
+                           theirs with the same package.
+
+github.com/mattn/go-runewidth
+                           Copyright (c) 2016 Yasuhiro Matsumoto.  MIT.
+                           Reached through output/progress, which measures a
+                           line in terminal columns so it never wraps.
+
+github.com/clipperhouse/uax29
+                           Copyright (c) 2020 Matt Sherman.  MIT.  Reached
+                           through output/progress and go-runewidth, which
+                           split text into the characters a reader sees.
 
 There are no other software dependencies.  The PMTiles reader, the Mapbox
 Vector Tile decoder, the OpenStreetMap PBF reader and the rasterizer's path

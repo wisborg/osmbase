@@ -100,7 +100,10 @@ func fillFor(ctx context.Context, w io.Writer, s shortfall) error {
 	if err := a.requireVectorTiles(); err != nil {
 		return err
 	}
-	// The sequence is fetch.Fill's; what is printed about it is ours.
+	// The sequence is fetch.Fill's; what is printed about it is ours. The
+	// bar is started once the plan says what there is to fetch, and stopped
+	// before anything else is written.
+	var bar *fetchBar
 	res, err := fetch.Fill(ctx, s.root, a.Archive, attributionOf(a, w),
 		acquire.Request{Bounds: s.bounds, MaxZoom: int(s.zoom)},
 		func(plan *acquire.Plan) {
@@ -110,12 +113,14 @@ func fillFor(ctx context.Context, w io.Writer, s shortfall) error {
 				return
 			}
 			a.Silence()
-		}, progressTo(w))
+			bar = startFetchBar(w, "map data", plan.Transfer)
+		}, func(pr acquire.Progress) { bar.update(pr) })
+	bar.stop()
 	if err != nil {
 		return err
 	}
 	if res.Written > 0 {
-		fmt.Fprintf(w, "\n%-12s %d tiles in %d requests, %s\n", "fetched", res.Written, res.Requests, humanBytes(res.Transfer))
+		fmt.Fprintf(w, "%-12s %d tiles in %d requests, %s\n", "fetched", res.Written, res.Requests, humanBytes(res.Transfer))
 	}
 	return nil
 }

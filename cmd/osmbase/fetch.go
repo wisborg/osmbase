@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wisborg/output/progress"
+
 	"github.com/wisborg/osmbase/acquire"
 	osmlocate "github.com/wisborg/osmbase/locate"
 	"github.com/wisborg/osmbase/slice"
@@ -203,20 +205,22 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// part.
 	a.Silence()
 	if !plan.Empty() {
-		res, err := a.Fetch(ctx, plan, src, progressTo(stderr))
+		bar := startFetchBar(stderr, "map data", plan.Transfer)
+		res, err := a.Fetch(ctx, plan, src, bar.update)
+		bar.stop()
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stderr, "\n")
 		writeFetchResult(stdout, res, plan, root, st)
 	}
 	if tp != nil && !tp.Empty() {
 		tp.Silence()
-		res, err := tp.Fetch(ctx, progressTo(stderr))
+		bar := startFetchBar(stderr, "terrain", tp.Totals().Transfer)
+		res, err := tp.Fetch(ctx, bar.update)
+		bar.stop()
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stderr, "\n")
 		fmt.Fprintf(stdout, "%-12s %d terrain tiles in %d requests, %s in %s, at %s\n",
 			"terrain", res.Written, res.Requests, humanBytes(res.Transfer), res.Elapsed.Round(time.Millisecond), tRoot)
 	}
@@ -382,21 +386,43 @@ func hostOf(archive string) string {
 	return s
 }
 
-// progressTo reports each group as it lands.
+// fetchBar draws a fetch's progress on w: one bar against the plan's bytes,
+// from output's progress package, which fitdash and course draw theirs with.
 //
-// Per group rather than per tile, because a group is one range request and a
-// tile is not an event the network knows about: a hundred and eighty tiles
-// arriving in twenty requests would print a hundred and sixty lines saying
-// nothing happened. The percentage is of BYTES rather than of groups, since
-// groups differ in size by two orders of magnitude.
-func progressTo(w io.Writer) func(acquire.Progress) {
-	return func(pr acquire.Progress) {
-		pct := 0.0
-		if pr.PlanTransfer > 0 {
-			pct = 100 * float64(pr.DoneTransfer) / float64(pr.PlanTransfer)
-		}
-		fmt.Fprintf(w, "\rosmbase: %s  %3.0f%%  %s of %s  ",
-			pr.Label, pct, humanBytes(pr.DoneTransfer), humanBytes(pr.PlanTransfer))
+// Bytes rather than groups or tiles, because a group is one range request
+// and groups differ in size by two orders of magnitude, and a tile is not an
+// event the network knows about. The plan's figure is exact, read from the
+// archive's directories, so the percentage and the time left are honest.
+//
+// The package is what makes the line safe to draw anywhere. On a terminal it
+// is redrawn in place and never wider than the terminal; redirected to a file
+// or a pipe it becomes plain periodic lines with no carriage returns. The line
+// this replaced wrote carriage returns whatever stderr was, so a fetch's log
+// was its redraws run together on one line.
+type fetchBar struct {
+	display *progress.Display
+	bar     *progress.Bar
+}
+
+func startFetchBar(w io.Writer, label string, total int64) *fetchBar {
+	d := progress.New(w, progress.Options{Palette: progress.DefaultGradient()})
+	return &fetchBar{display: d, bar: d.Bar(progress.BarSpec{Label: label, Total: total, Unit: "B"})}
+}
+
+// update is the bar as a fetch's progress callback. A nil bar ignores it,
+// for a fill whose plan turned out to have nothing in it.
+func (f *fetchBar) update(pr acquire.Progress) {
+	if f != nil {
+		f.bar.Set(pr.DoneTransfer)
+	}
+}
+
+// stop finishes the bar and clears the live line, leaving the terminal for
+// the report. Nil-safe, as update is.
+func (f *fetchBar) stop() {
+	if f != nil {
+		f.bar.Done()
+		f.display.Stop()
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/wisborg/osmbase/acquire"
 	"github.com/wisborg/osmbase/fetch"
 	"github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
@@ -153,17 +154,21 @@ func fillTerrain(ctx context.Context, w io.Writer, s terrain.Shortfall, source s
 	if err != nil {
 		return err
 	}
+	var bar *fetchBar
 	res, err := terrain.Fill(ctx, layout, s.Root, s.Bounds, s.MapZoom(), terrainOpener(w), func(p *terrain.Plan) {
 		writeTerrainPlan(w, p, source, s.Root)
 		if p.Empty() {
 			fmt.Fprintln(w, "osmbase: nothing to fetch after all: the archives hold no more of this view than the store does")
+			return
 		}
-	}, progressTo(w))
+		bar = startFetchBar(w, "terrain", p.Totals().Transfer)
+	}, func(pr acquire.Progress) { bar.update(pr) })
+	bar.stop()
 	if err != nil {
 		return err
 	}
 	if res.Written > 0 {
-		fmt.Fprintf(w, "\n%-12s %d terrain tiles in %d requests, %s\n", "fetched", res.Written, res.Requests, humanBytes(res.Transfer))
+		fmt.Fprintf(w, "%-12s %d terrain tiles in %d requests, %s\n", "fetched", res.Written, res.Requests, humanBytes(res.Transfer))
 	}
 	return nil
 }
