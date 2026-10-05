@@ -340,3 +340,39 @@ func TestFetchCopiesTheListOfSources(t *testing.T) {
 		t.Error("the bad list was saved")
 	}
 }
+
+// A terrain fetch's progress is the whole plan's: one total across every
+// archive, climbing once to it rather than starting again at each.
+func TestFetchReportsProgressAcrossEveryArchive(t *testing.T) {
+	l, err := ReadDir(layoutDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := slice.Create(t.TempDir(), slice.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Prepare(context.Background(), l, st, acquire.Request{Bounds: cellBounds(), MaxZoom: 15, CellZoom: st.CellZoom()}, opener)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	total := p.Totals().Transfer
+	var last int64
+	var calls int
+	if _, err := p.Fetch(context.Background(), func(pr acquire.Progress) {
+		calls++
+		if pr.PlanTransfer != total {
+			t.Errorf("progress against %d, want the whole plan's %d", pr.PlanTransfer, total)
+		}
+		if pr.DoneTransfer < last {
+			t.Errorf("progress went back from %d to %d", last, pr.DoneTransfer)
+		}
+		last = pr.DoneTransfer
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls == 0 || last != total {
+		t.Errorf("%d reports, ending at %d of %d", calls, last, total)
+	}
+}

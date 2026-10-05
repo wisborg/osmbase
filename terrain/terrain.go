@@ -505,8 +505,19 @@ type Result struct {
 // Fetch carries out the plan: the global archive first, so that every cell
 // has its shallow zooms before its region adds the deep ones, then each
 // region, then the coverage. progress may be nil; see fetch.Archive.Fetch.
+// Its DoneTransfer and PlanTransfer are the whole plan's, every archive's
+// together, so a percentage climbs once from nothing to all of it rather
+// than starting again at each archive.
 func (p *Plan) Fetch(ctx context.Context, progress func(acquire.Progress)) (Result, error) {
 	var res Result
+	if progress != nil {
+		total, inner := p.Totals().Transfer, progress
+		progress = func(pr acquire.Progress) {
+			pr.DoneTransfer += res.Transfer
+			pr.PlanTransfer = total
+			inner(pr)
+		}
+	}
 	add := func(r acquire.Result) {
 		res.Written += r.Written
 		res.Held += r.Held

@@ -74,6 +74,12 @@ func TestFetchTerrainKeepsItBesideTheMap(t *testing.T) {
 	if !strings.Contains(r.stdout, "terrain tiles") {
 		t.Errorf("the terrain fetch was not reported:\n%s", r.stdout)
 	}
+	// How to draw it is the last thing said, after the terrain's summary,
+	// and says to draw the terrain too.
+	if i, j := strings.Index(r.stdout, "terrain tiles"), strings.Index(r.stdout, "Now: osmbase render"); j < i ||
+		!strings.Contains(r.stdout[j:], "--terrain --out map.png") {
+		t.Errorf("the next step is not last, or omits --terrain:\n%s", r.stdout)
+	}
 
 	r = runCLI(t, "fetch", archive, "--world", "--max-zoom", "0", "--store", store, "--terrain", "--terrain-source", t.TempDir(), "--yes")
 	if r.code == 0 || !strings.Contains(r.stderr, "planet.pmtiles") {
@@ -81,7 +87,7 @@ func TestFetchTerrainKeepsItBesideTheMap(t *testing.T) {
 	}
 }
 
-// countTerrain counts the WebP tiles under a terrain store.
+// countTerrain counts the elevation tiles under a terrain store.
 func countTerrain(t *testing.T, root string) int {
 	t.Helper()
 	n := 0

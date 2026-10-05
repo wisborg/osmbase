@@ -220,6 +220,7 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stdout, "%-12s %d terrain tiles in %d requests, %s in %s, at %s\n",
 			"terrain", res.Written, res.Requests, humanBytes(res.Transfer), res.Elapsed.Round(time.Millisecond), tRoot)
 	}
+	writeNextStep(stdout, root, plan.Bounds, tp != nil)
 	return nil
 }
 
@@ -410,7 +411,17 @@ func writeFetchResult(w io.Writer, res acquire.Result, p *acquire.Plan, root str
 	if n, err := st.Bytes(); err == nil {
 		fmt.Fprintf(w, "%-12s %s at %s\n", "store", humanBytes(n), root)
 	}
-	fmt.Fprintf(w, "\nNow: osmbase render --store %s --lat %.4f --lon %.4f --out map.png\n",
-		root, (p.Bounds.North+p.Bounds.South)/2, (p.Bounds.West+p.Bounds.East)/2)
+}
+
+// writeNextStep says how to draw what was fetched, last of all, so that it
+// is the line left on the screen: after the terrain's summary as well as the
+// map's, and with --terrain when terrain was fetched.
+func writeNextStep(w io.Writer, root string, b slice.Bounds, withTerrain bool) {
+	terrainFlag := ""
+	if withTerrain {
+		terrainFlag = " --terrain"
+	}
+	fmt.Fprintf(w, "\nNow: osmbase render --store %s --lat %.4f --lon %.4f%s --out map.png\n",
+		root, (b.North+b.South)/2, (b.West+b.East)/2, terrainFlag)
 	fmt.Fprintf(w, "Nothing about that reaches the network.\n")
 }
