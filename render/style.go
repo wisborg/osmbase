@@ -106,6 +106,11 @@ const (
 	// between them. A palette that names no Building draws buildings in
 	// Built, as before.
 	RoleBuilding
+
+	// RoleContour is a contour line: a line of equal height, traced from the
+	// terrain under the map. It is drawn only with terrain, and only by a
+	// palette naming a Contour colour.
+	RoleContour
 )
 
 // Palette is the colour for each role.
@@ -157,6 +162,15 @@ type Palette struct {
 	// a palette naming neither draws no shading, which is what every palette
 	// written before terrain did.
 	Shade, Highlight color.RGBA
+
+	// Contour is the colour of contour lines traced from the terrain, the
+	// heavier index lines included; their heights are written in
+	// LabelMinor, or Label. It is map linework and is held to the rules the
+	// rest of the map's inks are: quiet against the background, clear of
+	// every overlay ink, and told apart from every other role. A zero value
+	// draws no contours, which is what every palette written before them
+	// did.
+	Contour color.RGBA
 
 	// Omitted names roles this palette does not draw at all.
 	//
@@ -242,6 +256,8 @@ func (p Palette) colour(r Role) color.RGBA {
 			return p.Building
 		}
 		return p.Built
+	case RoleContour:
+		return p.Contour
 	}
 	return p.Ink
 }

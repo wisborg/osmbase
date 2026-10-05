@@ -433,8 +433,12 @@ func LightPalette() Palette {
 		// 8.8 from the nearest of them, where a darker tan between Built and
 		// Road could not get 6 from both.
 		Building:  color.RGBA{R: 0xd4, G: 0xcf, B: 0xca, A: 0xff},
-		Shade:     color.RGBA{R: 0x89, G: 0x91, B: 0x9d, A: 0xff},
+		Shade:     color.RGBA{R: 0x6e, G: 0x77, B: 0x86, A: 0xff},
 		Highlight: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+		// A pale red-brown, the colour of contours on most printed
+		// maps, and the darkest of it the overlay's accent still reads
+		// on at 3:1.
+		Contour: color.RGBA{R: 0xd0, G: 0xa8, B: 0x98, A: 0xff},
 	}
 }
 
@@ -465,6 +469,7 @@ func DarkPalette() Palette {
 		NoData:    color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
 		Shade:     color.RGBA{A: 0xff},
 		Highlight: color.RGBA{R: 0x50, G: 0x58, B: 0x64, A: 0xff},
+		Contour:   color.RGBA{R: 0x4a, G: 0x38, B: 0x30, A: 0xff},
 	}
 }
 
@@ -527,6 +532,7 @@ func DarkLineworkPalette() Palette {
 		Omitted:   Roles(RoleLand, RoleGreen, RoleBuilt),
 		Shade:     color.RGBA{A: 0xff},
 		Highlight: color.RGBA{R: 0x50, G: 0x58, B: 0x64, A: 0xff},
+		Contour:   color.RGBA{R: 0x4a, G: 0x38, B: 0x30, A: 0xff},
 	}
 }
 

@@ -481,7 +481,7 @@ func TestADarkShadeIsRefusedWhereItSinksTheOverlay(t *testing.T) {
 	}
 	p.Shade = color.RGBA{R: 0x4a, G: 0x55, B: 0x68, A: 0xff}
 	err := p.CheckContrast(render.LightOverlay())
-	if err == nil || !strings.Contains(err.Error(), "Water in shadow") {
-		t.Errorf("a dark shade: %v, want a refusal naming water in shadow", err)
+	if err == nil || !strings.Contains(err.Error(), "Background in shadow") {
+		t.Errorf("a dark shade: %v, want a refusal naming the background in shadow", err)
 	}
 }

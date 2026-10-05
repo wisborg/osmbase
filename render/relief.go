@@ -74,27 +74,38 @@ func exaggeration(z float64) float64 {
 	return max(1, math.Pow(1.6, (13-z)/2))
 }
 
-// shadeIndex is where the shade goes among the style's rules: after its
-// leading run of fill-only rules -- the ground and what covers it -- and
-// before the first rule that draws a line or a building. A hill is under
-// the roads, not over them: shading a road changes its colour along its
-// length, and the road is the thing the map is read by. And a building is
-// not ground: bare-earth elevation fills the ground under a removed building
-// with flat triangles, and shading a footprint draws those as smudges on
-// its roof.
+// shadeIndex is where the shade and the contours go among the style's
+// rules: after its leading run of fill-only rules -- the ground and what
+// covers it -- and before the first rule that draws a line, water or a
+// building. A hill is under the roads, not over them: shading a road
+// changes its colour along its length, and the road is the thing the map is
+// read by. Water is not ground to contour: its surface's noise drew lines
+// across every lake and estuary, and an estuary at sea level was labelled
+// "0" along its length. And a building is not ground either: bare-earth
+// elevation fills the ground under a removed building with flat triangles,
+// and shading a footprint draws those as smudges on its roof.
 func shadeIndex(rules []Rule) int {
 	for i, r := range rules {
-		if !r.Paint.Fill || r.Paint.Width != 0 || len(r.Paint.Widths) != 0 || r.Paint.Role == RoleBuilding {
+		if !r.Paint.Fill || r.Paint.Width != 0 || len(r.Paint.Widths) != 0 || r.Paint.Role == RoleBuilding || r.Paint.Role == RoleWater {
 			return i
 		}
 	}
 	return len(rules)
 }
 
-// relief is the shading of one view, worked out before anything is drawn.
+// relief is the ground under one view, worked out before anything is drawn:
+// its heights, and the shading and contours drawn from them.
 type relief struct {
+	// field is the height at every output pixel, with a pixel of margin all
+	// round, fw by fh, smoothed at street zooms; NaN where none is known.
+	field  []float32
+	fw, fh int
+	// mpp is the ground distance one output pixel spans at the view's
+	// centre, in metres.
+	mpp float64
 	// amount is the tint at each output pixel: negative toward the shade,
-	// positive toward the highlight, NaN where no height is known.
+	// positive toward the highlight, NaN where no height is known. Nil when
+	// the palette draws no shading.
 	amount []float32
 	// zoom is the deepest elevation zoom any of the view was drawn from.
 	zoom uint8
@@ -114,13 +125,14 @@ type demTile struct {
 	ok     bool
 }
 
-// computeRelief works out the shading of the view projected by p from src.
+// computeRelief works out the ground under the view projected by p from
+// src, and its shading when shade is set.
 //
 // The heights are read at the elevation zoom nearest one sample per output
 // pixel -- a tile zoom less one, since an elevation tile is 512 pixels where
 // the map's zoom counts 256 -- interpolated to every output pixel, and the
 // slope at each pixel taken in metres from its neighbours.
-func computeRelief(src HeightSource, p projection) (*relief, error) {
+func computeRelief(src HeightSource, p projection, shade bool) (*relief, error) {
 	dz := uint8(0)
 	if p.tileZoom > 0 {
 		dz = p.tileZoom - 1
@@ -153,8 +165,17 @@ func computeRelief(src HeightSource, p projection) (*relief, error) {
 	// varies across a view, but the blur radius is a coarse number and one
 	// value serves the whole picture. The slope below uses each row's own.
 	centreLat := latOfWorldY(p.originY + float64(p.height)/2/p.scale)
-	if r := int(math.Round(smoothMetres / metresPerPixel(p, centreLat))); r >= 1 {
+	mpp := metresPerPixel(p, centreLat)
+	if r := int(math.Round(smoothMetres / mpp)); r >= 1 {
 		boxBlur(field, w, h, min(r, maxSmooth))
+	}
+	rl := &relief{
+		field: field, fw: w, fh: h, mpp: mpp,
+		zoom:   g.deepest,
+		shaded: float64(known) / float64(p.width*p.height),
+	}
+	if !shade {
+		return rl, nil
 	}
 
 	ex := exaggeration(p.zoom)
@@ -177,11 +198,8 @@ func computeRelief(src HeightSource, p projection) (*relief, error) {
 			amount[y*p.width+x] = float32(shadeOf(dzdx, dzdy, sinAlt, cosAlt))
 		}
 	}
-	return &relief{
-		amount: amount,
-		zoom:   g.deepest,
-		shaded: float64(known) / float64(p.width*p.height),
-	}, nil
+	rl.amount = amount
+	return rl, nil
 }
 
 // shadeOf is the tint for a surface rising dzdx to the east and dzdy to the
@@ -352,6 +370,9 @@ func blurLine(f []float32, stride, n, r int, tmp []float32) {
 
 // apply tints the surface by the relief.
 func (rl *relief) apply(s *raster.Surface, pal Palette) {
+	if rl.amount == nil {
+		return
+	}
 	img := s.RGBA()
 	dark, light := pal.Shade, pal.Highlight
 	for y := 0; y < img.Rect.Dy(); y++ {
@@ -409,7 +430,6 @@ func (p Palette) shadedSurfaces() []namedColour {
 	all := []namedColour{
 		{name: "Background", c: p.Background},
 		{name: "Land", c: p.Land, role: RoleLand},
-		{name: "Water", c: p.Water, role: RoleWater},
 		{name: "Green", c: p.Green, role: RoleGreen},
 		{name: "Built", c: p.Built, role: RoleBuilt},
 	}

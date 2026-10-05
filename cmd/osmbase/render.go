@@ -540,8 +540,13 @@ func writeRenderReport(w io.Writer, out string, v render.View, res *render.Resul
 	t.row("covered", percent(res.Covered))
 	t.row("overzoomed", fmt.Sprintf("%s of the image, drawn from a shallower tile", percent(res.Overzoomed)))
 	t.row("no data", fmt.Sprintf("%s of the image, hatched in %d rectangles", percent(1-res.Covered), len(res.Gaps)))
-	if res.Shaded > 0 {
-		t.row("terrain", fmt.Sprintf("%s of the image shaded, from zoom %d", percent(res.Shaded), res.TerrainZoom))
+	if res.TerrainCovered > 0 {
+		t.row("terrain", fmt.Sprintf("%s of the image, from zoom %d", percent(res.TerrainCovered), res.TerrainZoom))
+	}
+	if res.ContourInterval > 0 {
+		iv := strconv.FormatFloat(res.ContourInterval, 'f', -1, 64)
+		ix := strconv.FormatFloat(res.ContourInterval*5, 'f', -1, 64)
+		t.row("contours", fmt.Sprintf("every %s m, heavier and labelled every %s m", iv, ix))
 	}
 	// Converted, like the credit drawn into the image and for the same
 	// reason: the archive writes its attribution as HTML because in a browser

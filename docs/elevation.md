@@ -1,6 +1,6 @@
 # Elevation: where terrain would come from
 
-Hillshading is built and contours are not; see "Where it stands" at the end. This is the
+Hillshading and contours are built; see "Where it stands" at the end. This is the
 comparison behind choosing an elevation source, for two things that might come later: a map
 that shows the shape of the ground -- hillshading and contour lines under the streets, the
 look of Thunderforest's Outdoors style -- and, much further out, a flyover video of an
@@ -172,19 +172,21 @@ Then, separately and later, the tilted view and the flyover.
 
 ### Where it stands
 
-Steps 1 to 3 are built. `osmbase fetch --terrain` fills a terrain store beside the map's and
+All four steps are built. `osmbase fetch --terrain` fills a terrain store beside the map's and
 copies the source list into it; the `dem` package decodes the tiles; and `osmbase render
---terrain` shades under the map.
+--terrain` shades under the map and draws contours over the shading, offering first to fetch
+whatever terrain the view lacks.
 
 What the hillshade does, and why:
 
 - **Heights at one sample per pixel.** The elevation zoom is the view's tile zoom less one, since
   an elevation tile is 512 pixels; a zoom the store lacks is interpolated from the nearest
   shallower one, as the vector tiles overzoom.
-- **Under the roads and the buildings.** The shade tints the style's leading run of area fills --
-  the ground and its cover -- and stops at the first line or building. A building is not ground:
-  bare-earth data fills the ground under a removed building with flat triangles, and shading a
-  footprint drew them as smudges on its roof.
+- **Under the roads, the water and the buildings.** The shade and the contours go on the style's
+  leading run of area fills -- the ground and its cover -- and stop at the first line, water or
+  building. Water is not ground to contour: its surface's noise drew lines across every lake.
+  A building is not ground either: bare-earth data fills the ground under a removed building
+  with flat triangles, and shading a footprint drew them as smudges on its roof.
 - **Strength from the slopes themselves, eased.** A tint toward the palette's Shade on slopes
   facing away from a north-west sun 45° up and toward its Highlight on slopes facing it, eased
   past a knee so a mountain is darker than a hillside but not burnt out. Flat ground stays flat:
@@ -196,8 +198,33 @@ What the hillshade does, and why:
   would call a hill. Coarser than a few metres a pixel it is under a pixel and skipped.
 - **The contrast check sees the shade.** The steepest slopes go 45% of the way to Shade or
   Highlight, and the check holds every shaded surface at those extremes to the same overlay
-  and context rules as on flat ground. It is what set the light palette's shade: the slate
-  first tried left the overlay's accent at 2.3:1 on water in shadow.
+  and context rules as on flat ground. It is what sets the light palette's shade, #6e7786, the
+  darkest of its hue the overlay's accent still reads on at 3:1 on the background in shadow.
+  While water was shaded too, the limit was water in shadow and the shade had to be paler.
+What the contours do, and why:
+
+- **Traced from the same heights.** Marching squares over the heights the shading is drawn from,
+  so a line and the shadow beside it never disagree, with the pieces joined through the cell
+  edges they share into lines a stroke can join and a label follow. A line stops at unknown
+  ground rather than being interpolated across it.
+- **An interval for the zoom, widened for steep ground.** 100 m at zoom 11, then 50, 20, 10,
+  and 5 m from zoom 16 -- and no contours shallower than 11, where a pixel is over a hundred
+  metres and the shading says it better. Where the steepest ground in view (the 95th percentile,
+  so one cliff does not decide) would put lines closer than four pixels, the next step up is
+  taken: a mountainside of lines a pixel apart is a solid band that says "steep" and nothing
+  else. Hornsby's gullies take each zoom's interval one step wider.
+- **Every fifth line heavier and labelled.** The steps are 5, 10, 20, 50, 100, 200, 500 and
+  1000 m, chosen so five intervals is a round height too. The heights are written along the
+  index lines with the street-name placement, below every name in priority, and the lines are
+  cut under them as on a printed map: labels are placed from the tiles before anything is drawn,
+  so the contours, drawn into a layer of their own, are cut where the heights will go.
+- **No sea level, no specks.** The 0 m line is the coastline, which the water already draws; its
+  heights were written down the middle of every estuary. Lines under 20 pixels long -- rings
+  round garden beds, stubs at the edge -- are the data's texture rather than the land's shape.
+- **Map linework, held to the same rules.** Palette.Contour is checked as every other map ink
+  is, which rejected the darker browns for the light palette: #d0a898 is the darkest the
+  overlay's accent reads on at 3:1. A palette with no Contour draws none.
+
 - **A short credit in the image, the full notice beside it.** The full notice is the sources
   whose coverage polygons cross the view, holes and all, with Copernicus's dictated sentence for
   GLO-30. Mapterhorn's coverage places GLO-30 under the national data too -- its footprint is

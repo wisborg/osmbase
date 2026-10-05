@@ -247,6 +247,9 @@ type candidate struct {
 	scale float64
 	// onRoad carries the rule's OnRoad.
 	onRoad bool
+	// contour marks a contour's height, which the contour lines are cut
+	// under rather than drawn through.
+	contour bool
 }
 
 // labelRank is how important a feature is among others from the same rule.
@@ -345,7 +348,7 @@ func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 			drawn[c.text] = append(drawn[c.text], pt{X: c.x, Y: c.y})
 		}
 		out = append(out, placed{text: c.text, box: box, quad: q, face: c.face, minor: c.minor,
-			along: c.along, x: c.x, y: c.y, angle: c.angle, scale: c.scale, onRoad: c.onRoad})
+			along: c.along, x: c.x, y: c.y, angle: c.angle, scale: c.scale, onRoad: c.onRoad, contour: c.contour})
 	}
 	return out
 }
@@ -384,6 +387,7 @@ type placed struct {
 	x, y, angle float64
 	scale       float64
 	onRoad      bool
+	contour     bool
 }
 
 // labelBox is the space a candidate's text would occupy, padded.

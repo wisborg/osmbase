@@ -161,7 +161,7 @@ func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
 	if n := countTerrain(t, store+"-terrain"); n == 0 {
 		t.Error("the render fetched no terrain into the store beside the map's")
 	}
-	if !strings.Contains(r.stdout, "100.0% of the image shaded") || !strings.Contains(r.stdout, "Elevation: "+dir) {
+	if !strings.Contains(r.stdout, "100.0% of the image, from zoom") || !strings.Contains(r.stdout, "Elevation: "+dir) {
 		t.Errorf("the report says nothing of the terrain:\n%s", r.stdout)
 	}
 	if !strings.Contains(r.stdout, "Wherever you publish it, give this notice with it:\nElevation: "+dir) {

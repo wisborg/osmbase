@@ -79,19 +79,29 @@ type spot struct{ x, y, angle float64 }
 // corner, labels nothing and is clutter, so it is not drawn. The first spot
 // is the one nearest the middle.
 func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h float64) []spot {
-	var best []pt
-	var bestLen float64
+	parts := make([][]pt, 0, len(lines))
 	for _, line := range lines {
-		if len(line) < 2 {
-			continue
-		}
 		ps := make([]pt, len(line))
-		var n float64
 		for i, p := range line {
 			ps[i] = tr.apply(p.X, p.Y)
-			if i > 0 {
-				n += math.Hypot(ps[i].X-ps[i-1].X, ps[i].Y-ps[i-1].Y)
-			}
+		}
+		parts = append(parts, ps)
+	}
+	return placeAlongPixels(parts, w, h)
+}
+
+// placeAlongPixels is placeAlong for lines already in surface pixels: a
+// contour traced from the view's own heights has no tile to come from.
+func placeAlongPixels(parts [][]pt, w, h float64) []spot {
+	var best []pt
+	var bestLen float64
+	for _, ps := range parts {
+		if len(ps) < 2 {
+			continue
+		}
+		var n float64
+		for i := 1; i < len(ps); i++ {
+			n += math.Hypot(ps[i].X-ps[i-1].X, ps[i].Y-ps[i-1].Y)
 		}
 		if n > bestLen {
 			best, bestLen = ps, n

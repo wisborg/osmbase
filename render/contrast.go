@@ -100,6 +100,11 @@ func (p Palette) context() []namedColour {
 	if (p.Building != color.RGBA{}) {
 		all = append(all, namedColour{name: "Building", c: p.Building, role: RoleBuilding})
 	}
+	// A contour is map linework like any other, drawn only by a palette
+	// that names it.
+	if (p.Contour != color.RGBA{}) {
+		all = append(all, namedColour{name: "Contour", c: p.Contour, role: RoleContour})
+	}
 	drawn := make([]namedColour, 0, len(all))
 	for _, c := range all {
 		if !p.Omits(c.role) {

@@ -51,6 +51,7 @@ import (
 	"fmt"
 	"golang.org/x/image/font"
 	"image"
+	"image/color"
 
 	"github.com/wisborg/osmbase/raster"
 )
@@ -253,13 +254,20 @@ type Result struct {
 	// credit has to appear wherever it is shown.
 	Attribution string
 
-	// Shaded is the fraction of the image hillshading was worked out for:
-	// 0 with no terrain source, and short of 1 where the source held no
-	// height for part of the view, which is drawn unshaded. TerrainZoom is
-	// the deepest elevation zoom read; past it the heights are interpolated
-	// from a shallower tile and the shading is smoother than the ground.
-	Shaded      float64
-	TerrainZoom uint8
+	// TerrainCovered is the fraction of the image a height was found for,
+	// which is what the shading and the contours are drawn over: 0 with no
+	// terrain source or a palette drawing neither, and short of 1 where the
+	// source held no height for part of the view, which is drawn without
+	// them. TerrainZoom is the deepest elevation zoom read; past it the
+	// heights are interpolated from a shallower tile and the relief is
+	// smoother than the ground.
+	TerrainCovered float64
+	TerrainZoom    uint8
+
+	// ContourInterval is the height between contour lines, in metres, and 0
+	// where none were drawn: at a zoom too shallow for them, or with a
+	// palette naming no Contour. Every fifth line is heavier and labelled.
+	ContourInterval float64
 
 	// TerrainNotice is the options' TerrainNotice when anything was shaded,
 	// and empty otherwise: the full notice the elevation asks to be given
@@ -294,9 +302,17 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	// The relief is worked out before anything is drawn, so that a damaged
 	// elevation tile fails the render rather than leaving half a map.
 	var rl *relief
-	if r.terrain != nil && r.palette.shades() {
-		if rl, err = computeRelief(r.terrain, p); err != nil {
+	var contours []contourLine
+	var interval float64
+	drawContours := r.palette.Contour != (color.RGBA{}) && !r.palette.Omits(RoleContour)
+	if r.terrain != nil && (r.palette.shades() || drawContours) {
+		if rl, err = computeRelief(r.terrain, p, r.palette.shades()); err != nil {
 			return nil, err
+		}
+		if drawContours {
+			if iv, ok := rl.interval(p.zoom); ok {
+				interval, contours = iv, rl.contours(iv)
+			}
 		}
 	}
 
@@ -304,10 +320,23 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	surface.Background(r.palette.Background)
 
 	d := drawer{p: p, palette: r.palette, language: r.language}
+
+	// Labels are placed before anything is drawn -- where they go depends
+	// on the tiles and the contours, not on the pixels -- because the
+	// contours are cut under their heights as they are drawn. The
+	// contours' heights compete with the names for room, below all of them.
+	var labels []placed
+	if r.labelFace != nil && (len(r.style.Labels) > 0 || len(contours) > 0) {
+		cands := d.collectLabels(r.style.Labels, r.style.LabelGrowth, tiles, p.tileZoom, r.faceFor)
+		cands = append(cands, contourLabels(contours, r.labelFace)...)
+		labels = placeLabels(cands, r.labelPad, surface.Bounds())
+	}
+
 	shadeAt := shadeIndex(r.style.Rules)
 	for i := range r.style.Rules {
 		if i == shadeAt && rl != nil {
 			rl.apply(surface, r.palette)
+			d.drawContours(surface, contours, labels)
 		}
 		rule := &r.style.Rules[i]
 		if !rule.appliesAt(p.tileZoom) {
@@ -329,17 +358,15 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	}
 	if shadeAt == len(r.style.Rules) && rl != nil {
 		rl.apply(surface, r.palette)
+		d.drawContours(surface, contours, labels)
 	}
 
 	// Labels last of all except the hatch, so that a name is never drawn over
 	// by a road that happened to come after it in the rule order. They are
 	// collected from the same tiles the geometry came from, so a label cannot
 	// name a feature the picture does not show.
-	if r.labelFace != nil && len(r.style.Labels) > 0 {
-		cands := d.collectLabels(r.style.Labels, r.style.LabelGrowth, tiles, p.tileZoom, r.faceFor)
-		for _, l := range placeLabels(cands, r.labelPad, surface.Bounds()) {
-			drawLabel(surface.RGBA(), l, r.palette, r.labelPad, r.faceFor)
-		}
+	for _, l := range labels {
+		drawLabel(surface.RGBA(), l, r.palette, r.labelPad, r.faceFor)
 	}
 
 	// The hatch goes on last so that it is over everything, including any ink a
@@ -358,17 +385,18 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	}
 
 	return &Result{
-		Image:          surface.RGBA(),
-		Zoom:           p.tileZoom,
-		ContinuousZoom: p.zoom,
-		TilesRequested: cov.requested,
-		TilesDrawn:     cov.resolved,
-		Covered:        cov.fraction(cov.covered),
-		Overzoomed:     cov.fraction(cov.over),
-		Gaps:           cov.gaps,
-		Attribution:    credit,
-		Shaded:         shaded,
-		TerrainZoom:    terrainZoom,
-		TerrainNotice:  notice,
+		Image:           surface.RGBA(),
+		Zoom:            p.tileZoom,
+		ContinuousZoom:  p.zoom,
+		TilesRequested:  cov.requested,
+		TilesDrawn:      cov.resolved,
+		Covered:         cov.fraction(cov.covered),
+		Overzoomed:      cov.fraction(cov.over),
+		Gaps:            cov.gaps,
+		Attribution:     credit,
+		TerrainCovered:  shaded,
+		TerrainZoom:     terrainZoom,
+		ContourInterval: interval,
+		TerrainNotice:   notice,
 	}, nil
 }

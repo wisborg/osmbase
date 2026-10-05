@@ -98,8 +98,8 @@ func TestRelief_TheSunlitFlankIsLitAndTheRoadIsNotShaded(t *testing.T) {
 	for _, x := range []int{128, 384} {
 		at(t, img, x, 254, testPalette.Road, "a road over shaded ground keeps its colour")
 	}
-	if res.Shaded != 1 || res.TerrainZoom != 0 {
-		t.Errorf("Shaded %v, TerrainZoom %d; want 1 and 0", res.Shaded, res.TerrainZoom)
+	if res.TerrainCovered != 1 || res.TerrainZoom != 0 {
+		t.Errorf("Shaded %v, TerrainZoom %d; want 1 and 0", res.TerrainCovered, res.TerrainZoom)
 	}
 	if res.Attribution != "map | ground" {
 		t.Errorf("credit %q, want the terrain's after the map's", res.Attribution)
@@ -131,8 +131,8 @@ func TestRelief_NothingToShadeChangesNothing(t *testing.T) {
 		if !bytes.Equal(res.Image.Pix, plain.Pix) {
 			t.Errorf("%s: the image differs from one without terrain", c.name)
 		}
-		if got := res.Shaded > 0; got != c.shaded {
-			t.Errorf("%s: Shaded %v", c.name, res.Shaded)
+		if got := res.TerrainCovered > 0; got != c.shaded {
+			t.Errorf("%s: Shaded %v", c.name, res.TerrainCovered)
 		}
 		if want := map[bool]string{true: "map | ground", false: "map"}[c.shaded]; res.Attribution != want {
 			t.Errorf("%s: credit %q, want %q", c.name, res.Attribution, want)
@@ -140,5 +140,36 @@ func TestRelief_NothingToShadeChangesNothing(t *testing.T) {
 		if got := res.TerrainNotice != ""; got != c.shaded {
 			t.Errorf("%s: notice %q", c.name, res.TerrainNotice)
 		}
+	}
+}
+
+// Contours are drawn by a palette naming a Contour colour and not omitting
+// the role, at a zoom deep enough for them, and the result says at what
+// interval.
+func TestRelief_ContoursFollowThePalette(t *testing.T) {
+	src := newSource()
+	src.put(t, 12, 2048, 1360, wholeTile("earth", ""))
+	v := tileView(t, 12, 2048, 1360, 2048, 1360, 256)
+	ramp := heights{size: 64, h: func(i, j int) float32 { return float32(i) * 1e5 }}
+
+	with := shadingPalette()
+	with.Contour = color.RGBA{R: 0xa0, G: 0x60, B: 0x40, A: 0xff}
+	if res := drawWith(t, src, v, with, ramp); res.ContourInterval == 0 {
+		t.Error("a palette with a Contour colour drew no contours")
+	}
+	omitting := with
+	omitting.Omitted = render.Roles(render.RoleContour)
+	for name, pal := range map[string]render.Palette{"no Contour colour": shadingPalette(), "Contour omitted": omitting} {
+		if res := drawWith(t, src, v, pal, ramp); res.ContourInterval != 0 {
+			t.Errorf("%s: contours every %v m", name, res.ContourInterval)
+		}
+	}
+	// A palette drawing contours and no shading still reads the terrain,
+	// and owes its credit.
+	only := testPalette
+	only.Contour = with.Contour
+	res := drawWith(t, src, v, only, ramp)
+	if res.ContourInterval == 0 || res.TerrainCovered != 1 || res.Attribution != "map | ground" {
+		t.Errorf("contours alone: interval %v, covered %v, credit %q", res.ContourInterval, res.TerrainCovered, res.Attribution)
 	}
 }
