@@ -133,6 +133,21 @@ type Options struct {
 	// Thailand can be read by somebody who cannot read Thai. Empty draws
 	// names as the place writes them.
 	Language string
+
+	// Terrain is the height of the ground, for hillshading under the map.
+	// Nil draws no shading, which is what every render did before terrain
+	// existed and is right for a caller that has not fetched any: terrain
+	// is an opt-in, because fetching it tells somebody where the map is.
+	//
+	// The shade is drawn in the palette's Shade and Highlight; a palette
+	// naming neither draws no shading even with a source here.
+	Terrain HeightSource
+
+	// TerrainAttribution is the credit the elevation data requires, passed
+	// through to Result.Attribution after the map's own when anything was
+	// shaded. As for Attribution, an empty string means the caller has not
+	// been told one, not that there is nothing to credit.
+	TerrainAttribution string
 }
 
 // Renderer draws views from one tile source with one style.
@@ -141,14 +156,16 @@ type Options struct {
 // and used for every view. It is not safe for concurrent use unless the
 // TileSource is, which is the source's own contract to state.
 type Renderer struct {
-	src        TileSource
-	style      Style
-	palette    Palette
-	credit     string
-	labelFace  font.Face
-	labelFaces func(float64) font.Face
-	labelPad   int
-	language   string
+	src           TileSource
+	style         Style
+	palette       Palette
+	credit        string
+	labelFace     font.Face
+	labelFaces    func(float64) font.Face
+	labelPad      int
+	language      string
+	terrain       HeightSource
+	terrainCredit string
 }
 
 // faceFor is the face a rule's labels are drawn in, falling back to the base
@@ -185,7 +202,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 	return &Renderer{
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
-		language: o.Language,
+		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution,
 	}, nil
 }
 
@@ -226,6 +243,14 @@ type Result struct {
 	// unchanged. A rendered map is a Produced Work under the ODbL and the
 	// credit has to appear wherever it is shown.
 	Attribution string
+
+	// Shaded is the fraction of the image hillshading was worked out for:
+	// 0 with no terrain source, and short of 1 where the source held no
+	// height for part of the view, which is drawn unshaded. TerrainZoom is
+	// the deepest elevation zoom read; past it the heights are interpolated
+	// from a shallower tile and the shading is smoother than the ground.
+	Shaded      float64
+	TerrainZoom uint8
 }
 
 // Render draws the view.
@@ -252,11 +277,24 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 			p.tileZoom, cov.requested, ErrNoCoverage)
 	}
 
+	// The relief is worked out before anything is drawn, so that a damaged
+	// elevation tile fails the render rather than leaving half a map.
+	var rl *relief
+	if r.terrain != nil && r.palette.shades() {
+		if rl, err = computeRelief(r.terrain, p); err != nil {
+			return nil, err
+		}
+	}
+
 	surface := raster.NewSurface(p.width, p.height)
 	surface.Background(r.palette.Background)
 
 	d := drawer{p: p, palette: r.palette, language: r.language}
+	shadeAt := shadeIndex(r.style.Rules)
 	for i := range r.style.Rules {
+		if i == shadeAt && rl != nil {
+			rl.apply(surface, r.palette)
+		}
 		rule := &r.style.Rules[i]
 		if !rule.appliesAt(p.tileZoom) {
 			continue
@@ -274,6 +312,9 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		// the nesting is trap T1 and it is enforced by where the loop is
 		// rather than by a comment asking for it.
 		d.drawRule(surface, rule, tiles, r.palette.colour(rule.Paint.Role))
+	}
+	if shadeAt == len(r.style.Rules) && rl != nil {
+		rl.apply(surface, r.palette)
 	}
 
 	// Labels last of all except the hatch, so that a name is never drawn over
@@ -293,6 +334,14 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	// that statement in the one place the picture is meant to be honest.
 	d.hatch(surface, cov.gaps)
 
+	credit := r.credit
+	var shaded float64
+	var terrainZoom uint8
+	if rl != nil && rl.shaded > 0 {
+		shaded, terrainZoom = rl.shaded, rl.zoom
+		credit = joinCredits(credit, r.terrainCredit)
+	}
+
 	return &Result{
 		Image:          surface.RGBA(),
 		Zoom:           p.tileZoom,
@@ -302,6 +351,8 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		Covered:        cov.fraction(cov.covered),
 		Overzoomed:     cov.fraction(cov.over),
 		Gaps:           cov.gaps,
-		Attribution:    r.credit,
+		Attribution:    credit,
+		Shaded:         shaded,
+		TerrainZoom:    terrainZoom,
 	}, nil
 }

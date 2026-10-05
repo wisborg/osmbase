@@ -149,6 +149,15 @@ type Palette struct {
 	// set it and say so in their own label rules.
 	Label color.RGBA
 
+	// Shade and Highlight are what hillshading tints the ground toward:
+	// Shade on slopes facing away from the light, Highlight on those facing
+	// it. The steepest slopes go 45% of the way, and CheckContrast holds the
+	// surfaces at that extreme to its rules, so these are chosen knowing how
+	// far they reach. A zero value draws that side of the relief not at all;
+	// a palette naming neither draws no shading, which is what every palette
+	// written before terrain did.
+	Shade, Highlight color.RGBA
+
 	// Omitted names roles this palette does not draw at all.
 	//
 	// It exists because "invisible" and "absent" are different things and

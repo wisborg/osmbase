@@ -468,3 +468,20 @@ func TestAMinorLabelInkTooQuietToReadIsRefused(t *testing.T) {
 		t.Errorf("the refusal does not name the ink at fault, so it cannot be acted on: %v", err)
 	}
 }
+
+// A shade dark enough to look good on its own can sink the ground under it
+// past what an overlay reads on. The check measures each surface at the
+// darkest the shade takes it, so it refuses the slate first tried for the
+// light palette, which left the overlay's accent at 2.3:1 on water in
+// shadow.
+func TestADarkShadeIsRefusedWhereItSinksTheOverlay(t *testing.T) {
+	p := render.LightPalette()
+	if err := p.CheckContrast(render.LightOverlay()); err != nil {
+		t.Fatalf("precondition: the light palette does not pass as shipped: %v", err)
+	}
+	p.Shade = color.RGBA{R: 0x4a, G: 0x55, B: 0x68, A: 0xff}
+	err := p.CheckContrast(render.LightOverlay())
+	if err == nil || !strings.Contains(err.Error(), "Water in shadow") {
+		t.Errorf("a dark shade: %v, want a refusal naming water in shadow", err)
+	}
+}

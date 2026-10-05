@@ -432,7 +432,9 @@ func LightPalette() Palette {
 		// A warm grey, out of the band of tans Built, Road and Ink share:
 		// 8.8 from the nearest of them, where a darker tan between Built and
 		// Road could not get 6 from both.
-		Building: color.RGBA{R: 0xd4, G: 0xcf, B: 0xca, A: 0xff},
+		Building:  color.RGBA{R: 0xd4, G: 0xcf, B: 0xca, A: 0xff},
+		Shade:     color.RGBA{R: 0x89, G: 0x91, B: 0x9d, A: 0xff},
+		Highlight: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
 	}
 }
 
@@ -460,7 +462,9 @@ func DarkPalette() Palette {
 		// and the place ink is at 7.6, so the whole available range is one
 		// step wide and the difference between the two barely reads. On a
 		// light ground the same idea works, and LightPalette uses it.
-		NoData: color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
+		NoData:    color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
+		Shade:     color.RGBA{A: 0xff},
+		Highlight: color.RGBA{R: 0x50, G: 0x58, B: 0x64, A: 0xff},
 	}
 }
 
@@ -519,8 +523,10 @@ func DarkLineworkPalette() Palette {
 		Label: color.RGBA{R: 0x9a, G: 0xa3, B: 0xb0, A: 0xff},
 		// See DarkPalette: on a dark ground the two label inks are too close
 		// to separate, so this leans on size alone as well.
-		NoData:  color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
-		Omitted: Roles(RoleLand, RoleGreen, RoleBuilt),
+		NoData:    color.RGBA{R: 0xb4, G: 0x56, B: 0x4a, A: 0xff},
+		Omitted:   Roles(RoleLand, RoleGreen, RoleBuilt),
+		Shade:     color.RGBA{A: 0xff},
+		Highlight: color.RGBA{R: 0x50, G: 0x58, B: 0x64, A: 0xff},
 	}
 }
 

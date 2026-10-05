@@ -322,6 +322,26 @@ func (p Palette) CheckContrast(o Overlay) error {
 		}
 	}
 
+	// 1 and 2 again, for the ground under hillshading at its darkest and
+	// lightest. The shade is a tint over the surfaces, and a palette whose
+	// surfaces pass on flat ground can fail on a mountainside: an overlay
+	// that reads on pale land can vanish on pale land in shadow. A palette
+	// drawing no shading has no extremes and nothing to check.
+	for _, ink := range p.shadedExtremes() {
+		if r := ContrastRatio(ink.c, p.Background); r > MaxContextRatio {
+			bad = append(bad, fmt.Sprintf(
+				"%s is %.2f against Background, above %.2f: hillshading makes it read as content rather than as context",
+				ink.name, r, MaxContextRatio))
+		}
+		for _, on := range o.inks() {
+			if r := ContrastRatio(on.c, ink.c); r < MinOverlayRatio {
+				bad = append(bad, fmt.Sprintf(
+					"overlay %s is %.2f against map %s, below %.2f: it would disappear on steep ground",
+					on.name, r, ink.name, MinOverlayRatio))
+			}
+		}
+	}
+
 	// 3. The map must still be legible AS a map.
 	inks := p.distinguishable()
 	for i, a := range inks {
