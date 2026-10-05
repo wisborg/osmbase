@@ -53,7 +53,8 @@ nothing leaves the machine. `osmbase help` says the same thing in the terminal.
 `osmbase fetch ... --terrain` also copies the shape of the ground for the same area --
 elevation -- from [Mapterhorn](https://mapterhorn.com/), a second host that learns the same
 cells, and `osmbase render ... --terrain` then shades the hills under the map from it and
-draws contour lines, every fifth one labelled with its height. Like
+draws contour lines, every fifth one labelled with its height (`--contours=false` leaves the
+lines out and keeps the shading). Like
 the map, terrain a view lacks is offered before it is fetched -- the question names the host
 first, and `--yes` answers it in advance -- and once it is held, rendering contacts nobody. It is kept in a store of its own beside the map's
 (`osmbase-terrain` in your user cache directory), so nothing that draws from the map's store

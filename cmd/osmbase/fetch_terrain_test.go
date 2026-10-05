@@ -124,7 +124,7 @@ func terrainPNG(t *testing.T) []byte {
 // unshaded map as if shaded; with --yes it fetches into the store beside the
 // map's -- then shades from it, credits the elevation, and hands over the
 // full notice. A second render of the same view asks nothing. --terrain-store
-// alone draws nothing.
+// alone draws nothing, and --contours=false drops only the contours.
 func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
 	archive := fixtureArchive(t, 0, 0, 0, worldTile())
 	store := filepath.Join(t.TempDir(), "s")
@@ -177,5 +177,21 @@ func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
 	r = runCLI(t, "render", "--store", store, "--terrain", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
 	if r.code != 0 || strings.Contains(r.stderr, "Fetch the terrain") || strings.Contains(r.stderr, "no terrain was fetched") {
 		t.Errorf("a second render of the same view: exit %d, and it offered again:\n%s", r.code, r.stderr)
+	}
+
+	// Contours are drawn by default, at a zoom deep enough for them, and
+	// --contours=false leaves them out but keeps the shading; without
+	// --terrain the flag has nothing to say.
+	deep := []string{"render", "--store", store, "--terrain", "--lat", "0", "--lon", "0", "--zoom", "12", "--width", "256", "--height", "256", "--out", out}
+	if r := runCLI(t, deep...); r.code != 0 || !strings.Contains(r.stdout, "contours") {
+		t.Errorf("contours by default: exit %d\n%s%s", r.code, r.stdout, r.stderr)
+	}
+	r = runCLI(t, append(deep, "--contours=false")...)
+	if r.code != 0 || strings.Contains(r.stdout, "contours") || !strings.Contains(r.stdout, "100.0% of the image, from zoom") {
+		t.Errorf("--contours=false: exit %d, want the terrain without contours\n%s%s", r.code, r.stdout, r.stderr)
+	}
+	r = runCLI(t, "render", "--store", store, "--contours=false", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
+	if r.code == 0 || !strings.Contains(r.stderr, "add --terrain") {
+		t.Errorf("--contours without --terrain: exit %d\n%s", r.code, r.stderr)
 	}
 }

@@ -71,8 +71,9 @@ examples:
       a 1080p dark map from a local archive, contacting nobody
 
   osmbase render --lat -33.70 --lon 151.10 --terrain --out hornsby.png
-      with the hills shaded, offering to fetch the terrain the store lacks;
-      the image credits the elevation sources as well as OpenStreetMap
+      with the hills shaded and contour lines drawn, offering to fetch the
+      terrain the store lacks; --contours=false leaves the lines out. The
+      image credits the elevation sources as well as OpenStreetMap
 
 `)
 	printFlags(w, fs)
@@ -92,6 +93,7 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		place         placeFlags
 		yes           bool
 		withTerrain   bool
+		contours      bool
 		terrainDir    string
 		terrainSrc    string
 	)
@@ -108,7 +110,8 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		"the zoom is the deepest that holds all of it, unless --zoom says otherwise")
 	place.bind(fs)
 	fs.BoolVar(&yes, "yes", false, "with --store or --terrain, fetch what the view lacks at its zoom without asking first")
-	fs.BoolVar(&withTerrain, "terrain", false, "shade the shape of the ground under the map, from terrain \"osmbase fetch --terrain\" kept; nothing reaches the network")
+	fs.BoolVar(&withTerrain, "terrain", false, "shade the shape of the ground under the map and draw contour lines; terrain the store lacks is offered before it is fetched")
+	fs.BoolVar(&contours, "contours", true, "with --terrain, draw contour lines; --contours=false shades the ground without them")
 	fs.StringVar(&terrainDir, "terrain-store", "", "where the terrain is kept (default: beside the map's store, its name ending -terrain)")
 	fs.StringVar(&terrainSrc, "terrain-source", defaultTerrainSource, "with --terrain, where terrain the store lacks would be fetched from, after asking: a host's address, or a directory of its archives")
 
@@ -191,6 +194,14 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 	} else if terrainDir != "" || flagGiven(fs, "terrain-source") {
 		return usageErrorf("--terrain-store and --terrain-source say where terrain is, and --terrain is what draws it; add --terrain")
+	} else if flagGiven(fs, "contours") {
+		return usageErrorf("--contours says whether --terrain draws contour lines, and there is no terrain without --terrain; add --terrain")
+	}
+	// Left out as an omitted role rather than a cleared colour: the palette
+	// still has a contour colour, and this render is choosing not to draw
+	// it. See Palette.Omitted.
+	if !contours {
+		colours.Omitted |= render.Roles(render.RoleContour)
 	}
 
 	if store != "" {
