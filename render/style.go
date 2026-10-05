@@ -388,6 +388,12 @@ func widthAt(stops []WidthStop, z float64) float32 {
 // landuse, so the unit of ordering cannot be the tile, and a casing has to draw
 // under every road rather than under its own, so the unit cannot be the
 // feature either. See docs/architecture.md, trap T1.
+//
+// One exception, for areas. Consecutive fill rules on one layer -- green
+// landuse, then built-up landuse -- are drawn as one stack, ordered by the
+// features' sort_rank and then with the larger area first, so where two of
+// them overlap the smaller is on top whichever rule draws it; their order in
+// the list breaks only the ties. See stack.go.
 type Rule struct {
 	// Layer is the vector tile layer's name.
 	Layer string

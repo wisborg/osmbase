@@ -333,23 +333,46 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	}
 
 	shadeAt := shadeIndex(r.style.Rules)
-	for i := range r.style.Rules {
+	drawn := func(rule *Rule) bool {
+		// A role the palette omits is not drawn at all, rather than drawn
+		// in a colour that happens to match the background. The picture is
+		// the same and the reasoning is not: see Palette.Omitted.
+		return rule.appliesAt(p.tileZoom) && !r.palette.Omits(rule.Paint.Role)
+	}
+	for i := 0; i < len(r.style.Rules); i++ {
 		if i == shadeAt && rl != nil {
 			rl.apply(surface, r.palette)
 			d.drawContours(surface, contours, labels)
 		}
 		rule := &r.style.Rules[i]
-		if !rule.appliesAt(p.tileZoom) {
-			continue
-		}
-		// A role the palette omits is not drawn at all, rather than drawn in
-		// a colour that happens to match the background. The picture is the
-		// same and the reasoning is not: see Palette.Omitted.
-		if r.palette.Omits(rule.Paint.Role) {
+		if !drawn(rule) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("render: drawing rule %d of %d, layer %q: %w", i, len(r.style.Rules), rule.Layer, err)
+		}
+		// Consecutive fill rules of one layer are one stack, so that where
+		// two of their areas overlap the smaller is on top; see stack.go. A
+		// stack stops where the shade goes in, which is between fills.
+		if stackable(rule) {
+			limit := len(r.style.Rules)
+			if i < shadeAt {
+				limit = shadeAt
+			}
+			end := stackEnd(r.style.Rules, i, limit)
+			var rules []*Rule
+			var inks []color.Color
+			for k := i; k < end; k++ {
+				if rk := &r.style.Rules[k]; drawn(rk) {
+					rules = append(rules, rk)
+					inks = append(inks, r.palette.colour(rk.Paint.Role))
+				}
+			}
+			if len(rules) > 1 {
+				d.drawStack(surface, rules, inks, tiles)
+				i = end - 1
+				continue
+			}
 		}
 		// One call per rule, and the tile loop lives inside it. See drawRule:
 		// the nesting is trap T1 and it is enforced by where the loop is
