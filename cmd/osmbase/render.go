@@ -19,6 +19,7 @@ import (
 	"github.com/wisborg/osmbase/pmtiles"
 	"github.com/wisborg/osmbase/render"
 	"github.com/wisborg/osmbase/slice"
+	"github.com/wisborg/osmbase/terrain"
 )
 
 // A PMTiles reader IS a tile source, with no adapter in between.
@@ -167,7 +168,7 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 
 	// Terrain is read from its own store, which sits beside the map's: the
 	// one drawn from, or the default one when the map is an archive.
-	var ts *terrainStore
+	var ts *terrain.Store
 	if withTerrain {
 		root := terrainDir
 		if root == "" {
@@ -177,7 +178,7 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 					return err
 				}
 			}
-			root = terrainRoot(base)
+			root = terrain.Root(base)
 		}
 		// Measured from the disk and offered before the terrain store is
 		// opened, as the map's is; see offerTerrain.
@@ -185,11 +186,10 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if err != nil {
 			return err
 		}
-		b := slice.Bounds{West: view.Bounds.West, South: view.Bounds.South, East: view.Bounds.East, North: view.Bounds.North}
-		if s, short := measureTerrain(root, b, z); short {
+		if s, short := terrain.Measure(root, viewBounds(view), z); short {
 			offerTerrain(ctx, stderr, s, terrainSrc, yes)
 		}
-		if ts, err = openTerrainStore(root); err != nil {
+		if ts, err = openTerrain(root); err != nil {
 			return err
 		}
 	} else if terrainDir != "" || flagGiven(fs, "terrain-source") {
@@ -239,7 +239,7 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		LabelFace:    labelFace(),
 		LabelFaceFor: labelFaceFor,
 	}
-	if err := ts.into(&o, view); err != nil {
+	if err := terrainInto(ts, &o, view); err != nil {
 		return err
 	}
 	r, err := render.New(a.Reader(), o)
@@ -589,7 +589,7 @@ func percent(f float64) string {
 // here, no URL, and nothing that could contact anyone. slice imports neither
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
-func renderFromStore(ctx context.Context, root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, ts *terrainStore, stdout, stderr io.Writer) error {
+func renderFromStore(ctx context.Context, root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, ts *terrain.Store, stdout, stderr io.Writer) error {
 	// The zoom the renderer will ask the store for, from the renderer.
 	z, _, err := view.Zoom()
 	if err != nil {
@@ -635,7 +635,7 @@ func renderFromStore(ctx context.Context, root, archive string, view render.View
 		LabelFace:    labelFace(),
 		LabelFaceFor: labelFaceFor,
 	}
-	if err := ts.into(&o, view); err != nil {
+	if err := terrainInto(ts, &o, view); err != nil {
 		return err
 	}
 	r, err := render.New(src, o)

@@ -150,7 +150,7 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	tRoot := f.terrainStore
 	if f.terrain {
 		if tRoot == "" {
-			tRoot = terrainRoot(root)
+			tRoot = terrain.Root(root)
 		}
 		layout, err := terrainLayout(ctx, f.terrainSource, stderr)
 		if err != nil {

@@ -1,5 +1,14 @@
-// Package terrain copies elevation onto this machine: the shape of the
-// ground, for a map that shows hills as well as streets.
+// Package terrain copies elevation onto this machine, and opens it for
+// drawing: the shape of the ground, for a map that shows hills as well as
+// streets.
+//
+// A program that draws maps uses four things from it, in this order: Root,
+// where the terrain for a map store is kept; Measure, what a view lacks,
+// read from the disk before anything is asked of anyone; Locate and Fill,
+// after a yes, to fetch it; and Open, for the heights and the credit a
+// render needs. osmbase's own command is built on the same four, so every
+// program sharing a store keeps its terrain in one place and credits it one
+// way.
 //
 // OpenStreetMap has no elevation surface, so terrain comes from a digital
 // elevation model of its own, distributed as tiles of elevation encoded in
