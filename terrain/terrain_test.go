@@ -114,8 +114,8 @@ func TestReadIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l.Global != "https://example.org/terrain/planet.pmtiles" || l.Coverage != "https://example.org/terrain/coverage.pmtiles" {
-		t.Errorf("global %q, coverage %q", l.Global, l.Coverage)
+	if l.Global != "https://example.org/terrain/planet.pmtiles" || l.Coverage != "https://example.org/terrain/coverage.pmtiles" || l.Sources != "https://example.org/terrain/attribution.json" {
+		t.Errorf("global %q, coverage %q, sources %q", l.Global, l.Coverage, l.Sources)
 	}
 	if len(l.Regions) != 2 || l.Regions[0].Tile != (slice.TileRef{Z: 6, X: 34, Y: 20}) || l.Regions[0].Source != "https://example.org/terrain/6-34-20.pmtiles" || l.Regions[1].Source != "https://mirror.example.org/6-58-38.pmtiles" {
 		t.Errorf("regions %+v", l.Regions)
@@ -285,5 +285,58 @@ func TestPrepareTakesAZoomLessThanTheMap(t *testing.T) {
 	want := min(int(mapDepth.Max)-1, 14)
 	if len(p.Regions) != 1 || int(p.Regions[0].Plan.Zoom.Max) != want {
 		t.Errorf("the map's depth is %d; terrain planned %v, want down to %d", mapDepth.Max, p.Regions, want)
+	}
+}
+
+// The list of sources is copied into the store's root once, and refused when
+// it is not a list of sources.
+func TestFetchCopiesTheListOfSources(t *testing.T) {
+	dir := layoutDir(t)
+	list := filepath.Join(dir, SourcesName)
+	os.WriteFile(list, []byte(`[{"source": "glo30", "producer": "DLR"}]`), 0o644)
+	l, err := ReadDir(dir)
+	if err != nil || l.Sources != list {
+		t.Fatalf("sources %q, %v", l.Sources, err)
+	}
+	root := t.TempDir()
+	st, err := slice.Create(root, slice.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := acquire.Request{Bounds: cellBounds(), MaxZoom: 15, CellZoom: st.CellZoom()}
+	fetchOnce := func() (*Plan, error) {
+		p, err := Prepare(context.Background(), l, st, req, opener)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+		_, err = p.Fetch(context.Background(), nil)
+		return p, err
+	}
+	if _, err := fetchOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, SourcesName)); err != nil || !strings.Contains(string(b), "glo30") {
+		t.Fatalf("store's list: %q, %v", b, err)
+	}
+	if sources, _ := st.Sources(); len(sources) != 2 {
+		t.Errorf("%d sources in the store, want 2: the list is not one", len(sources))
+	}
+	p, err := Prepare(context.Background(), l, st, req, opener)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
+	if p.Sources != "" || !p.Empty() {
+		t.Errorf("a second fetch copies %q again, empty %v", p.Sources, p.Empty())
+	}
+
+	os.Remove(filepath.Join(root, SourcesName))
+	os.WriteFile(list, []byte(`<html>not found</html>`), 0o644)
+	if _, err := fetchOnce(); err == nil || !strings.Contains(err.Error(), "not a list") {
+		t.Errorf("a list that is not one: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, SourcesName)); err == nil {
+		t.Error("the bad list was saved")
 	}
 }

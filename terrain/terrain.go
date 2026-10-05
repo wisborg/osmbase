@@ -34,6 +34,7 @@
 package terrain
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -47,6 +48,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wisborg/osmbase/acquire"
 	"github.com/wisborg/osmbase/fetch"
@@ -68,6 +70,12 @@ type Layout struct {
 	// empty for a layout without one, whose maps can credit only the
 	// layout as a whole.
 	Coverage string
+
+	// Sources is the list of who made each source the coverage names, and
+	// under what licence -- Mapterhorn's attribution.json -- or empty for a
+	// layout without one. A fetch keeps a copy in the terrain store, so a
+	// map drawn from it offline can say whom it owes.
+	Sources string
 
 	// Regions are the archives of the deep zooms, each covering one tile.
 	Regions []Region
@@ -125,6 +133,9 @@ func region(name, source string) (Region, bool) {
 const (
 	globalName   = "planet.pmtiles"
 	coverageName = "coverage.pmtiles"
+	// SourcesName is the list of sources, on the host, in a directory of
+	// archives, and in the terrain store.
+	SourcesName = "attribution.json"
 	// IndexName is the file listing a hosted layout's archives.
 	IndexName = "download_urls.json"
 )
@@ -143,7 +154,7 @@ func ReadIndex(base string, r io.Reader) (Layout, error) {
 	if err := json.NewDecoder(r).Decode(&idx); err != nil {
 		return Layout{}, fmt.Errorf("terrain: reading the index of %s: %w", base, err)
 	}
-	l := Layout{Name: base, Coverage: join(base, coverageName)}
+	l := Layout{Name: base, Coverage: join(base, coverageName), Sources: join(base, SourcesName)}
 	for _, it := range idx.Items {
 		url := it.URL
 		if url == "" {
@@ -189,6 +200,8 @@ func ReadDir(dir string) (Layout, error) {
 			l.Global = path
 		case coverageName:
 			l.Coverage = path
+		case SourcesName:
+			l.Sources = path
 		default:
 			if r, ok := region(e.Name(), path); ok {
 				l.Regions = append(l.Regions, r)
@@ -233,9 +246,14 @@ type Plan struct {
 	// without one.
 	Coverage *acquire.Plan
 
+	// Sources is where the list of sources is copied from, when the store
+	// has none yet; see Layout.Sources. Empty when there is nothing to copy.
+	Sources string
+
 	elevation, coverage *slice.Source
 	global, cover       *fetch.Archive
 	archives            []*fetch.Archive
+	sourcesTo           string
 }
 
 // RegionPlan is one regional archive's part of a terrain fetch.
@@ -255,7 +273,9 @@ type Totals struct {
 	Requests            int
 }
 
-// Totals adds up every archive's plan.
+// Totals adds up every archive's plan. The list of sources, when there is
+// one to copy, is not in it: it is one small file read whole rather than
+// tiles read by range, and its size is not known until it is read.
 func (p *Plan) Totals() Totals {
 	var t Totals
 	for _, ap := range p.plans() {
@@ -270,7 +290,7 @@ func (p *Plan) Totals() Totals {
 }
 
 // Empty reports whether there is nothing to fetch.
-func (p *Plan) Empty() bool { return p.Totals().Tiles == 0 }
+func (p *Plan) Empty() bool { return p.Totals().Tiles == 0 && p.Sources == "" }
 
 // Remote reports whether the plan reads from any host at all, as against
 // files on disk.
@@ -430,6 +450,14 @@ func Prepare(ctx context.Context, l Layout, st *slice.Store, req acquire.Request
 			return nil, err
 		}
 	}
+	// The list of sources is copied once, into the store's root, where no
+	// command listing the store's sources looks: they are directories.
+	p.sourcesTo = filepath.Join(st.Root(), SourcesName)
+	if l.Sources != "" {
+		if _, err := os.Stat(p.sourcesTo); errors.Is(err, os.ErrNotExist) {
+			p.Sources = l.Sources
+		}
+	}
 	return p, nil
 }
 
@@ -507,7 +535,55 @@ func (p *Plan) Fetch(ctx context.Context, progress func(acquire.Progress)) (Resu
 		}
 		add(r)
 	}
+	if p.Sources != "" {
+		n, err := p.copySources(ctx)
+		if err != nil {
+			return res, err
+		}
+		res.Bytes += n
+		if strings.Contains(p.Sources, "://") {
+			res.Requests++
+			res.Transfer += n
+		}
+	}
 	return res, nil
+}
+
+// sourcesLimit bounds the list of sources this reads: Mapterhorn's names a
+// hundred and fifty sources in under a hundred kilobytes.
+const sourcesLimit = 4 << 20
+
+// copySources copies the list of sources into the store, checking first
+// that it is a list: a page of HTML saved under its name would leave every
+// later map uncredited without a word.
+func (p *Plan) copySources(ctx context.Context) (int64, error) {
+	var b bytes.Buffer
+	if strings.Contains(p.Sources, "://") {
+		if _, err := acquire.DownloadContext(ctx, p.Sources, &b, sourcesLimit, time.Minute); err != nil {
+			return 0, fmt.Errorf("terrain: reading the list of sources: %w", err)
+		}
+	} else {
+		data, err := os.ReadFile(p.Sources)
+		if err != nil {
+			return 0, fmt.Errorf("terrain: reading the list of sources: %w", err)
+		}
+		b.Write(data)
+	}
+	var list []struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &list); err != nil || len(list) == 0 || list[0].Source == "" {
+		return 0, fmt.Errorf("terrain: %s is not a list of elevation sources", p.Sources)
+	}
+	tmp := p.sourcesTo + ".partial"
+	if err := os.WriteFile(tmp, b.Bytes(), 0o644); err != nil {
+		return 0, fmt.Errorf("terrain: writing the list of sources: %w", err)
+	}
+	if err := os.Rename(tmp, p.sourcesTo); err != nil {
+		os.Remove(tmp)
+		return 0, fmt.Errorf("terrain: writing the list of sources: %w", err)
+	}
+	return int64(b.Len()), nil
 }
 
 // tileBounds is the area of a tile, in degrees.
