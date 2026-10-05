@@ -143,11 +143,19 @@ type Options struct {
 	// naming neither draws no shading even with a source here.
 	Terrain HeightSource
 
-	// TerrainAttribution is the credit the elevation data requires, passed
+	// TerrainAttribution is the elevation's credit for the image, passed
 	// through to Result.Attribution after the map's own when anything was
 	// shaded. As for Attribution, an empty string means the caller has not
 	// been told one, not that there is nothing to credit.
 	TerrainAttribution string
+
+	// TerrainNotice is the elevation's full notice, passed through to
+	// Result.TerrainNotice when anything was shaded: what whoever publishes
+	// the image owes alongside it, where the image's own credit only points
+	// to it. Copernicus GLO-30's licence dictates a sentence that does not
+	// fit in a corner of a picture, and asks for it to be given, not for it
+	// to be in the pixels. See dem.ShortCredit.
+	TerrainNotice string
 }
 
 // Renderer draws views from one tile source with one style.
@@ -166,6 +174,7 @@ type Renderer struct {
 	language      string
 	terrain       HeightSource
 	terrainCredit string
+	terrainNotice string
 }
 
 // faceFor is the face a rule's labels are drawn in, falling back to the base
@@ -202,7 +211,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 	return &Renderer{
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
-		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution,
+		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice,
 	}, nil
 }
 
@@ -251,6 +260,11 @@ type Result struct {
 	// from a shallower tile and the shading is smoother than the ground.
 	Shaded      float64
 	TerrainZoom uint8
+
+	// TerrainNotice is the options' TerrainNotice when anything was shaded,
+	// and empty otherwise: the full notice the elevation asks to be given
+	// wherever this image is published.
+	TerrainNotice string
 }
 
 // Render draws the view.
@@ -337,8 +351,9 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	credit := r.credit
 	var shaded float64
 	var terrainZoom uint8
+	var notice string
 	if rl != nil && rl.shaded > 0 {
-		shaded, terrainZoom = rl.shaded, rl.zoom
+		shaded, terrainZoom, notice = rl.shaded, rl.zoom, r.terrainNotice
 		credit = joinCredits(credit, r.terrainCredit)
 	}
 
@@ -354,5 +369,6 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		Attribution:    credit,
 		Shaded:         shaded,
 		TerrainZoom:    terrainZoom,
+		TerrainNotice:  notice,
 	}, nil
 }

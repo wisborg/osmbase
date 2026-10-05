@@ -113,15 +113,19 @@ Elevation                  Hillshading ("osmbase render --terrain") is drawn
                            non-commercial.  A shaded image owes Mapterhorn and
                            each source under the view; which ones is worked out
                            from Mapterhorn's coverage data and its source list,
-                           attribution.json, and written into the image beside
-                           OpenStreetMap's credit.  The full list, with every
-                           source's licence, is
+                           attribution.json.  The image carries a short credit
+                           pointing to Mapterhorn's list, as Mapterhorn's own
+                           map does; "osmbase render" prints the full notice
+                           for the view, which whoever publishes the image must
+                           give with it.  The full list, with every source's
+                           licence, is
                            https://download.mapterhorn.com/attribution.json
 
 Copernicus GLO-30          The worldwide fallback under every other source.
-                           Its licence asks for this sentence on anything
-                           produced from the data, and the image carries it
-                           wherever the data is under the view:
+                           Its licence asks for this sentence to be given with
+                           anything produced from the data, and the full notice
+                           "osmbase render" prints carries it wherever the data
+                           is under the view:
 
                              produced using Copernicus WorldDEM-30 © DLR e.V.
                              2010-2014 and © Airbus Defence and Space GmbH

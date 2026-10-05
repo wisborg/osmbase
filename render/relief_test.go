@@ -58,7 +58,7 @@ func reliefMap(t *testing.T) (*mapSource, render.View) {
 
 func drawWith(t *testing.T, src render.TileSource, v render.View, pal render.Palette, hs render.HeightSource) *render.Result {
 	t.Helper()
-	r, err := render.New(src, render.Options{Style: testStyle(), Palette: pal, Attribution: "map", Terrain: hs, TerrainAttribution: "ground"})
+	r, err := render.New(src, render.Options{Style: testStyle(), Palette: pal, Attribution: "map", Terrain: hs, TerrainAttribution: "ground", TerrainNotice: "the ground's full notice"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +104,9 @@ func TestRelief_TheSunlitFlankIsLitAndTheRoadIsNotShaded(t *testing.T) {
 	if res.Attribution != "map | ground" {
 		t.Errorf("credit %q, want the terrain's after the map's", res.Attribution)
 	}
+	if res.TerrainNotice != "the ground's full notice" {
+		t.Errorf("notice %q, want the options' passed through", res.TerrainNotice)
+	}
 }
 
 // Shading is a tint on slopes. Flat ground, a palette that names no shade,
@@ -133,6 +136,9 @@ func TestRelief_NothingToShadeChangesNothing(t *testing.T) {
 		}
 		if want := map[bool]string{true: "map | ground", false: "map"}[c.shaded]; res.Attribution != want {
 			t.Errorf("%s: credit %q, want %q", c.name, res.Attribution, want)
+		}
+		if got := res.TerrainNotice != ""; got != c.shaded {
+			t.Errorf("%s: notice %q", c.name, res.TerrainNotice)
 		}
 	}
 }

@@ -35,6 +35,30 @@ func ReadAttributions(r io.Reader) ([]Attribution, error) {
 // sources into tiles, ahead of the sources' own.
 const CompiledBy = "Mapterhorn"
 
+// SourcesPage is where Mapterhorn lists every source with its licence and
+// the notice it asks for.
+const SourcesPage = "mapterhorn.com/attribution"
+
+// ShortCredit is the elevation credit for the image itself, given the
+// sources under it: Mapterhorn, and where every source is listed.
+//
+// It is what Mapterhorn's own map shows -- "© Mapterhorn", linked to that
+// list -- with the address written out, since a picture carries no link.
+// The full notice, Copernicus's dictated sentence among it, is Credit's,
+// and belongs with whoever publishes the picture: in a caption, a video's
+// description, a credits page. The GLO-30 licence asks for its notice to
+// be given to the public and does not say where; a sentence-long credit
+// burnt into every frame was the strictest answer, and cost two lines of
+// every map.
+//
+// No ids is no credit, as for Credit.
+func ShortCredit(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return "Elevation: © " + CompiledBy + ", " + SourcesPage
+}
+
 // Copernicus GLO-30's licence asks for a sentence of its own on anything
 // made from the data -- a hillshade is -- in place of a producer's name, and
 // for a disclaimer in any notice covering distribution. Both are quoted from
@@ -46,7 +70,7 @@ const (
 	GLO30Disclaim = "The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-30"
 )
 
-// Credit is the line a map owes for elevation from the sources named by ids,
+// Credit is the full notice a map owes for elevation from the sources named by ids,
 // with attrs saying who each is: Mapterhorn, then each source's producer and
 // licence in the order given. A source missing from attrs is credited by its
 // id, which is less than it is owed and more than nothing -- and is what

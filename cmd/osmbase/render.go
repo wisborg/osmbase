@@ -541,6 +541,14 @@ func writeRenderReport(w io.Writer, out string, v render.View, res *render.Resul
 		t.row("credit", credit)
 	}
 	t.write(w)
+	// The elevation's full notice, which the image's credit only points
+	// to: owed by whoever publishes the image, so it is printed here, where
+	// that person reads it and can copy it into a caption. Below the table
+	// rather than in it, as one line to copy whole: a sentence-long row
+	// would push every figure above it off to the right.
+	if res.TerrainNotice != "" {
+		fmt.Fprintf(w, "\nThe image credits its elevation briefly. Wherever you publish it, give this notice with it:\n%s\n", res.TerrainNotice)
+	}
 }
 
 func percent(f float64) string {

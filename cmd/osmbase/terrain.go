@@ -166,30 +166,35 @@ func (t *terrainStore) into(o *render.Options, view render.View) error {
 	if t == nil {
 		return nil
 	}
-	credit, err := t.credit(view)
+	short, full, err := t.credit(view)
 	if err != nil {
 		return err
 	}
 	o.Terrain = t.heights
-	o.TerrainAttribution = credit
+	o.TerrainAttribution = short
+	o.TerrainNotice = full
 	return nil
 }
 
-// credit is what the terrain under view owes: Mapterhorn, and each source
-// the coverage puts under the view. A store with no coverage can say only
-// where the terrain came from, which is still owed.
-func (t *terrainStore) credit(view render.View) (string, error) {
+// credit is what the terrain under view owes: a short credit for the image,
+// pointing to where every source is listed, and the full notice --
+// Mapterhorn, each source the coverage puts under the view, Copernicus's
+// sentence -- for whoever publishes it. A store with no coverage can say
+// only where the terrain came from, which is still owed, and is short
+// enough to be both.
+func (t *terrainStore) credit(view render.View) (short, full string, err error) {
 	if t.coverage == nil {
-		return "Elevation: " + t.elevation.Manifest().Source, nil
+		s := "Elevation: " + t.elevation.Manifest().Source
+		return s, s, nil
 	}
 	z, _, err := view.Zoom()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	b := view.Bounds
 	ids, err := dem.SourcesIn(t.coverage, max(z, 1)-1, b.West, b.South, b.East, b.North)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return dem.Credit(ids, t.sources), nil
+	return dem.ShortCredit(ids), dem.Credit(ids, t.sources), nil
 }

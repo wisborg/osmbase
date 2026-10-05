@@ -198,11 +198,16 @@ What the hillshade does, and why:
   Highlight, and the check holds every shaded surface at those extremes to the same overlay
   and context rules as on flat ground. It is what set the light palette's shade: the slate
   first tried left the overlay's accent at 2.3:1 on water in shadow.
-- **The credit from the coverage.** The sources whose coverage polygons cross the view, holes
-  and all, with Copernicus's dictated sentence for GLO-30. Mapterhorn's coverage places GLO-30
-  under the national data too -- its footprint is the whole world, with no holes where finer
-  data exists -- so in practice GLO-30 is credited everywhere, and a credit wider than the image
-  wraps onto a second line rather than being cut off.
+- **A short credit in the image, the full notice beside it.** The full notice is the sources
+  whose coverage polygons cross the view, holes and all, with Copernicus's dictated sentence for
+  GLO-30. Mapterhorn's coverage places GLO-30 under the national data too -- its footprint is
+  the whole world, with no holes where finer data exists -- so in practice the sentence is owed
+  everywhere, and burnt into the image it was a second line on every map. The GLO-30 licence
+  asks for its notice to be given to the public and does not say where, and Mapterhorn's own
+  map credits only "© Mapterhorn", linked to its list of sources. So the image carries that,
+  with the address written out since a picture has no link, and `render` prints the full notice
+  for whoever publishes the image to give with it. `dem.Credit` keeps the full form for any
+  program that wants it in the picture.
 
 ## Sources
 

@@ -62,9 +62,13 @@ already on disk instead, and asks nobody. The choice of source is in
 A shaded map owes its elevation sources a credit as well as OpenStreetMap, and which ones
 depends on where it is: Mapterhorn, the national survey whose data covers the view
 (Geoscience Australia around Sydney, Klimadatastyrelsen in Denmark, under CC BY 4.0), and
-Copernicus GLO-30 nearly everywhere, whose licence dictates its own sentence. `render`
-works the list out from Mapterhorn's coverage data and writes it into the image beside
-OpenStreetMap's.
+Copernicus GLO-30 nearly everywhere, whose licence dictates its own sentence. The image
+carries a short credit, as Mapterhorn's own map does -- "Elevation: © Mapterhorn,
+mapterhorn.com/attribution", where every source is listed -- and `render` prints the full
+notice for the sources in that view, worked out from Mapterhorn's coverage data. **If you
+publish a shaded map, give that notice with it**: in the caption, the description, the
+credits. The licences ask for it to be given to whoever sees the data, and a picture
+cannot carry a sentence that long in its corner.
 
 ## Licence
 

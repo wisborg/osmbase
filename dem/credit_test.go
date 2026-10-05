@@ -80,8 +80,11 @@ func TestCredit_QuotesTheCopernicusNoticeAndNamesTheRest(t *testing.T) {
 	if got != want {
 		t.Errorf("Credit:\n got %q\nwant %q", got, want)
 	}
-	if Credit(nil, attrs) != "" {
+	if Credit(nil, attrs) != "" || ShortCredit(nil) != "" {
 		t.Error("no sources credited somebody")
+	}
+	if got := ShortCredit([]string{"glo30"}); got != "Elevation: © Mapterhorn, mapterhorn.com/attribution" {
+		t.Errorf("ShortCredit %q", got)
 	}
 }
 
