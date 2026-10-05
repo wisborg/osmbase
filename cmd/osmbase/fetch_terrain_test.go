@@ -86,7 +86,7 @@ func countTerrain(t *testing.T, root string) int {
 	t.Helper()
 	n := 0
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err == nil && strings.HasSuffix(path, ".webp") {
+		if err == nil && (strings.HasSuffix(path, ".webp") || strings.HasSuffix(path, ".png")) {
 			n++
 		}
 		return nil
@@ -113,10 +113,12 @@ func terrainPNG(t *testing.T) []byte {
 	return b.Bytes()
 }
 
-// render --terrain shades from the terrain store beside the map's and says
-// so, credits the elevation in the report as well as in the image, and
-// refuses to guess: no terrain store is an error naming the fetch, and
-// --terrain-store alone draws nothing.
+// render --terrain offers to fetch the terrain the view lacks -- with no
+// yes, it fetches nothing, says how to, and refuses to draw an
+// unshaded map as if shaded; with --yes it fetches into the store beside the
+// map's -- then shades from it, credits the elevation, and hands over the
+// full notice. A second render of the same view asks nothing. --terrain-store
+// alone draws nothing.
 func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
 	archive := fixtureArchive(t, 0, 0, 0, worldTile())
 	store := filepath.Join(t.TempDir(), "s")
@@ -126,6 +128,9 @@ func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
 		t.Fatalf("fetch: exit %d\n%s", r.code, r.stderr)
 	}
 	r := runCLI(t, "render", "--store", store, "--terrain", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
+	if !strings.Contains(r.stderr, "Fetch the terrain now?") || !strings.Contains(r.stderr, "no terrain was fetched") {
+		t.Errorf("with nobody to say yes, the offer does not ask, or does not say it fetched nothing:\n%s", r.stderr)
+	}
 	if r.code == 0 || !strings.Contains(r.stderr, "osmbase fetch --terrain") {
 		t.Errorf("no terrain: exit %d, want a refusal naming the fetch\nstderr: %s\nstdout: %s", r.code, r.stderr, r.stdout)
 	}
@@ -146,18 +151,25 @@ func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
 	}
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "planet.pmtiles"), built.Bytes, 0o644)
-	if r := runCLI(t, "fetch", archive, "--world", "--max-zoom", "0", "--store", store, "--terrain", "--terrain-source", dir, "--yes"); r.code != 0 {
-		t.Fatalf("terrain fetch: exit %d\n%s", r.code, r.stderr)
-	}
-
-	r = runCLI(t, "render", "--store", store, "--terrain", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
+	r = runCLI(t, "render", "--store", store, "--terrain", "--terrain-source", dir, "--yes", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
 	if r.code != 0 {
 		t.Fatalf("render: exit %d\n%s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "copied from "+dir+", contacting nobody") || !strings.Contains(r.stderr, "terrain tiles in") {
+		t.Errorf("the render's terrain fetch:\n%s", r.stderr)
+	}
+	if n := countTerrain(t, store+"-terrain"); n == 0 {
+		t.Error("the render fetched no terrain into the store beside the map's")
 	}
 	if !strings.Contains(r.stdout, "100.0% of the image shaded") || !strings.Contains(r.stdout, "Elevation: "+dir) {
 		t.Errorf("the report says nothing of the terrain:\n%s", r.stdout)
 	}
 	if !strings.Contains(r.stdout, "Wherever you publish it, give this notice with it:\nElevation: "+dir) {
 		t.Errorf("the report does not hand over the elevation's notice:\n%s", r.stdout)
+	}
+
+	r = runCLI(t, "render", "--store", store, "--terrain", "--lat", "0", "--lon", "0", "--zoom", "1", "--width", "256", "--height", "256", "--out", out)
+	if r.code != 0 || strings.Contains(r.stderr, "Fetch the terrain") || strings.Contains(r.stderr, "no terrain was fetched") {
+		t.Errorf("a second render of the same view: exit %d, and it offered again:\n%s", r.code, r.stderr)
 	}
 }

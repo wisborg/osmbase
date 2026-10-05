@@ -71,7 +71,7 @@ examples:
       a 1080p dark map from a local archive, contacting nobody
 
   osmbase render --lat -33.70 --lon 151.10 --terrain --out hornsby.png
-      with the hills shaded, from terrain "osmbase fetch --terrain" kept;
+      with the hills shaded, offering to fetch the terrain the store lacks;
       the image credits the elevation sources as well as OpenStreetMap
 
 `)
@@ -93,6 +93,7 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		yes           bool
 		withTerrain   bool
 		terrainDir    string
+		terrainSrc    string
 	)
 	fs := newFlagSet("render", renderUsage)
 	coords.bind(fs)
@@ -106,9 +107,10 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fs.StringVar(&bbox, "bbox", "", "draw this rectangle instead of the ground around --lat/--lon, as west,south,east,north in degrees; "+
 		"the zoom is the deepest that holds all of it, unless --zoom says otherwise")
 	place.bind(fs)
-	fs.BoolVar(&yes, "yes", false, "with --store, fetch what the view lacks at its zoom without asking first")
+	fs.BoolVar(&yes, "yes", false, "with --store or --terrain, fetch what the view lacks at its zoom without asking first")
 	fs.BoolVar(&withTerrain, "terrain", false, "shade the shape of the ground under the map, from terrain \"osmbase fetch --terrain\" kept; nothing reaches the network")
 	fs.StringVar(&terrainDir, "terrain-store", "", "where the terrain is kept (default: beside the map's store, its name ending -terrain)")
+	fs.StringVar(&terrainSrc, "terrain-source", defaultTerrainSource, "with --terrain, where terrain the store lacks would be fetched from, after asking: a host's address, or a directory of its archives")
 
 	source, err := parseArgs(fs, args, stdout)
 	if err != nil {
@@ -174,11 +176,21 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			}
 			root = terrainRoot(base)
 		}
+		// Measured from the disk and offered before the terrain store is
+		// opened, as the map's is; see offerTerrain.
+		z, _, err := view.Zoom()
+		if err != nil {
+			return err
+		}
+		b := slice.Bounds{West: view.Bounds.West, South: view.Bounds.South, East: view.Bounds.East, North: view.Bounds.North}
+		if s, short := measureTerrain(root, b, z); short {
+			offerTerrain(ctx, stderr, s, terrainSrc, yes)
+		}
 		if ts, err = openTerrainStore(root); err != nil {
 			return err
 		}
-	} else if terrainDir != "" {
-		return usageErrorf("--terrain-store says where terrain is, and --terrain is what draws it; add --terrain")
+	} else if terrainDir != "" || flagGiven(fs, "terrain-source") {
+		return usageErrorf("--terrain-store and --terrain-source say where terrain is, and --terrain is what draws it; add --terrain")
 	}
 
 	if store != "" {

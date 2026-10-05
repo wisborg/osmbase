@@ -52,8 +52,9 @@ nothing leaves the machine. `osmbase help` says the same thing in the terminal.
 
 `osmbase fetch ... --terrain` also copies the shape of the ground for the same area --
 elevation -- from [Mapterhorn](https://mapterhorn.com/), a second host that learns the same
-cells, and `osmbase render ... --terrain` then shades the hills under the map from it,
-reading only the disk. It is kept in a store of its own beside the map's
+cells, and `osmbase render ... --terrain` then shades the hills under the map from it. Like
+the map, terrain a view lacks is offered before it is fetched -- the question names the host
+first, and `--yes` answers it in advance -- and once it is held, rendering contacts nobody. It is kept in a store of its own beside the map's
 (`osmbase-terrain` in your user cache directory), so nothing that draws from the map's store
 has to choose between them. `--terrain-source DIR` reads a directory of Mapterhorn's archives
 already on disk instead, and asks nobody. The choice of source is in
