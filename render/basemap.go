@@ -560,8 +560,12 @@ func OutdoorsPalette() Palette {
 		Water:      color.RGBA{R: 0x86, G: 0xb4, B: 0xde, A: 0xff},
 		// Half the light palette's luminance: a wood reads as a wood.
 		// Saturated as far as MaxContextChroma allows and no further.
-		Green:      color.RGBA{R: 0x97, G: 0xb9, B: 0x86, A: 0xff},
-		Built:      color.RGBA{R: 0xe2, G: 0xd3, B: 0xbb, A: 0xff},
+		Green: color.RGBA{R: 0x97, G: 0xb9, B: 0x86, A: 0xff},
+		// A faint pink-grey rather than a tan: a tan light enough to sit
+		// quietly ran into the land's paper, and one far enough from the
+		// paper was brown enough, in shadow, to blur the roads' tan casings.
+		// Turning the hue instead of the lightness keeps both apart.
+		Built:      color.RGBA{R: 0xe9, G: 0xde, B: 0xdd, A: 0xff},
 		Building:   color.RGBA{R: 0xcb, G: 0xbf, B: 0xb1, A: 0xff},
 		Road:       color.RGBA{R: 0xbe, G: 0x9f, B: 0x78, A: 0xff},
 		RoadFill:   color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
