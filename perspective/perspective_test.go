@@ -244,3 +244,37 @@ func TestRefusesWhatIsNotACamera(t *testing.T) {
 		}
 	}
 }
+
+// The map ends in haze, not in a line: seen whole from above, its border is
+// the haze colour and its middle is the map's own.
+func TestTheMapsEdgeFadesIntoTheHaze(t *testing.T) {
+	s := scene(0.02, flat, func(bool, bool) color.RGBA { return red })
+	haze := color.RGBA{R: 0x20, G: 0x40, B: 0x60, A: 0xff}
+	img, err := Render(s, Camera{Target: centre, Distance: 30000, Pitch: 90}, Options{Width: 200, Height: 200, Haze: haze, HazeMetres: 1e12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Find the map's extent along the middle row: where the ground starts.
+	row := 100
+	left := -1
+	for x := 0; x < 200; x++ {
+		if c := img.RGBAAt(x, row); c.R > 0x10 || c.G > 0x30 {
+			if c != DefaultHorizon {
+				left = x
+				break
+			}
+		}
+	}
+	if left < 0 || left > 90 {
+		t.Fatalf("no map found along the middle row (left edge %d)", left)
+	}
+	// The fade rises smoothly over the last part of the map, so a pixel
+	// inside the edge is well on its way to the haze rather than exactly
+	// it: most of its red gone. Without the fade it is the map's red.
+	if c := img.RGBAAt(left+1, row); c.R > 0xa0 {
+		t.Errorf("just inside the map's edge: %v, want it faded most of the way from red toward the haze %v", c, haze)
+	}
+	if c := img.RGBAAt(100, row); !near(c, red) {
+		t.Errorf("in the middle: %v, want the map's red", c)
+	}
+}

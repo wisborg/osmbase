@@ -146,7 +146,11 @@ func (f *frame) fill(cv view, tex *texture, haze color.RGBA, hazeM float64, pa, 
 			u := (w0*a.uiz + w1*b.uiz + w2*c.uiz) * z
 			v := (w0*a.viz + w1*b.viz + w2*c.viz) * z
 			col := tex.at(u, v)
-			col = mixRGBA(col, haze, 1-math.Exp(-z/hazeM))
+			// Faded into the haze toward the edge of the map, so the
+			// ground ends in distance rather than in a straight line
+			// against the sky; and with distance, as the air does.
+			fade := math.Max(tex.edgeFade(u, v), 1-math.Exp(-z/hazeM))
+			col = mixRGBA(col, haze, fade)
 			o := i * 4
 			f.img.Pix[o], f.img.Pix[o+1], f.img.Pix[o+2], f.img.Pix[o+3] = col.R, col.G, col.B, 0xff
 		}
@@ -193,6 +197,23 @@ func newTexture(m image.Image) *texture {
 		draw.Draw(rgba, rgba.Rect, m, b.Min, draw.Src)
 	}
 	return &texture{img: rgba, w: rgba.Rect.Dx(), h: rgba.Rect.Dy()}
+}
+
+// edgeFraction is how much of the map, from each edge, fades into the haze:
+// enough that the edge is never seen as a line, little enough that the
+// ground around the point looked at is untouched.
+const edgeFraction = 0.12
+
+// edgeFade is how far toward the haze the map is drawn at (u, v): 0 inside,
+// rising smoothly to 1 at its edge.
+func (t *texture) edgeFade(u, v float64) float64 {
+	m := edgeFraction * math.Min(float64(t.w), float64(t.h))
+	d := math.Min(math.Min(u, float64(t.w)-u), math.Min(v, float64(t.h)-v))
+	if d >= m {
+		return 0
+	}
+	x := 1 - math.Max(0, d)/m
+	return x * x * (3 - 2*x)
 }
 
 // at is the map's colour at (u, v) in its pixels, interpolated between the
