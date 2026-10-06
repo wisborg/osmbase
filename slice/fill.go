@@ -2,7 +2,9 @@ package slice
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"time"
 )
@@ -227,6 +229,44 @@ func (s *Source) store1(a Archive, ref TileRef) (int64, bool, error) {
 		return 0, false, err
 	}
 	return int64(len(data)), true, nil
+}
+
+// Exhaust records that the complete cell c holds everything its archive has
+// down to zoom through, although its tiles stop shallower: the archive has
+// nothing deeper there.
+//
+// It is the same statement a complete cell already makes about a tile of open
+// ocean -- not on disk, because there is none to have -- made about whole
+// zooms. An elevation source is the case it exists for: a mosaic whose depth
+// differs from place to place, thirty-metre data to zoom 12 in one country and
+// metre LiDAR to 17 in the next. A fetch to zoom 14 takes a cell in the first
+// to 12, and Fill, honestly, records 12. Asked about zoom 14, HeldAt then
+// finds the cell short for ever, and every render offers a download that
+// fetches nothing.
+//
+// Only the caller knows that the archive stops there -- this package sees
+// tiles, not an archive's coverage -- so it is a separate, explicit step
+// rather than something Fill infers. A cell that is not complete is left
+// alone: vouching for depth in an interrupted fetch would hide its holes. The
+// slice's own zoom range is not widened, because that range describes the
+// tiles the slice holds, and none were added.
+func (s *Source) Exhaust(c Cell, through uint8) error {
+	path := filepath.Join(s.cellDir(c), cellFileName)
+	var ci CellInfo
+	if err := readJSON(path, &ci); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !ci.Complete || ci.Zoom.empty() || ci.Zoom.Max >= through {
+		return nil
+	}
+	ci.Zoom.Max = through
+	if err := ci.Zoom.validate(); err != nil {
+		return err
+	}
+	return writeJSON(path, ci)
 }
 
 // widen records that the slice now reaches a zoom range it did not before.

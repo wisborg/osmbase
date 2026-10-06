@@ -137,3 +137,36 @@ func TestTilesAtListsWhatIsOnDisk(t *testing.T) {
 		t.Errorf("overview listing = %v, want %v", got, anc)
 	}
 }
+
+// A cell an archive has nothing deeper for is held at the zooms Exhaust
+// vouches for, without a tile more on disk; Exhaust never shortens what a
+// cell records, and vouches for nothing where no fetch finished.
+func TestExhaustRecordsACellAsHeldDeeper(t *testing.T) {
+	st, src, _ := filled(t)
+	b := tileBoundsInside(t, st.CellZoom(), testCell.X, testCell.Y)
+	if err := src.Exhaust(testCell, 16); err != nil {
+		t.Fatal(err)
+	}
+	for _, z := range []uint8{14, 15, 16} {
+		if held, wanted, _ := src.HeldAt(b, z); held != wanted {
+			t.Errorf("zoom %d after Exhaust: %d of %d held", z, held, wanted)
+		}
+	}
+	if held, wanted, _ := src.HeldAt(b, 17); held != 0 {
+		t.Errorf("zoom 17, past what was vouched for: %d of %d held", held, wanted)
+	}
+	if err := src.Exhaust(testCell, 13); err != nil {
+		t.Fatal(err)
+	}
+	if held, wanted, _ := src.HeldAt(b, 16); held != wanted {
+		t.Errorf("a shallower Exhaust shortened the cell: zoom 16 %d of %d held", held, wanted)
+	}
+
+	next := slice.Cell{X: testCell.X + 1, Y: testCell.Y}
+	if err := src.Exhaust(next, 16); err != nil {
+		t.Fatal(err)
+	}
+	if _, complete, _ := src.Cell(next); complete {
+		t.Error("Exhaust made a complete cell where nothing was fetched")
+	}
+}

@@ -128,3 +128,109 @@ func TestFillWithNothingToFetch(t *testing.T) {
 		t.Errorf("second fill: empty %v, wrote %d, %v", empty, res.Written, err)
 	}
 }
+
+// deepElsewhere adds to the layout in dir a region far from the cell whose
+// data goes to zoom 17, and fills a cell of it into the store at root. The
+// store's elevation then reaches 17, as it does after any fetch over metre
+// LiDAR, so a view of the cell is measured as deep as it asks rather than
+// capped at what the layout's one region offers.
+func deepElsewhere(t *testing.T, dir, root string) {
+	t.Helper()
+	far := slice.TileRef{Z: 12, X: 10, Y: 10} // in region 6/0/0
+	deep, err := slice.PyramidTiles(slice.Cell{X: far.X, Y: far.Y}, 12, slice.ZoomRange{Min: 13, Max: 13})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeArchive(t, filepath.Join(dir, "6-0-0.pmtiles"), pmtiles.TileTypeWebP, pmtiles.CompressionNone, slice.ZoomRange{Min: 13, Max: 17}, deep)
+	l, err := ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := tileBounds(far)
+	dx, dy := (b.East-b.West)/10, (b.North-b.South)/10
+	b = slice.Bounds{West: b.West + dx, East: b.East - dx, South: b.South + dy, North: b.North - dy}
+	if _, err := Fill(context.Background(), l, root, b, 15, opener, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Where the archives stop shallower than a map asks -- the region at zoom 14
+// for a map at 16, or no region at all and the global archive at 12 -- one
+// fill is enough: measured again, the area lacks nothing. Measured at the
+// depth asked for instead, it was short however often it was filled, and
+// every render of it offered the same download.
+func TestMeasureAfterAFillShallowerThanAsked(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		region  bool
+		mapZoom uint8
+	}{
+		{"the region stops at 14", true, 16},
+		{"no region", false, 15},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := layoutDir(t)
+			if !tc.region {
+				if err := os.Remove(filepath.Join(dir, "6-58-38.pmtiles")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root := filepath.Join(t.TempDir(), "maps-terrain")
+			deepElsewhere(t, dir, root)
+			l, err := ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := cellBounds()
+			if _, err := Fill(context.Background(), l, root, b, tc.mapZoom, opener, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if s, short := Measure(root, b, tc.mapZoom); short {
+				t.Errorf("after the fill, still lacking: %+v", s)
+			}
+		})
+	}
+}
+
+// A store filled before the depth was recorded plans as empty -- every tile
+// the archives have is on disk -- and still measures short. Filling it again
+// records the depth without fetching anything.
+func TestFillWithNothingToFetchRecordsTheDepth(t *testing.T) {
+	dir := layoutDir(t)
+	root := filepath.Join(t.TempDir(), "maps-terrain")
+	deepElsewhere(t, dir, root)
+	l, err := ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := cellBounds()
+	if _, err := Fill(context.Background(), l, root, b, 16, opener, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// As such a store has it: the cell recorded only as deep as its tiles.
+	paths, err := filepath.Glob(filepath.Join(root, "*", "cells", "*", "cell.json"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no cell.json under %s: %v", root, err)
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(strings.Replace(string(data), `"Max": 15`, `"Max": 14`, 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, short := Measure(root, b, 16); !short {
+		t.Fatal("precondition: the store measures short")
+	}
+
+	var empty bool
+	res, err := Fill(context.Background(), l, root, b, 16, opener, func(p *Plan) { empty = p.Empty() }, nil)
+	if err != nil || !empty || res.Written != 0 {
+		t.Fatalf("second fill: empty %v, wrote %d, %v", empty, res.Written, err)
+	}
+	if s, short := Measure(root, b, 16); short {
+		t.Errorf("after a fill with nothing to fetch, still lacking: %+v", s)
+	}
+}

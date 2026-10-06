@@ -263,6 +263,12 @@ type Plan struct {
 	global, cover       *fetch.Archive
 	archives            []*fetch.Archive
 	sourcesTo           string
+
+	// depth is the elevation zoom asked for, and exhaust the area's cells
+	// when that is deeper than the global archive goes: the ones Settle
+	// records as holding all there is to depth.
+	depth   uint8
+	exhaust []slice.Cell
 }
 
 // RegionPlan is one regional archive's part of a terrain fetch.
@@ -405,6 +411,7 @@ func Prepare(ctx context.Context, l Layout, st *slice.Store, req acquire.Request
 			}
 			needs[i].cells = append(needs[i].cells, c)
 		}
+		p.depth, p.exhaust = uint8(want), cells
 	}
 	zoom := slice.ZoomRange{Min: gh.MinZoom, Max: gh.MaxZoom}
 	for _, n := range needs {
@@ -566,7 +573,25 @@ func (p *Plan) Fetch(ctx context.Context, progress func(acquire.Progress)) (Resu
 			res.Transfer += n
 		}
 	}
-	return res, nil
+	return res, p.Settle()
+}
+
+// Settle records that the area's cells hold all the elevation there is to
+// the depth asked for, where the archives stop shallower -- thirty-metre data
+// at zoom 12, LiDAR at 14 for a map wanting 15. Fetch does it last; a caller
+// that skips Fetch because the plan is empty calls it instead, since an area
+// fetched before this was recorded plans as empty and still measures short.
+//
+// Without it, Measure, which reads only the disk and so asks at the depth
+// rather than at each region's own, finds those cells short however often
+// they are fetched, and every map of them offers the same download.
+func (p *Plan) Settle() error {
+	for _, c := range p.exhaust {
+		if err := p.elevation.Exhaust(c, p.depth); err != nil {
+			return fmt.Errorf("terrain: recording cell %s as complete to zoom %d: %w", c, p.depth, err)
+		}
+	}
+	return nil
 }
 
 // sourcesLimit bounds the list of sources this reads: Mapterhorn's names a

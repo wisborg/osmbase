@@ -173,6 +173,11 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 
 	if plan.Empty() && (tp == nil || tp.Empty()) {
+		if tp != nil && !f.dryRun {
+			if err := tp.Settle(); err != nil {
+				return err
+			}
+		}
 		fmt.Fprintln(stdout, "\nnothing to fetch: the store already holds this area.")
 		return nil
 	}
@@ -223,6 +228,10 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 		fmt.Fprintf(stdout, "%-12s %d terrain tiles in %d requests, %s in %s, at %s\n",
 			"terrain", res.Written, res.Requests, humanBytes(res.Transfer), res.Elapsed.Round(time.Millisecond), tRoot)
+	} else if tp != nil {
+		if err := tp.Settle(); err != nil {
+			return err
+		}
 	}
 	writeNextStep(stdout, root, plan.Bounds, tp != nil)
 	return nil

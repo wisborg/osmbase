@@ -231,7 +231,7 @@ func Fill(ctx context.Context, l Layout, root string, b slice.Bounds, mapZoom ui
 		report(p)
 	}
 	if p.Empty() {
-		return Result{}, nil
+		return Result{}, p.Settle()
 	}
 	p.Silence()
 	return p.Fetch(ctx, progress)
