@@ -99,3 +99,25 @@ func TestDrawMarkersStandsThemWhereSeen(t *testing.T) {
 		t.Errorf("a marker behind the hill was drawn: %d pixels", n)
 	}
 }
+
+// Project places a point a hill hides, where Locate says it is not seen;
+// both refuse a point that is not in the picture at all.
+func TestProjectPlacesWhatAHillHides(t *testing.T) {
+	cone := func(e, n float64) float64 { return max(0, 600*(1-(e*e+n*n)/(1500*1500))) }
+	pic, err := Render(scene(0.05, cone, quadrants), Camera{Target: centre, Distance: 4000, Pitch: 2}, Options{Width: 300, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	behind := render.Coord{Lat: centre.Lat + 1800.0/110_574, Lon: centre.Lon}
+	x, y, ok := pic.Project(behind)
+	if !ok || x < 0 || x > 300 || y < 0 || y > 200 {
+		t.Errorf("the point behind the hill projects to (%.1f, %.1f), %v; want inside the picture", x, y, ok)
+	}
+	if _, _, seen := pic.Locate(behind); seen {
+		t.Error("the point behind the hill is seen")
+	}
+	behindCamera := render.Coord{Lat: centre.Lat - 5000.0/110_574, Lon: centre.Lon}
+	if _, _, ok := pic.Project(behindCamera); ok {
+		t.Error("a point behind the camera projects into the picture")
+	}
+}

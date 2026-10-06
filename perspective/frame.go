@@ -249,3 +249,43 @@ var levelGrid = make([]float32, levelSize*levelSize)
 func (level) Heights(z uint8, x, y uint32) ([]float32, int, bool, error) {
 	return levelGrid, levelSize, true, nil
 }
+
+// HeadingStep is how finely BestHeading tries bearings, in degrees: finer
+// shows no difference anybody would see, and each costs a framing.
+const HeadingStep = 15.0
+
+// BestHeading is Frame from whichever bearing, of every HeadingStep from
+// north, shows the points largest -- the camera that can stand nearest, at
+// c's pitch and lens. For a long straight route in a wide picture that lays
+// it corner to corner, the longest way across, and never looks along it.
+//
+// The bearing is chosen on a few hundred of the points, which frame as all
+// of them do to well within the margin and a hundred times faster, and the
+// camera then framed on all of them. Of two bearings that tie -- those
+// opposite each other often do -- the first from north is taken, so the
+// same route is always seen the same way.
+func (c Camera) BestHeading(points []render.Coord, aspect float64) (Camera, error) {
+	sample := points
+	if n := len(points); n > 400 {
+		sample = make([]render.Coord, 0, 402)
+		for i := 0; i < n; i += n / 400 {
+			sample = append(sample, points[i])
+		}
+		sample = append(sample, points[n-1])
+	}
+	best, heading := math.Inf(1), 0.0
+	for h := 0.0; h < 360; h += HeadingStep {
+		c.Heading = h
+		cam, err := c.Frame(sample, aspect)
+		if err != nil {
+			return cam, err
+		}
+		// A thousandth nearer to count, so rounding does not choose
+		// between bearings that see the points alike.
+		if cam.Distance < best*0.999 {
+			best, heading = cam.Distance, h
+		}
+	}
+	c.Heading = heading
+	return c.Frame(points, aspect)
+}

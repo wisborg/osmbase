@@ -101,3 +101,45 @@ func TestLevelGroundIsDrawn(t *testing.T) {
 		t.Errorf("the middle of a map draped over level ground is %v, the sky's", c)
 	}
 }
+
+// BestHeading stands the camera at least as near as any other bearing of
+// every HeadingStep would, and for a long straight route never looks along
+// it -- a wide picture lays it corner to corner.
+func TestBestHeadingShowsTheRouteLargest(t *testing.T) {
+	line := func(dLat, dLon float64) []render.Coord {
+		var pts []render.Coord
+		for i := 0; i <= 500; i++ {
+			pts = append(pts, render.Coord{Lat: -33.7 + dLat*float64(i), Lon: 151.1 + dLon*float64(i)})
+		}
+		return pts
+	}
+	const aspect = 16.0 / 10
+	for _, c := range []struct {
+		name  string
+		pts   []render.Coord
+		along []float64
+	}{
+		{"east to west", line(0, 0.0001), []float64{90, 270}},
+		{"north to south", line(0.0001, 0), []float64{0, 180}},
+	} {
+		cam, err := Camera{Pitch: 35}.BestHeading(c.pts, aspect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range c.along {
+			if cam.Heading == h {
+				t.Errorf("%s: heading %g looks along the route", c.name, h)
+			}
+		}
+		for h := 0.0; h < 360; h += HeadingStep {
+			other, err := Camera{Pitch: 35, Heading: h}.Frame(c.pts, aspect)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if other.Distance < cam.Distance*0.99 {
+				t.Errorf("%s: heading %g stands %.0f m off, nearer than the %.0f m of the heading chosen, %g",
+					c.name, h, other.Distance, cam.Distance, cam.Heading)
+			}
+		}
+	}
+}

@@ -137,30 +137,47 @@ type Picture struct {
 	w, h  int       // the supersampled frame's size
 }
 
+// Project is where in the image the ground at c falls, in its pixels,
+// whether or not nearer ground hides it there; ok is false when it is not in
+// the picture at all -- off the map, behind the camera or outside the image.
+// It is for drawing something the viewer should know is there even behind a
+// hill, such as where a rider is, faintly; Locate says whether it is seen.
+func (p *Picture) Project(c render.Coord) (x, y float64, ok bool) {
+	x, y, _, ok = p.place(c)
+	return x, y, ok
+}
+
 // Locate is where in the image the ground at c appears, in its pixels, and
 // whether it is seen at all: in front of the camera, inside the image, and
 // not behind nearer ground. It is for drawing on the picture things that
 // should stand upright rather than lie on the ground -- the names of places
 // -- and for leaving out those a hill hides.
 func (p *Picture) Locate(c render.Coord) (x, y float64, visible bool) {
+	x, y, seen, ok := p.place(c)
+	return x, y, ok && seen
+}
+
+// place is Project and Locate together: where c falls in the image, whether
+// it is in the picture at all, and whether nearer ground hides it there.
+func (p *Picture) place(c render.Coord) (x, y float64, seen, ok bool) {
 	m := p.mesh
 	gx, gy, err := m.grid.Pixel(c)
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
-	z, ok := m.heightAt(gx-0.5, gy-0.5)
-	if !ok {
-		return 0, 0, false
+	z, have := m.heightAt(gx-0.5, gy-0.5)
+	if !have {
+		return 0, 0, false, false
 	}
 	wx, wy := mercator.Project(c.Lon, c.Lat)
 	cp := p.cam.toCamera((wx-m.tx)*m.scale, -(wy-m.ty)*m.scale, z)
 	if cp[2] < nearMetres {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	sp := project(p.cam, point{cam: cp})
 	ix, iy := int(sp.x), int(sp.y)
 	if ix < 0 || iy < 0 || ix >= p.w || iy >= p.h {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	// Seen if nothing nearer was drawn there: within a few metres, or a
 	// twentieth of the distance, of the ground drawn at that pixel, so the
@@ -170,10 +187,8 @@ func (p *Picture) Locate(c render.Coord) (x, y float64, visible bool) {
 	// m deep -- and the ground drawn at its centre can be half that nearer
 	// than the place. A hill in the way hides by far more.
 	tolerance := math.Max(5, cp[2]/20)
-	if cp[2] > p.depth[iy*p.w+ix]+tolerance {
-		return sp.x / supersample, sp.y / supersample, false
-	}
-	return sp.x / supersample, sp.y / supersample, true
+	seen = cp[2] <= p.depth[iy*p.w+ix]+tolerance
+	return sp.x / supersample, sp.y / supersample, seen, true
 }
 
 // Render draws the scene from the camera.
