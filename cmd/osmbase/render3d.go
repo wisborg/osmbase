@@ -5,16 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"image"
-	"image/color"
 	"image/png"
 	"io"
 	"math"
 	"os"
-	"slices"
-
-	"golang.org/x/image/font"
-	"golang.org/x/image/math/fixed"
 
 	"github.com/wisborg/osmbase/perspective"
 	"github.com/wisborg/osmbase/render"
@@ -102,8 +96,8 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if width <= 0 || height <= 0 || width*height > maxRenderPixels {
 		return usageErrorf("--width %d --height %d is not an image this command draws", width, height)
 	}
-	if mapSize < 0 || mapSize > maxMapSide {
-		return usageErrorf("--map-size %d is not a map this command draws; at most %d", mapSize, maxMapSide)
+	if mapSize < 0 || mapSize > perspective.MaxMapSide {
+		return usageErrorf("--map-size %d is not a map this command draws; at most %d", mapSize, perspective.MaxMapSide)
 	}
 	cam := perspective.Camera{Target: render.Coord{Lat: lat, Lon: lon}, Distance: distance, Heading: heading, Pitch: pitch, FOV: fov}
 
@@ -140,7 +134,7 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		dLon := radius / (111.32 * math.Cos(lat*math.Pi/180))
 		bounds = render.Bounds{West: lon - dLon, South: lat - dLat, East: lon + dLon, North: lat + dLat}
 	}
-	view := mapView(bounds, cam, height, mapSize)
+	view := cam.MapView(bounds, height, mapSize)
 
 	// What the stores lack, offered before anything is drawn, as render
 	// offers it: the map first, then the terrain, each naming its host.
@@ -181,15 +175,15 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	pic, err := perspective.Render(
-		perspective.Scene{Map: res.Image, View: view, Heights: ts.Heights(), Exaggeration: exaggerate, Step: meshStep(view)},
+		perspective.Scene{Map: res.Image, View: view, Heights: ts.Heights(), Exaggeration: exaggerate, Step: perspective.StepFor(view)},
 		cam,
 		perspective.Options{Width: width, Height: height},
 	)
 	if err != nil {
 		return err
 	}
+	pic.DrawPlaceNames(res.PointLabels, colours)
 	img := pic.Image
-	drawUpright(img, pic, res.PointLabels, colours)
 	// The credit the map owed, in the picture, as for a 2D render.
 	drawCredit(img, res.Attribution)
 
@@ -215,7 +209,7 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "%-12s %s\n", "file", out)
 	fmt.Fprintf(stdout, "%-12s %d x %d pixels, looking %s at %s, %s from %g m, %g° down\n", "image",
 		width, height, compass(heading), formatCoord(lat), formatCoord(lon), distance, pitch)
-	wKM, hKM := boundsKM(view.Bounds)
+	wKM, hKM := perspective.BoundsKM(view.Bounds)
 	fmt.Fprintf(stdout, "%-12s %.1f by %.1f km, %d x %d pixels draped at zoom %d, %s covered, %s from shallower tiles\n", "map",
 		wKM, hKM, view.Width, view.Height, z, percent(res.Covered), percent(res.Overzoomed))
 	fmt.Fprintf(stdout, "%-12s %s of the map, from zoom %d\n", "terrain", percent(res.TerrainCovered), res.TerrainZoom)
@@ -239,87 +233,4 @@ func compass(deg float64) string {
 	points := []string{"north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"}
 	i := int(math.Mod(math.Round(deg/45), 8)+8) % 8
 	return points[i]
-}
-
-// drawUpright stands the names of places on the picture: each centred on
-// where its place appears, upright, with a halo in the colour of the land so
-// it reads on any ground, and only where the place is seen -- a name on the
-// far side of a hill is not drawn floating over the hill. They come most
-// important first, as the map placed them, and one that would overlap a name
-// already drawn is left out.
-func drawUpright(img *image.RGBA, pic *perspective.Picture, labels []render.PointLabel, p render.Palette) {
-	halo := p.Land
-	if p.Omits(render.RoleLand) {
-		halo = p.Background
-	}
-	var drawn []image.Rectangle
-	for _, l := range labels {
-		x, y, seen := pic.Locate(l.At)
-		if !seen || l.Face == nil {
-			continue
-		}
-		w := font.MeasureString(l.Face, l.Text).Ceil()
-		m := l.Face.Metrics()
-		asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
-		box := image.Rect(int(x)-w/2-4, int(y)-(asc+desc)/2-4, int(x)+w/2+4, int(y)+(asc+desc)/2+4)
-		if !box.In(img.Bounds()) {
-			continue
-		}
-		if slices.ContainsFunc(drawn, box.Overlaps) {
-			continue
-		}
-		drawn = append(drawn, box)
-		ink := p.Label
-		if l.Minor && p.LabelMinor != (color.RGBA{}) {
-			ink = p.LabelMinor
-		}
-		base := fixed.P(int(x)-w/2, int(y)-(asc+desc)/2+asc)
-		d := font.Drawer{Dst: img, Face: l.Face, Src: image.NewUniform(halo)}
-		for _, o := range [][2]int{{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}, {-2, 0}, {2, 0}, {0, -2}, {0, 2}} {
-			d.Dot = base.Add(fixed.P(o[0], o[1]))
-			d.DrawString(l.Text)
-		}
-		d.Src, d.Dot = image.NewUniform(ink), base
-		d.DrawString(l.Text)
-	}
-}
-
-// maxMapSide is the longest side of the map draped, in pixels.
-const maxMapSide = 8192
-
-// mapView is the view of bounds the map is drawn at: its longer side side
-// pixels, or when side is 0, about one map pixel to one image pixel at the
-// point the camera looks at, no more than maxMapSide.
-func mapView(b render.Bounds, cam perspective.Camera, imageHeight, side int) render.View {
-	wKM, hKM := boundsKM(b)
-	long := math.Max(wKM, hKM) * 1000
-	if side == 0 {
-		fov := cam.FOV
-		if fov == 0 {
-			fov = perspective.DefaultFOV
-		}
-		// Metres one image pixel spans at the point looked at.
-		perPixel := 2 * cam.Distance * math.Tan(fov*math.Pi/360) / float64(imageHeight)
-		side = int(math.Min(maxMapSide, math.Max(512, long/perPixel)))
-	}
-	w, h := side, side
-	if wKM > hKM {
-		h = max(1, int(float64(side)*hKM/wKM))
-	} else {
-		w = max(1, int(float64(side)*wKM/hKM))
-	}
-	return render.View{Bounds: b, Width: w, Height: h}
-}
-
-// meshStep is how many map pixels a mesh cell spans: the default, or more
-// for a large map, so the mesh stays near 512 cells a side however large the
-// map draped over it.
-func meshStep(v render.View) int {
-	return max(perspective.DefaultStep, max(v.Width, v.Height)/512)
-}
-
-// boundsKM is the width and height of b, in kilometres.
-func boundsKM(b render.Bounds) (w, h float64) {
-	mid := (b.North + b.South) / 2
-	return (b.East - b.West) * 111.32 * math.Cos(mid*math.Pi/180), (b.North - b.South) * 111.32
 }

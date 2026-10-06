@@ -51,7 +51,7 @@ package inside either of them.
 | `osmbase/boundary` | Admin polygon derivation, the compact on-disk format, containment. Answers country, region and water from Natural Earth, and the levels below them from derived OpenStreetMap files when a store holds any |
 | `osmbase/boundary/osm` | The three passes that turn an OSM extract into administrative outlines. Reads the file three times so the node set stays the boundaries' nodes rather than the country's |
 | `osmbase/acquire` | The **only** package that opens a socket |
-| `osmbase/perspective` | The map draped over a mesh of the ground's heights and drawn in perspective from a camera: the still a flyover is made of. Pure Go, z-buffered, imports only `render` and `mercator` |
+| `osmbase/perspective` | The map draped over a mesh of the ground's heights and drawn in perspective from a camera: the still a flyover is made of. Also what a program draping its own drawing needs around that: a camera framing a route, the map to draw for a camera, place names stood upright. Pure Go, z-buffered, imports only `render` and `mercator` |
 | `internal/protobuf` | The protobuf wire reader MVT and PBF both use |
 | `internal/inflate` | Decompression bounded while it expands, shared by `pmtiles`, `slice` and `osmpbf`; imports nothing that could fetch |
 | `cmd/osmbase` | Standalone CLI: `inspect`, `tile`, `geojson`, `fetch`, `boundaries`, `render` (with `--place`), `locate` |
