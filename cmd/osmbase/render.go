@@ -102,7 +102,7 @@ func renderCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	coords.bind(fs)
 	fs.IntVar(&width, "width", defaultWidth, "width of the output image in pixels")
 	fs.IntVar(&height, "height", defaultHeight, "height of the output image in pixels")
-	fs.StringVar(&palette, "palette", "light", "colours to draw with: light, dark, or dark-linework -- the dark map with its landuse fills dropped, leaving roads, rail and boundaries over near-black with water as the only fill")
+	fs.StringVar(&palette, "palette", "light", "colours to draw with: light, dark, dark-linework -- the dark map with its landuse fills dropped, leaving roads, rail and boundaries over near-black with water as the only fill -- or outdoors, richer and darker, for a map of terrain")
 	fs.StringVar(&store, "store", "", "draw from a store filled by \"osmbase fetch\" instead of from an archive; nothing reaches the network")
 	fs.StringVar(&archive, "archive", "", "which archive in the store to draw from, by ID or by part of its name; only needed when the store holds more than one")
 	fs.StringVar(&labels, "labels", "normal", labelHelp())
@@ -398,8 +398,10 @@ func paletteNamed(name string) (render.Palette, error) {
 		return render.DarkPalette(), nil
 	case "dark-linework":
 		return render.DarkLineworkPalette(), nil
+	case "outdoors":
+		return render.OutdoorsPalette(), nil
 	}
-	return render.Palette{}, usageErrorf("--palette %q is not one this command knows; it has light, dark and dark-linework", name)
+	return render.Palette{}, usageErrorf("--palette %q is not one this command knows; it has light, dark, dark-linework and outdoors", name)
 }
 
 // viewAround builds the view of width by height pixels centred on a coordinate

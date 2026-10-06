@@ -81,7 +81,7 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	fs.IntVar(&mapSize, "map-size", 0, "the longer side of the map draped over the ground, in pixels; more is sharper and slower (default: about one map pixel to one image pixel at the point looked at)")
 	fs.StringVar(&store, "store", "", "the map store to draw from (default: osmbase's own)")
 	fs.StringVar(&terrainAt, "terrain-store", "", "where the terrain is kept (default: beside the map's store, its name ending -terrain)")
-	fs.StringVar(&palette, "palette", "light", "colours to draw the map with: light, dark, or dark-linework")
+	fs.StringVar(&palette, "palette", "outdoors", "colours to draw the map with: outdoors, light, dark, or dark-linework")
 	fs.StringVar(&labels, "labels", "normal", labelHelp())
 	fs.StringVar(&terrainSrc, "terrain-source", defaultTerrainSource, "where terrain the store lacks would be fetched from, after asking: a host's address, or a directory of its archives")
 	fs.BoolVar(&yes, "yes", false, "fetch what the map and terrain stores lack for the view without asking first")

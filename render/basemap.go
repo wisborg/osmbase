@@ -536,6 +536,61 @@ func DarkLineworkPalette() Palette {
 	}
 }
 
+// OutdoorsPalette is a map of the ground for terrain: richer and darker than
+// the light palette -- forest a real green, land a warm paper, roads a tan
+// casing round white -- shaded and contoured, in the manner of a walking
+// map.
+//
+// It exists because the light palette cannot be that and remain what it is.
+// The light palette is pale so that mid-tone and dark routes stand out on
+// it, and its green is already as dark as its overlay allows: one step
+// darker and the overlay's dim ink falls below 3:1 against green in shadow
+// on a steep slope. A map with green forests needs the routes drawn over it
+// to be darker still, and that is a different pairing -- see
+// OutdoorsOverlay -- not a change to the light one.
+//
+// It is held to every rule the others are: no map ink louder than 4.5:1
+// against the background, every role told apart from every other, chroma
+// under the ceiling, and every overlay ink 3:1 clear of every map ink,
+// shaded extremes included, which is what makes the overlay so dark.
+func OutdoorsPalette() Palette {
+	return Palette{
+		Background: color.RGBA{R: 0xa7, G: 0xcb, B: 0xe8, A: 0xff},
+		Land:       color.RGBA{R: 0xf1, G: 0xed, B: 0xe0, A: 0xff},
+		Water:      color.RGBA{R: 0x86, G: 0xb4, B: 0xde, A: 0xff},
+		// Half the light palette's luminance: a wood reads as a wood.
+		// Saturated as far as MaxContextChroma allows and no further.
+		Green:      color.RGBA{R: 0x97, G: 0xb9, B: 0x86, A: 0xff},
+		Built:      color.RGBA{R: 0xe2, G: 0xd3, B: 0xbb, A: 0xff},
+		Building:   color.RGBA{R: 0xcb, G: 0xbf, B: 0xb1, A: 0xff},
+		Road:       color.RGBA{R: 0xbe, G: 0x9f, B: 0x78, A: 0xff},
+		RoadFill:   color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+		Ink:        color.RGBA{R: 0xa6, G: 0x89, B: 0x6a, A: 0xff},
+		Label:      color.RGBA{R: 0x23, G: 0x2b, B: 0x26, A: 0xff},
+		LabelMinor: color.RGBA{R: 0x3d, G: 0x46, B: 0x40, A: 0xff},
+		NoData:     color.RGBA{R: 0x8f, G: 0x2f, B: 0x20, A: 0xff},
+		Shade:      color.RGBA{R: 0x6a, G: 0x7a, B: 0x8c, A: 0xff},
+		Highlight:  color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+		// The red-brown of contours on printed maps, darker than the light
+		// palette's because the ground under it is.
+		Contour: color.RGBA{R: 0xb9, G: 0x80, B: 0x60, A: 0xff},
+	}
+}
+
+// OutdoorsOverlay is what is drawn over the outdoors palette: deep inks,
+// because they have to stand 3:1 clear of a map whose darkest ink, green in
+// shadow, is mid-toned -- a navy line, a crimson dot, a purple highlight, a
+// charcoal for what is quieter. Dark lines on a mid-toned map are how a
+// printed walking map draws its routes.
+func OutdoorsOverlay() Overlay {
+	return Overlay{
+		Foreground: color.RGBA{R: 0x14, G: 0x1a, B: 0x33, A: 0xff},
+		Accent:     color.RGBA{R: 0x6e, G: 0x0a, B: 0x26, A: 0xff},
+		Highlight:  color.RGBA{R: 0x3e, G: 0x16, B: 0x70, A: 0xff},
+		Dim:        color.RGBA{R: 0x35, G: 0x35, B: 0x35, A: 0xff},
+	}
+}
+
 // LightOverlay and DarkOverlay are the overlay inks each built-in palette was
 // tuned against.
 //

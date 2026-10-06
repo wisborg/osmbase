@@ -24,6 +24,7 @@ func TestBuiltInPalettesCarryTheirOverlay(t *testing.T) {
 	}{
 		{"light", render.LightPalette(), render.LightOverlay()},
 		{"dark", render.DarkPalette(), render.DarkOverlay()},
+		{"outdoors", render.OutdoorsPalette(), render.OutdoorsOverlay()},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if err := c.palette.CheckContrast(c.overlay); err != nil {
