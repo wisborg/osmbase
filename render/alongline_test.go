@@ -12,7 +12,7 @@ import (
 
 // placeOne is placeAlong's first spot, the one nearest the line's middle.
 func placeOne(lines [][]mvt.Point, tr tileTransform, w, h float64) (x, y, angle float64, ok bool) {
-	spots := placeAlong(lines, tr, w, h)
+	spots := placeAlong(lines, tr, w, h, 0)
 	if len(spots) == 0 {
 		return 0, 0, 0, false
 	}
@@ -181,7 +181,7 @@ func TestDrawAlongTurnsTheText(t *testing.T) {
 // A long line's name goes at its middle first and then every repeatSpacing
 // either side, as far as the line reaches; a short one's once.
 func TestPlaceAlongRepeatsOnALongLine(t *testing.T) {
-	spots := placeAlong(tileLine([2]int32{0, 100}, [2]int32{3000, 100}), identity, 100, 12)
+	spots := placeAlong(tileLine([2]int32{0, 100}, [2]int32{3000, 100}), identity, 100, 12, 0)
 	var xs []float64
 	for _, sp := range spots {
 		xs = append(xs, sp.x)
@@ -196,7 +196,7 @@ func TestPlaceAlongRepeatsOnALongLine(t *testing.T) {
 			t.Errorf("spot %d at %v, want %v", i, xs[i], want[i])
 		}
 	}
-	if n := len(placeAlong(tileLine([2]int32{0, 100}, [2]int32{500, 100}), identity, 100, 12)); n != 1 {
+	if n := len(placeAlong(tileLine([2]int32{0, 100}, [2]int32{500, 100}), identity, 100, 12, 0)); n != 1 {
 		t.Errorf("a 500-long line has %d spots, want 1", n)
 	}
 	// A long name is spaced by four of its own lengths instead.
@@ -233,5 +233,32 @@ func TestPlaceLabelsRepeatsRoadNamesApart(t *testing.T) {
 	}
 	if got := placeLabelsT([]candidate{point(100), point(2900)}, testFace(), DefaultLabelPadding, image.Rect(0, 0, 3000, 200)); len(got) != 1 {
 		t.Errorf("a place's name drawn %d times, want once", len(got))
+	}
+}
+
+// A name is turned to read left to right for the viewer it faces: an
+// east-west street reads eastward for a flat map's reader and westward for
+// one looking south, as a camera draped over the map from the north sees
+// it; a north-south one reads southward for a viewer looking east. Drawn
+// either way round, the line gives the same answer.
+func TestPlaceAlongReadsUprightForTheViewerFacing(t *testing.T) {
+	near := func(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
+	for _, c := range []struct {
+		name      string
+		from, to  [2]int32
+		facingDeg float64
+		want      float64
+	}{
+		{"east-west, north up", [2]int32{0, 100}, [2]int32{400, 100}, 0, 0},
+		{"east-west, north up, drawn westward", [2]int32{400, 100}, [2]int32{0, 100}, 0, 0},
+		{"east-west, looking south", [2]int32{0, 100}, [2]int32{400, 100}, 180, math.Pi},
+		{"east-west, looking south, drawn westward", [2]int32{400, 100}, [2]int32{0, 100}, 180, math.Pi},
+		{"north-south, looking east", [2]int32{100, 400}, [2]int32{100, 0}, 90, math.Pi / 2},
+		{"north-south, looking west", [2]int32{100, 0}, [2]int32{100, 400}, 270, -math.Pi / 2},
+	} {
+		spots := placeAlong(tileLine(c.from, c.to), identity, 100, 12, c.facingDeg*math.Pi/180)
+		if len(spots) == 0 || !near(spots[0].angle, c.want) {
+			t.Errorf("%s: %+v, want angle %.3f", c.name, spots, c.want)
+		}
 	}
 }

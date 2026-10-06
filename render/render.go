@@ -52,6 +52,7 @@ import (
 	"golang.org/x/image/font"
 	"image"
 	"image/color"
+	"math"
 
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/raster"
@@ -168,6 +169,16 @@ type Options struct {
 	// instead. Names along lines -- streets, rivers, contour heights --
 	// belong to the ground they follow and stay in the image.
 	LiftPointLabels bool
+
+	// LabelsFacing is the compass bearing, in degrees, of a viewer the
+	// names along lines -- streets, rivers, contour heights -- are turned
+	// to read upright for: 0, the default, is a flat map's reader, with
+	// north at the top. A map draped in perspective and seen looking south
+	// is read with north at the bottom, and every name turned for the flat
+	// map's reader reads upside down there; given the camera's heading,
+	// each is turned the other way when that is what reads left to right
+	// for the camera instead.
+	LabelsFacing float64
 }
 
 // PointLabel is the name of a place a render placed but did not draw: what
@@ -198,6 +209,7 @@ type Renderer struct {
 	terrain       HeightSource
 	terrainCredit string
 	terrainNotice string
+	labelsFacing  float64
 	liftPoints    bool
 }
 
@@ -236,6 +248,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
 		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels,
+		labelsFacing: o.LabelsFacing * math.Pi / 180,
 	}, nil
 }
 
@@ -347,7 +360,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	surface := raster.NewSurface(p.width, p.height)
 	surface.Background(r.palette.Background)
 
-	d := drawer{p: p, palette: r.palette, language: r.language}
+	d := drawer{p: p, palette: r.palette, language: r.language, facing: r.labelsFacing}
 
 	// Labels are placed before anything is drawn -- where they go depends
 	// on the tiles and the contours, not on the pixels -- because the
@@ -356,7 +369,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	var labels []placed
 	if r.labelFace != nil && (len(r.style.Labels) > 0 || len(contours) > 0) {
 		cands := d.collectLabels(r.style.Labels, r.style.LabelGrowth, tiles, p.tileZoom, r.faceFor)
-		cands = append(cands, contourLabels(contours, r.labelFace)...)
+		cands = append(cands, contourLabels(contours, r.labelFace, r.labelsFacing)...)
 		labels = placeLabels(cands, r.labelPad, surface.Bounds())
 	}
 

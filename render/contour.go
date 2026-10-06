@@ -366,7 +366,7 @@ func (q quad) contains(x, y float64) bool {
 
 // contourLabels are the index lines' heights, written along them where they
 // run straight for long enough, as label candidates below every name.
-func contourLabels(lines []contourLine, face font.Face) []candidate {
+func contourLabels(lines []contourLine, face font.Face, facing float64) []candidate {
 	if face == nil {
 		return nil
 	}
@@ -379,7 +379,7 @@ func contourLabels(lines []contourLine, face font.Face) []candidate {
 		}
 		text := strconv.FormatFloat(l.height, 'f', -1, 64)
 		w := float64(font.MeasureString(face, text).Ceil())
-		for n, sp := range placeAlongPixels([][]pt{l.pts}, w, h) {
+		for n, sp := range placeAlongPixels([][]pt{l.pts}, w, h, facing) {
 			out = append(out, candidate{
 				text: text, x: sp.x, y: sp.y, along: true, angle: sp.angle, scale: 1,
 				priority: contourPriority,

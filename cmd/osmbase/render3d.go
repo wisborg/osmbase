@@ -158,6 +158,9 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	o := render.Options{
 		Style: style, Palette: colours, Attribution: chosen.Attribution,
 		LabelFace: labelFace(), LabelFaceFor: labelFaceFor, LiftPointLabels: true,
+		// Names along streets and contours lie on the ground, and are turned
+		// to read upright for the camera rather than for a north-up reader.
+		LabelsFacing: heading,
 	}
 	if err := terrainInto(ts, &o, view); err != nil {
 		return err

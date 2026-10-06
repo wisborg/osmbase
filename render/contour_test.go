@@ -126,7 +126,7 @@ func TestContours_IndexLinesSeaLevelAndShortLines(t *testing.T) {
 func TestDrawContours_CutsTheLineUnderItsHeight(t *testing.T) {
 	rl := field(402, 102, func(x, y int) float64 { return float64(y) * 1 }) // rises to the south
 	lines := rl.contours(10)
-	cands := contourLabels(lines, basicfont.Face7x13)
+	cands := contourLabels(lines, basicfont.Face7x13, 0)
 	if len(cands) == 0 {
 		t.Fatal("no heights to place")
 	}
@@ -145,5 +145,23 @@ func TestDrawContours_CutsTheLineUnderItsHeight(t *testing.T) {
 	// Away from the label the same line is drawn.
 	if got := s.RGBA().RGBAAt(int(l.x)+150, int(l.y)); got.R == 0 && int(l.x)+150 < 400 {
 		t.Errorf("no line beside the label at %v,%v", int(l.x)+150, int(l.y))
+	}
+}
+
+// Contour heights are turned for the viewer as street names are: the same
+// level line labelled for a flat map's reader and for one looking south
+// reads in opposite directions.
+func TestContourLabelsReadUprightForTheViewerFacing(t *testing.T) {
+	var pts []pt
+	for x := 0.0; x <= 400; x += 10 {
+		pts = append(pts, pt{X: x, Y: 100})
+	}
+	lines := []contourLine{{pts: pts, height: 200, index: true}}
+	north, south := contourLabels(lines, basicfont.Face7x13, 0), contourLabels(lines, basicfont.Face7x13, math.Pi)
+	if len(north) == 0 || len(south) == 0 {
+		t.Fatalf("labels: %d facing north, %d facing south", len(north), len(south))
+	}
+	if math.Abs(north[0].angle) > 1e-6 || math.Abs(math.Abs(south[0].angle)-math.Pi) > 1e-6 {
+		t.Errorf("angles %.3f facing north and %.3f facing south; want 0 and ±π", north[0].angle, south[0].angle)
 	}
 }

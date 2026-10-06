@@ -72,13 +72,17 @@ type spot struct{ x, y, angle float64 }
 // middle of the line and then every repeatSpacing either side of it, each
 // nudged to the nearest straight stretch. The angle is the stretch's
 // direction, turned if need be so the text reads left to right, never
-// upside down.
+// upside down, for a viewer facing the compass bearing facing, in radians:
+// 0 for a flat map, read north up. Seen facing h, a direction on the map
+// points right on the viewer's screen when it is within a right angle of
+// (cos h, sin h) in surface pixels -- east turned clockwise by h, y running
+// south -- so a name is turned when its direction is not.
 //
 // There are none when the line is shorter on the map than its own name, or
 // bends everywhere: a name longer than its street, or wrapped round a
 // corner, labels nothing and is clutter, so it is not drawn. The first spot
 // is the one nearest the middle.
-func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h float64) []spot {
+func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h, facing float64) []spot {
 	parts := make([][]pt, 0, len(lines))
 	for _, line := range lines {
 		ps := make([]pt, len(line))
@@ -87,12 +91,12 @@ func placeAlong(lines [][]mvt.Point, tr tileTransform, w, h float64) []spot {
 		}
 		parts = append(parts, ps)
 	}
-	return placeAlongPixels(parts, w, h)
+	return placeAlongPixels(parts, w, h, facing)
 }
 
 // placeAlongPixels is placeAlong for lines already in surface pixels: a
 // contour traced from the view's own heights has no tile to come from.
-func placeAlongPixels(parts [][]pt, w, h float64) []spot {
+func placeAlongPixels(parts [][]pt, w, h, facing float64) []spot {
 	var best []pt
 	var bestLen float64
 	for _, ps := range parts {
@@ -147,7 +151,7 @@ func placeAlongPixels(parts [][]pt, w, h float64) []spot {
 		}
 		mid, _ := at(s)
 		angle := math.Atan2(dy, dx)
-		if math.Cos(angle) < 0 {
+		if math.Cos(angle-facing) < 0 {
 			angle += math.Pi
 			if angle > math.Pi {
 				angle -= 2 * math.Pi

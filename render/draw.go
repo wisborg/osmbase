@@ -31,8 +31,10 @@ type drawer struct {
 	p        projection
 	palette  Palette
 	language string
-	path     raster.Path
-	clip     clipper
+	// facing is Options.LabelsFacing, in radians.
+	facing float64
+	path   raster.Path
+	clip   clipper
 
 	// src is the current ring or line transformed into surface pixels, and dst
 	// the clipped result converted to the rasterizer's float32.
@@ -437,7 +439,7 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 			m := face.Metrics()
 			w := float64(font.MeasureString(face, text).Ceil())
 			h := float64(m.Ascent.Ceil() + m.Descent.Ceil())
-			for n, sp := range placeAlong(f.Geometry.Lines, tr, w, h) {
+			for n, sp := range placeAlong(f.Geometry.Lines, tr, w, h, d.facing) {
 				*out = append(*out, candidate{
 					text: text, x: sp.x, y: sp.y, along: true, angle: sp.angle, scale: scale, onRoad: rule.OnRoad,
 					priority: rule.Priority,
