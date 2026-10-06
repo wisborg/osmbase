@@ -230,3 +230,22 @@ func BoundsKM(b render.Bounds) (w, h float64) {
 	mid := (b.North + b.South) / 2
 	return (b.East - b.West) * 111.32 * math.Cos(mid*math.Pi/180), (b.North - b.South) * 111.32
 }
+
+// Level is level ground at sea level, as a height source: what a program
+// drapes its map over when it holds no heights for the area, so the
+// picture is the map tilted rather than nothing at all. A source that holds
+// no tile leaves the mesh without vertices there, and a mesh without
+// vertices draws only sky.
+var Level render.HeightSource = level{}
+
+type level struct{}
+
+// levelSize is the side of the grid level serves: small, since every
+// sample is the same.
+const levelSize = 16
+
+var levelGrid = make([]float32, levelSize*levelSize)
+
+func (level) Heights(z uint8, x, y uint32) ([]float32, int, bool, error) {
+	return levelGrid, levelSize, true, nil
+}

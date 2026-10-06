@@ -125,6 +125,50 @@ func Draw(img *image.RGBA, v View, d Drawing, face font.Face) error {
 	return nil
 }
 
+// DrawMarkers draws markers over img where at places them, in img's pixels,
+// leaving out any at says is not seen -- halos first, then dots, then
+// labels, as Draw does, and looking the same.
+//
+// It is Draw's markers for a picture that is not a flat view of the map: a
+// map drawn in perspective, where a start, a finish or a distance marker
+// lying on the ground is squashed into a smear by distance and slope, and
+// standing upright where its place is seen it reads as it does on a flat
+// map. A marker's place has no size, so whether it is seen is one question,
+// asked of at once; a dot near the edge is clipped as any drawing is.
+//
+// face is the font for labels, and may be nil when no marker has one.
+func DrawMarkers(img *image.RGBA, markers []Marker, at func(Coord) (x, y float64, seen bool), face font.Face) {
+	type placed struct {
+		m Marker
+		c pt
+	}
+	var ps []placed
+	for _, m := range markers {
+		if x, y, ok := at(m.At); ok {
+			ps = append(ps, placed{m, pt{X: x, Y: y}})
+		}
+	}
+	s := raster.NewSurfaceOn(img)
+	var path raster.Path
+	for _, p := range ps {
+		if p.m.Halo > 0 && p.m.Radius > 0 {
+			dotAt(s, &path, p.c, p.m.Radius+p.m.Halo, p.m.HaloInk)
+		}
+	}
+	for _, p := range ps {
+		if p.m.Radius > 0 {
+			dotAt(s, &path, p.c, p.m.Radius, p.m.Ink)
+		}
+	}
+	if face != nil {
+		for _, p := range ps {
+			if p.m.Label != "" {
+				labelAt(img, p.m, p.c, face)
+			}
+		}
+	}
+}
+
 func boundsOf(img *image.RGBA) image.Rectangle {
 	if img == nil {
 		return image.Rectangle{}
@@ -217,9 +261,14 @@ func (o *overlayDrawer) dot(s *raster.Surface, at Coord, r float64, ink color.RG
 	if b := o.p.surface().inflate(r); c.X < b.MinX || c.X > b.MaxX || c.Y < b.MinY || c.Y > b.MaxY {
 		return
 	}
-	o.path.Reset()
-	o.path.Circle(raster.Point{X: float32(c.X), Y: float32(c.Y)}, float32(r))
-	s.Fill(&o.path, ink)
+	dotAt(s, &o.path, c, r, ink)
+}
+
+// dotAt fills a circle of radius r at c, in surface pixels.
+func dotAt(s *raster.Surface, path *raster.Path, c pt, r float64, ink color.RGBA) {
+	path.Reset()
+	path.Circle(raster.Point{X: float32(c.X), Y: float32(c.Y)}, float32(r))
+	s.Fill(path, ink)
 }
 
 // label writes a marker's label beside it, with a halo round the letters.
@@ -231,8 +280,12 @@ func (o *overlayDrawer) dot(s *raster.Surface, at Coord, r float64, ink color.RG
 // stroked outline, with no dependency on glyph outlines this package does
 // not otherwise need.
 func (o *overlayDrawer) label(dst *image.RGBA, m Marker, face font.Face) {
+	labelAt(dst, m, o.pixel(m.At), face)
+}
+
+// labelAt is label with the marker at c, in image pixels.
+func labelAt(dst *image.RGBA, m Marker, c pt, face font.Face) {
 	m.Label = Visual(m.Label)
-	c := o.pixel(m.At)
 	adv := font.MeasureString(face, m.Label).Ceil()
 	gap := int(m.Radius+m.Halo) + 3
 	x := int(c.X) + gap

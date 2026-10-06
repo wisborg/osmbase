@@ -248,3 +248,41 @@ func TestSplitAtAntimeridian(t *testing.T) {
 		t.Errorf("a line nowhere near 180° was cut: %v", got)
 	}
 }
+
+// DrawMarkers, placing markers where the view does, draws exactly what Draw
+// draws -- the same dots, halos and labels -- and leaves out a marker its
+// placing says is not seen.
+func TestDrawMarkersMatchesDrawAndSkipsTheUnseen(t *testing.T) {
+	v := overlayView()
+	ms := []Marker{
+		{At: at(v, 60, 100), Ink: red, Radius: 5, Halo: 2, HaloInk: halo, Label: "Start"},
+		{At: at(v, 140, 60), Ink: blue, Radius: 3, Halo: 1, HaloInk: halo, Label: "3"},
+	}
+	want := blank(v)
+	if err := Draw(want, v, Drawing{Markers: ms}, basicfont.Face7x13); err != nil {
+		t.Fatal(err)
+	}
+	p, err := resolve(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	place := func(c Coord) (float64, float64, bool) {
+		x, y := mercator.Project(c.Lon, c.Lat)
+		return p.pixelX(x), p.pixelY(y), true
+	}
+	got := blank(v)
+	DrawMarkers(got, ms, place, basicfont.Face7x13)
+	for i := range got.Pix {
+		if got.Pix[i] != want.Pix[i] {
+			t.Fatalf("DrawMarkers differs from Draw at byte %d (pixel %d, %d)", i, (i/4)%v.Width, (i/4)/v.Width)
+		}
+	}
+
+	hidden := blank(v)
+	DrawMarkers(hidden, ms, func(Coord) (float64, float64, bool) { return 100, 100, false }, basicfont.Face7x13)
+	for i := range hidden.Pix {
+		if hidden.Pix[i] != blank(v).Pix[i] {
+			t.Fatal("a marker said not to be seen was drawn")
+		}
+	}
+}

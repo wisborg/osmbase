@@ -56,3 +56,12 @@ func (p *Picture) DrawPlaceNames(labels []render.PointLabel, pal render.Palette)
 		d.DrawString(l.Text)
 	}
 }
+
+// DrawMarkers draws markers -- a route's start and finish, its distance
+// markers -- standing upright where their places are seen, as
+// render.DrawMarkers draws them, and leaves out those a hill hides or the
+// picture does not take in. Draped with the map instead, they lie on the
+// ground, and a label in the distance or on a slope is squashed past reading.
+func (p *Picture) DrawMarkers(markers []render.Marker, face font.Face) {
+	render.DrawMarkers(p.Image, markers, p.Locate, face)
+}

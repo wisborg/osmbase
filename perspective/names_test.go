@@ -70,3 +70,32 @@ func TestDrawPlaceNames(t *testing.T) {
 		t.Errorf("a place behind the hill had its name drawn: %d pixels", n)
 	}
 }
+
+// A marker on the ground is drawn standing where its place is seen, and one
+// behind a hill is not drawn at all.
+func TestDrawMarkersStandsThemWhereSeen(t *testing.T) {
+	ink := color.RGBA{R: 0xff, A: 0xff}
+	face := basicfont.Face7x13
+	top, err := Render(scene(0.02, flat, quadrants), Camera{Target: centre, Distance: 2000, Pitch: 90}, Options{Width: 200, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	top.DrawMarkers([]render.Marker{{At: centre, Ink: ink, Radius: 4, Label: "Start"}}, face)
+	if top.Image.RGBAAt(100, 50) != ink {
+		t.Errorf("the marker's dot is not at the place looked at: %v there", top.Image.RGBAAt(100, 50))
+	}
+	if inked(top.Image, image.Rect(104, 40, 150, 60), ink) == 0 {
+		t.Error("no label beside the marker")
+	}
+
+	cone := func(e, n float64) float64 { return max(0, 600*(1-(e*e+n*n)/(1500*1500))) }
+	low, err := Render(scene(0.05, cone, quadrants), Camera{Target: centre, Distance: 4000, Pitch: 2}, Options{Width: 300, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	behind := render.Coord{Lat: centre.Lat + 1800.0/110_574, Lon: centre.Lon}
+	low.DrawMarkers([]render.Marker{{At: behind, Ink: ink, Radius: 4, Label: "Finish"}}, face)
+	if n := inked(low.Image, low.Image.Bounds(), ink); n != 0 {
+		t.Errorf("a marker behind the hill was drawn: %d pixels", n)
+	}
+}

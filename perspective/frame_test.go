@@ -88,3 +88,16 @@ func TestFrameEdges(t *testing.T) {
 		t.Error("a level camera framed points on the ground")
 	}
 }
+
+// Draped over Level, a map is drawn: ground below the horizon, not sky.
+func TestLevelGroundIsDrawn(t *testing.T) {
+	s := scene(0.02, flat, quadrants)
+	s.Heights = Level
+	pic, err := Render(s, Camera{Target: centre, Distance: 2000, Pitch: 90}, Options{Width: 40, Height: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := pic.Image.RGBAAt(20, 20); c == DefaultSky || c == DefaultHorizon {
+		t.Errorf("the middle of a map draped over level ground is %v, the sky's", c)
+	}
+}
