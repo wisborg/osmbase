@@ -149,7 +149,7 @@ func (f *frame) fill(cv view, tex *texture, haze color.RGBA, hazeM float64, pa, 
 			// Faded into the haze toward the edge of the map, so the
 			// ground ends in distance rather than in a straight line
 			// against the sky; and with distance, as the air does.
-			fade := math.Max(tex.edgeFade(u, v), 1-math.Exp(-z/hazeM))
+			fade := math.Max(tex.edgeFade(u, v), hazeAt(z, hazeM))
 			col = mixRGBA(col, haze, fade)
 			o := i * 4
 			f.img.Pix[o], f.img.Pix[o+1], f.img.Pix[o+2], f.img.Pix[o+3] = col.R, col.G, col.B, 0xff
@@ -197,6 +197,17 @@ func newTexture(m image.Image) *texture {
 		draw.Draw(rgba, rgba.Rect, m, b.Min, draw.Src)
 	}
 	return &texture{img: rgba, w: rgba.Rect.Dx(), h: rgba.Rect.Dy()}
+}
+
+// hazeAt is how far toward the haze ground z metres away is drawn: rising
+// with the square of the distance, so the ground near the camera is clear
+// and the haze closes in beyond -- about a tenth at a third of hazeM, two
+// thirds at hazeM, all but all at twice it. It first rose with the distance
+// itself, which put a quarter haze on the very point looked at and washed
+// the whole picture pale.
+func hazeAt(z, hazeM float64) float64 {
+	r := z / hazeM
+	return 1 - math.Exp(-r*r)
 }
 
 // edgeFraction is how much of the map, from each edge, fades into the haze:

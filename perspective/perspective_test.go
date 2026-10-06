@@ -316,3 +316,42 @@ func TestLocateFindsPlacesAndKnowsWhatIsHidden(t *testing.T) {
 		}
 	}
 }
+
+// The footprint is what the lens sees: straight down, a rectangle round the
+// point looked at as wide as the lens is; looking north and low, ground
+// reaching far ahead and little behind; and a wider lens, more to the sides.
+func TestFootprintIsWhatTheLensSees(t *testing.T) {
+	down := Camera{Target: centre, Distance: 1000, Pitch: 90}.Footprint(1, 1e6)
+	half := 1000 * math.Tan(DefaultFOV*math.Pi/360) // metres from the centre to an edge
+	if got := (down.North - centre.Lat) * 111_319.5; math.Abs(got-half) > 1 {
+		t.Errorf("straight down, the footprint reaches %.1f m north, want %.1f", got, half)
+	}
+	low := Camera{Target: centre, Distance: 1000, Pitch: 10}
+	fp := low.Footprint(4.0/3, 20000)
+	ahead, behind := (fp.North-centre.Lat)*111_319.5, (centre.Lat-fp.South)*111_319.5
+	if !(ahead > 15000 && behind < 1500) {
+		t.Errorf("low and north: %.0f m ahead and %.0f m behind; want far ahead and little behind", ahead, behind)
+	}
+	wide := low
+	wide.FOV = 80
+	if w, n := wide.Footprint(4.0/3, 20000), fp; !(w.East-w.West > 1.5*(n.East-n.West)) {
+		t.Errorf("an 80 degree lens sees %.4f degrees across, a 40 degree one %.4f; want the wider lens to see far more", w.East-w.West, n.East-n.West)
+	}
+}
+
+// The map's bounds hold what the lens sees with room to spare on every side
+// for the fade at the map's edge, so the fade is never in the picture.
+func TestMapBoundsHoldTheFootprintAndTheFade(t *testing.T) {
+	c := Camera{Target: centre, Distance: 1000, Pitch: 25, FOV: 80}
+	fp, mb := c.Footprint(4.0/3, c.VisibleRange()), c.MapBounds(4.0/3)
+	if !(mb.West < fp.West && mb.East > fp.East && mb.South < fp.South && mb.North > fp.North) {
+		t.Fatalf("map bounds %+v do not hold the footprint %+v", mb, fp)
+	}
+	// The fade takes edgeFraction of the map's shorter side from each edge;
+	// what is left must still hold the footprint.
+	w, h := mb.East-mb.West, mb.North-mb.South
+	inset := edgeFraction * math.Min(w, h)
+	if fp.West < mb.West+inset*0.99 || fp.South < mb.South+inset*0.99 {
+		t.Errorf("the fade reaches into the footprint")
+	}
+}

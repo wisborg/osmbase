@@ -59,6 +59,16 @@ type Camera struct {
 	FOV float64
 }
 
+// HazeMetres is how far from this camera ground is about two-thirds haze by
+// default: three times its distance from the point looked at, which is
+// then a tenth haze, and the horizon faint.
+func (c Camera) HazeMetres() float64 { return 3 * c.Distance }
+
+// VisibleRange is how far from this camera ground can still be told from
+// the haze: 1.75 times HazeMetres, where it is 95% haze. A map draped for
+// the camera need reach no further.
+func (c Camera) VisibleRange() float64 { return 1.75 * c.HazeMetres() }
+
 // DefaultFOV is a camera's vertical field of view when it says none: about
 // a 50 mm lens on a full-frame camera, which looks like a view rather than a
 // fisheye or a telescope.
@@ -91,16 +101,20 @@ type Options struct {
 	Sky, Horizon color.RGBA
 	// Haze is what distant ground fades toward; zero is the horizon colour.
 	Haze color.RGBA
-	// HazeMetres is how far away ground is a little under two-thirds haze;
-	// 0 is four times the camera's distance, so the target is clear and the
-	// horizon faint.
+	// HazeMetres is how far away ground is about two-thirds haze;
+	// 0 is the camera's HazeMetres, so the target is clear and the horizon
+	// faint.
 	HazeMetres float64
 }
 
-// The default sky: a pale blue overhead, paler toward the horizon.
+// The default sky: a clear blue overhead, paling toward the horizon, which
+// is also what distant ground fades toward -- the blue of distance, which is
+// most of what makes a far ridge read as far. The first sky was so pale,
+// grey-white at the horizon, that the ground's own pale colours ran into it
+// and the horizon had no edge.
 var (
-	DefaultSky     = color.RGBA{R: 0x9c, G: 0xbf, B: 0xe2, A: 0xff}
-	DefaultHorizon = color.RGBA{R: 0xe2, G: 0xea, B: 0xf1, A: 0xff}
+	DefaultSky     = color.RGBA{R: 0x4a, G: 0x82, B: 0xc8, A: 0xff}
+	DefaultHorizon = color.RGBA{R: 0xc6, G: 0xd9, B: 0xee, A: 0xff}
 )
 
 // supersample is how many times the image's size it is drawn at, each way,
@@ -192,7 +206,7 @@ func Render(s Scene, c Camera, o Options) (*Picture, error) {
 	haze := orDefault(o.Haze, horizon)
 	hazeM := o.HazeMetres
 	if hazeM <= 0 {
-		hazeM = 4 * c.Distance
+		hazeM = c.HazeMetres()
 	}
 
 	w, h := o.Width*supersample, o.Height*supersample

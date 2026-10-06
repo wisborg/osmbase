@@ -590,38 +590,8 @@ func percent(f float64) string {
 // acquire nor net/http, so "this render is offline" is a property of the
 // import graph rather than a promise in a comment.
 func renderFromStore(ctx context.Context, root, archive string, view render.View, colours render.Palette, style render.Style, palette, out string, yes bool, ts *terrain.Store, stdout, stderr io.Writer) error {
-	// The zoom the renderer will ask the store for, from the renderer.
-	z, _, err := view.Zoom()
+	chosen, src, err := mapFor(ctx, root, archive, view, yes, stderr)
 	if err != nil {
-		return err
-	}
-	b := slice.Bounds{West: view.Bounds.West, South: view.Bounds.South, East: view.Bounds.East, North: view.Bounds.North}
-
-	// Measured before drawing and from the disk alone, so the question of
-	// whether to fetch comes before anything is read. See offerToFill.
-	chosen, src, noMap, err := openStoreSource(root, archive)
-	switch {
-	case err == nil:
-		// No deeper than the archive this store was filled from goes;
-		// past that, overzoom is the answer and there is nothing to fetch.
-		zoom := fetch.DrawnZoom(src, z)
-		held, wanted, herr := src.HeldAt(b, zoom)
-		if herr == nil && held < wanted &&
-			offerToFill(ctx, stderr, shortfall{root: root, source: chosen.Source, bounds: b, zoom: zoom, held: held, wanted: wanted}, yes) {
-			if chosen, src, _, err = openStoreSource(root, archive); err != nil {
-				return err
-			}
-		}
-	case noMap:
-		// No store, or one holding nothing: the same offer, from the
-		// default archive, and the old refusal if it is declined.
-		if !offerToFill(ctx, stderr, shortfall{root: root, bounds: b, zoom: z, empty: true}, yes) {
-			return err
-		}
-		if chosen, src, _, err = openStoreSource(root, archive); err != nil {
-			return err
-		}
-	default:
 		return err
 	}
 
@@ -657,6 +627,47 @@ func renderFromStore(ctx context.Context, root, archive string, view render.View
 	fmt.Fprintf(stdout, "%-12s %s\n", "store", root)
 	writeRenderReport(stdout, out, view, res, palette)
 	return nil
+}
+
+// mapFor opens the store's map for drawing view, first offering to fetch
+// what the view lacks: render and render3d alike.
+//
+// Measured before drawing and from the disk alone, so the question of
+// whether to fetch comes before anything is read. See offerToFill.
+func mapFor(ctx context.Context, root, archive string, view render.View, yes bool, stderr io.Writer) (slice.Manifest, *slice.Source, error) {
+	// The zoom the renderer will ask the store for, from the renderer.
+	z, _, err := view.Zoom()
+	if err != nil {
+		return slice.Manifest{}, nil, err
+	}
+	b := slice.Bounds{West: view.Bounds.West, South: view.Bounds.South, East: view.Bounds.East, North: view.Bounds.North}
+
+	chosen, src, noMap, err := openStoreSource(root, archive)
+	switch {
+	case err == nil:
+		// No deeper than the archive this store was filled from goes;
+		// past that, overzoom is the answer and there is nothing to fetch.
+		zoom := fetch.DrawnZoom(src, z)
+		held, wanted, herr := src.HeldAt(b, zoom)
+		if herr == nil && held < wanted &&
+			offerToFill(ctx, stderr, shortfall{root: root, source: chosen.Source, bounds: b, zoom: zoom, held: held, wanted: wanted}, yes) {
+			if chosen, src, _, err = openStoreSource(root, archive); err != nil {
+				return slice.Manifest{}, nil, err
+			}
+		}
+	case noMap:
+		// No store, or one holding nothing: the same offer, from the
+		// default archive, and the old refusal if it is declined.
+		if !offerToFill(ctx, stderr, shortfall{root: root, bounds: b, zoom: z, empty: true}, yes) {
+			return slice.Manifest{}, nil, err
+		}
+		if chosen, src, _, err = openStoreSource(root, archive); err != nil {
+			return slice.Manifest{}, nil, err
+		}
+	default:
+		return slice.Manifest{}, nil, err
+	}
+	return chosen, src, nil
 }
 
 // defaultStoreWithAMap is the default store, when it exists and holds at
