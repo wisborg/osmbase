@@ -173,3 +173,29 @@ func TestRelief_ContoursFollowThePalette(t *testing.T) {
 		t.Errorf("contours alone: interval %v, covered %v, credit %q", res.ContourInterval, res.TerrainCovered, res.Attribution)
 	}
 }
+
+// Heights reads the ground under every pixel of a view: here a ridge, so
+// the heights rise from the west edge to the middle and fall again, and a
+// source with no heights is NaN everywhere rather than a flat zero.
+func TestHeights_ReadsTheGroundUnderEveryPixel(t *testing.T) {
+	_, v := reliefMap(t)
+	v.Width, v.Height = 64, 64
+	hs, err := render.Heights(ridge, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hs) != 64*64 {
+		t.Fatalf("%d heights for a 64 by 64 view", len(hs))
+	}
+	row := hs[32*64 : 33*64]
+	if !(row[0] < row[16] && row[16] < row[31] && row[31] > row[48] && row[48] > row[63]) {
+		t.Errorf("across the ridge: %v, %v, %v, %v, %v; want rising to the middle and falling", row[0], row[16], row[31], row[48], row[63])
+	}
+	none, err := render.Heights(heights{}, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := none[100]; h == h {
+		t.Errorf("no heights read as %v, want NaN: unknown is not zero", h)
+	}
+}

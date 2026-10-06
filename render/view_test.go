@@ -221,3 +221,29 @@ func TestTileRange_ClampsToTheGridRatherThanWrapping(t *testing.T) {
 		t.Errorf("tileRange at zoom %d gave x %d..%d, y %d..%d, outside a grid of %d", p.tileZoom, x0, x1, y0, y1, last+1)
 	}
 }
+
+// Coord and Pixel are each other's inverse, and agree with how a render
+// lays a view out: the centre of the view is the centre of its bounds.
+func TestView_CoordAndPixelRoundTrip(t *testing.T) {
+	v := View{Bounds: Bounds{West: 151.0, South: -33.8, East: 151.2, North: -33.6}, Width: 800, Height: 400}
+	c, err := v.Coord(400, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(c.Lon-151.1) > 1e-9 {
+		t.Errorf("centre longitude %v, want 151.1", c.Lon)
+	}
+	for _, p := range [][2]float64{{0, 0}, {800, 400}, {123.5, 321.25}} {
+		c, err := v.Coord(p[0], p[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		x, y, err := v.Pixel(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if math.Abs(x-p[0]) > 1e-6 || math.Abs(y-p[1]) > 1e-6 {
+			t.Errorf("(%v, %v) round-tripped to (%v, %v)", p[0], p[1], x, y)
+		}
+	}
+}

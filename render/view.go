@@ -324,3 +324,28 @@ func gridIndex(v float64, last uint32) uint32 {
 	}
 	return uint32(v)
 }
+
+// Coord is where on the globe the point (x, y) of the view is, in its
+// pixels from the north-west corner: (0, 0) that corner, (0.5, 0.5) the
+// centre of its first pixel. The view is resolved as a render resolves it,
+// so this is where the rendered image shows that point.
+func (v View) Coord(x, y float64) (Coord, error) {
+	p, err := resolve(v)
+	if err != nil {
+		return Coord{}, err
+	}
+	lon, lat := mercator.Unproject(p.originX+x/p.scale, p.originY+y/p.scale)
+	return Coord{Lat: lat, Lon: lon}, nil
+}
+
+// Pixel is Coord undone: where in the view, in its pixels from the
+// north-west corner, the point c is drawn. A point outside the view gives a
+// position outside the image.
+func (v View) Pixel(c Coord) (x, y float64, err error) {
+	p, err := resolve(v)
+	if err != nil {
+		return 0, 0, err
+	}
+	wx, wy := mercator.Project(c.Lon, c.Lat)
+	return p.pixelX(wx), p.pixelY(wy), nil
+}

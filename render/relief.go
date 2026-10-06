@@ -145,21 +145,7 @@ func computeRelief(src HeightSource, p projection, shade bool) (*relief, error) 
 	// The height at every output pixel, with a pixel of margin all round so
 	// the edges have neighbours to take a slope from.
 	w, h := p.width+2, p.height+2
-	field := make([]float32, w*h)
-	known := 0
-	for py := 0; py < h; py++ {
-		wy := p.originY + (float64(py-1)+0.5)/p.scale
-		gy := wy*g.worldSize - 0.5 - float64(g.y0)
-		for px := 0; px < w; px++ {
-			wx := p.originX + (float64(px-1)+0.5)/p.scale
-			gx := wx*g.worldSize - 0.5 - float64(g.x0)
-			v := g.bilinear(gx, gy)
-			field[py*w+px] = v
-			if px > 0 && py > 0 && px < w-1 && py < h-1 && !isNaN32(v) {
-				known++
-			}
-		}
-	}
+	field, known := g.field(p, 1)
 
 	// Metres per output pixel at the view's centre: the mercator scale
 	// varies across a view, but the blur radius is a coarse number and one
@@ -200,6 +186,63 @@ func computeRelief(src HeightSource, p projection, shade bool) (*relief, error) 
 	}
 	rl.amount = amount
 	return rl, nil
+}
+
+// field is the height at the centre of every pixel of the view p projects,
+// with margin pixels of it all round -- (width+2*margin) by
+// (height+2*margin), row by row from the north-west -- interpolated from
+// the grid, NaN where no height is known; and how many of the view's own
+// pixels, margin aside, have one.
+func (g *demGrid) field(p projection, margin int) ([]float32, int) {
+	w, h := p.width+2*margin, p.height+2*margin
+	out := make([]float32, w*h)
+	known := 0
+	for py := 0; py < h; py++ {
+		wy := p.originY + (float64(py-margin)+0.5)/p.scale
+		gy := wy*g.worldSize - 0.5 - float64(g.y0)
+		for px := 0; px < w; px++ {
+			wx := p.originX + (float64(px-margin)+0.5)/p.scale
+			gx := wx*g.worldSize - 0.5 - float64(g.x0)
+			v := g.bilinear(gx, gy)
+			out[py*w+px] = v
+			if px >= margin && py >= margin && px < w-margin && py < h-margin && !isNaN32(v) {
+				known++
+			}
+		}
+	}
+	return out, known
+}
+
+// Heights is the height of the ground, in metres, at the centre of every
+// pixel of the view: Width by Height values, row by row from the north-west,
+// NaN where src holds no height at any zoom. It is read as the shading reads
+// it -- at the elevation zoom nearest one sample per pixel, walking up to a
+// shallower tile where one is missing, interpolated -- and is neither
+// smoothed nor exaggerated: what the data says, for a caller drawing the
+// ground some other way, such as in perspective.
+//
+// The view is resolved as a render resolves it, so the heights of a view and
+// the map rendered for the same view cover the same ground, pixel for pixel
+// in proportion: a grid of a quarter of the map's size in each direction
+// lands on every fourth pixel of it.
+func Heights(src HeightSource, v View) ([]float32, error) {
+	if src == nil {
+		return nil, fmt.Errorf("render: no height source to read heights from")
+	}
+	p, err := resolve(v)
+	if err != nil {
+		return nil, err
+	}
+	dz := uint8(0)
+	if p.tileZoom > 0 {
+		dz = p.tileZoom - 1
+	}
+	g, err := readGrid(src, p, dz)
+	if err != nil {
+		return nil, err
+	}
+	out, _ := g.field(p, 0)
+	return out, nil
 }
 
 // shadeOf is the tint for a surface rising dzdx to the east and dzdy to the
