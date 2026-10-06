@@ -88,11 +88,11 @@ func near(a, b color.RGBA) bool {
 
 func render1(t *testing.T, s Scene, c Camera, w, h int) *image.RGBA {
 	t.Helper()
-	img, err := Render(s, c, Options{Width: w, Height: h, HazeMetres: 1e12})
+	pic, err := Render(s, c, Options{Width: w, Height: h, HazeMetres: 1e12})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return img
+	return pic.Image
 }
 
 // Straight down, the map is the map: north up when looking north, and
@@ -250,10 +250,11 @@ func TestRefusesWhatIsNotACamera(t *testing.T) {
 func TestTheMapsEdgeFadesIntoTheHaze(t *testing.T) {
 	s := scene(0.02, flat, func(bool, bool) color.RGBA { return red })
 	haze := color.RGBA{R: 0x20, G: 0x40, B: 0x60, A: 0xff}
-	img, err := Render(s, Camera{Target: centre, Distance: 30000, Pitch: 90}, Options{Width: 200, Height: 200, Haze: haze, HazeMetres: 1e12})
+	pic, err := Render(s, Camera{Target: centre, Distance: 30000, Pitch: 90}, Options{Width: 200, Height: 200, Haze: haze, HazeMetres: 1e12})
 	if err != nil {
 		t.Fatal(err)
 	}
+	img := pic.Image
 	// Find the map's extent along the middle row: where the ground starts.
 	row := 100
 	left := -1
@@ -276,5 +277,42 @@ func TestTheMapsEdgeFadesIntoTheHaze(t *testing.T) {
 	}
 	if c := img.RGBAAt(100, row); !near(c, red) {
 		t.Errorf("in the middle: %v, want the map's red", c)
+	}
+}
+
+// Locate says where a place appears and whether it is seen: the point looked
+// at is the centre of the image; ground a cone stands in front of is hidden,
+// and seen when the cone is gone; ground behind the camera is not seen.
+func TestLocateFindsPlacesAndKnowsWhatIsHidden(t *testing.T) {
+	top, err := Render(scene(0.02, flat, quadrants), Camera{Target: centre, Distance: 2000, Pitch: 90}, Options{Width: 200, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if x, y, ok := top.Locate(centre); !ok || math.Abs(x-100) > 0.5 || math.Abs(y-50) > 0.5 {
+		t.Errorf("the point looked at is at (%.1f, %.1f), seen %v; want the centre, seen", x, y, ok)
+	}
+
+	// 1.8 km north: beyond a cone of radius 1.5 km on the target, seen from
+	// 4 km south and 2 degrees up.
+	behind := render.Coord{Lat: centre.Lat + 1800.0/110_574, Lon: centre.Lon}
+	cam := Camera{Target: centre, Distance: 4000, Pitch: 2}
+	cone := func(e, n float64) float64 { return math.Max(0, 600*(1-math.Hypot(e, n)/1500)) }
+	for _, c := range []struct {
+		name   string
+		ground func(e, n float64) float64
+		seen   bool
+	}{{"flat", flat, true}, {"behind a cone", cone, false}} {
+		pic, err := Render(scene(0.05, c.ground, quadrants), cam, Options{Width: 300, Height: 200})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, ok := pic.Locate(behind); ok != c.seen {
+			t.Errorf("%s: seen %v, want %v", c.name, ok, c.seen)
+		}
+		// 1 km south of the target is 3 km in front of the camera; 5 km
+		// south is 1 km behind it.
+		if _, _, ok := pic.Locate(render.Coord{Lat: centre.Lat - 5000.0/110_574, Lon: centre.Lon}); ok {
+			t.Errorf("%s: ground behind the camera is seen", c.name)
+		}
 	}
 }

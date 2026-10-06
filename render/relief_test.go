@@ -3,7 +3,11 @@ package render_test
 import (
 	"bytes"
 	"context"
+	"github.com/wisborg/osmbase/osmbasetest"
+	"golang.org/x/image/font/basicfont"
+	"image"
 	"image/color"
+	"math"
 	"testing"
 
 	"github.com/wisborg/osmbase/mvt"
@@ -198,4 +202,83 @@ func TestHeights_ReadsTheGroundUnderEveryPixel(t *testing.T) {
 	if h := none[100]; h == h {
 		t.Errorf("no heights read as %v, want NaN: unknown is not zero", h)
 	}
+}
+
+// Lifted, a place's name is handed back where it is and not drawn; a name
+// written along a line is drawn as before. Not lifted, both are drawn and
+// nothing is handed back.
+func TestLiftPointLabels_HandsBackPlacesAndKeepsLines(t *testing.T) {
+	src := newSource()
+	place := osmbasetest.FeatureSpec{
+		Type:     mvt.GeomPoint,
+		Tags:     []osmbasetest.Tag{{Key: "name", Value: mvt.StringValue("Testville")}},
+		Geometry: mvt.Geometry{Points: []mvt.Point{{X: 1024, Y: 1024}}},
+	}
+	road := osmbasetest.FeatureSpec{
+		Type:     mvt.GeomLineString,
+		Tags:     []osmbasetest.Tag{{Key: "name", Value: mvt.StringValue("Long Road")}},
+		Geometry: mvt.Geometry{Lines: [][]mvt.Point{{{X: 0, Y: 3000}, {X: 4096, Y: 3000}}}},
+	}
+	src.put(t, 12, 2048, 1360, wholeTile("earth", ""),
+		osmbasetest.LayerSpec{Name: "places", Features: []osmbasetest.FeatureSpec{place}},
+		osmbasetest.LayerSpec{Name: "roads", Features: []osmbasetest.FeatureSpec{road}})
+	v := tileView(t, 12, 2048, 1360, 2048, 1360, 256)
+	st := testStyle()
+	st.Labels = []render.LabelRule{
+		{Layer: "places", Field: "name", Placement: render.PlacePoint, MaxZoom: render.MaxRuleZoom, Priority: 10},
+		{Layer: "roads", Field: "name", Placement: render.PlaceLine, MaxZoom: render.MaxRuleZoom, Priority: 5},
+	}
+	draw := func(lift bool) *render.Result {
+		r, err := render.New(src, render.Options{Style: st, Palette: labelledPalette(), LabelFace: basicfont.Face7x13, LiftPointLabels: lift})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := r.Render(context.Background(), v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	flat, lifted := draw(false), draw(true)
+	if flat.PointLabels != nil {
+		t.Errorf("not lifted, labels handed back: %+v", flat.PointLabels)
+	}
+	if len(lifted.PointLabels) != 1 || lifted.PointLabels[0].Text != "Testville" {
+		t.Fatalf("lifted: %+v, want Testville alone", lifted.PointLabels)
+	}
+	// Where it was, a quarter of the way into the tile each way.
+	want, err := v.Coord(64, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lifted.PointLabels[0].At; math.Abs(got.Lat-want.Lat) > 0.002 || math.Abs(got.Lon-want.Lon) > 0.002 {
+		t.Errorf("Testville handed back at %v, want about %v", got, want)
+	}
+	// Drawn into the image only when not lifted: the place's ink is in the
+	// flat image near it, and not in the lifted one; the road's name is in both.
+	inkNear := func(img *image.RGBA, x0, y0, x1, y1 int) bool {
+		for y := y0; y < y1; y++ {
+			for x := x0; x < x1; x++ {
+				// Dark ink: a name written along a line is turned and
+				// averaged down, so its pixels are blends of the label ink
+				// rather than exactly it.
+				if c := img.RGBAAt(x, y); c.R < 0x70 && c.G < 0x70 && c.B < 0x80 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if !inkNear(flat.Image, 30, 50, 100, 80) || inkNear(lifted.Image, 30, 50, 100, 80) {
+		t.Errorf("the place's name: drawn flat %v, drawn lifted %v; want only flat", inkNear(flat.Image, 30, 50, 100, 80), inkNear(lifted.Image, 30, 50, 100, 80))
+	}
+	if !inkNear(lifted.Image, 0, 175, 256, 200) {
+		t.Error("lifting the places took the road's name with them")
+	}
+}
+
+func labelledPalette() render.Palette {
+	p := testPalette
+	p.Label = color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
+	return p
 }

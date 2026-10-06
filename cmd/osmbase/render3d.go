@@ -5,10 +5,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"math"
 	"os"
+	"slices"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/math/fixed"
 
 	"github.com/wisborg/osmbase/perspective"
 	"github.com/wisborg/osmbase/render"
@@ -28,7 +34,10 @@ degrees the horizon.
 The map draped is the one "osmbase render --terrain" draws, of the ground
 within --radius kilometres of the point, shading and contours and all. Both
 the map and the terrain come from the stores on this machine, filled by
-"osmbase fetch --terrain"; nothing reaches the network.
+"osmbase fetch --terrain"; nothing reaches the network. Names along lines --
+streets, rivers, contour heights -- are painted on the ground they follow;
+the names of places stand upright where the place is seen, and are left out
+where a hill hides it.
 
 examples:
   osmbase render3d --lat -33.7025 --lon 151.0990 --out hornsby.png
@@ -132,9 +141,11 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		Bounds: render.Bounds{West: lon - dLon, South: lat - dLat, East: lon + dLon, North: lat + dLat},
 		Width:  mapSize, Height: mapSize,
 	}
+	// Names of places are lifted off the map and stood upright on the
+	// picture instead: lying on a slope they are stretched across it.
 	o := render.Options{
 		Style: style, Palette: colours, Attribution: chosen.Attribution,
-		LabelFace: labelFace(), LabelFaceFor: labelFaceFor,
+		LabelFace: labelFace(), LabelFaceFor: labelFaceFor, LiftPointLabels: true,
 	}
 	if err := terrainInto(ts, &o, view); err != nil {
 		return err
@@ -151,7 +162,7 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return err
 	}
 
-	img, err := perspective.Render(
+	pic, err := perspective.Render(
 		perspective.Scene{Map: res.Image, View: view, Heights: ts.Heights(), Exaggeration: exaggerate},
 		perspective.Camera{Target: render.Coord{Lat: lat, Lon: lon}, Distance: distance, Heading: heading, Pitch: pitch, FOV: fov},
 		perspective.Options{Width: width, Height: height},
@@ -159,6 +170,8 @@ func render3dCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
+	img := pic.Image
+	drawUpright(img, pic, res.PointLabels, colours)
 	// The credit the map owed, in the picture, as for a 2D render.
 	drawCredit(img, res.Attribution)
 
@@ -200,4 +213,47 @@ func compass(deg float64) string {
 	points := []string{"north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"}
 	i := int(math.Mod(math.Round(deg/45), 8)+8) % 8
 	return points[i]
+}
+
+// drawUpright stands the names of places on the picture: each centred on
+// where its place appears, upright, with a halo in the colour of the land so
+// it reads on any ground, and only where the place is seen -- a name on the
+// far side of a hill is not drawn floating over the hill. They come most
+// important first, as the map placed them, and one that would overlap a name
+// already drawn is left out.
+func drawUpright(img *image.RGBA, pic *perspective.Picture, labels []render.PointLabel, p render.Palette) {
+	halo := p.Land
+	if p.Omits(render.RoleLand) {
+		halo = p.Background
+	}
+	var drawn []image.Rectangle
+	for _, l := range labels {
+		x, y, seen := pic.Locate(l.At)
+		if !seen || l.Face == nil {
+			continue
+		}
+		w := font.MeasureString(l.Face, l.Text).Ceil()
+		m := l.Face.Metrics()
+		asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
+		box := image.Rect(int(x)-w/2-4, int(y)-(asc+desc)/2-4, int(x)+w/2+4, int(y)+(asc+desc)/2+4)
+		if !box.In(img.Bounds()) {
+			continue
+		}
+		if slices.ContainsFunc(drawn, box.Overlaps) {
+			continue
+		}
+		drawn = append(drawn, box)
+		ink := p.Label
+		if l.Minor && p.LabelMinor != (color.RGBA{}) {
+			ink = p.LabelMinor
+		}
+		base := fixed.P(int(x)-w/2, int(y)-(asc+desc)/2+asc)
+		d := font.Drawer{Dst: img, Face: l.Face, Src: image.NewUniform(halo)}
+		for _, o := range [][2]int{{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}, {-2, 0}, {2, 0}, {0, -2}, {0, 2}} {
+			d.Dot = base.Add(fixed.P(o[0], o[1]))
+			d.DrawString(l.Text)
+		}
+		d.Src, d.Dot = image.NewUniform(ink), base
+		d.DrawString(l.Text)
+	}
 }

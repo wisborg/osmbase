@@ -112,8 +112,58 @@ const supersample = 2
 // plane would project to infinity.
 const nearMetres = 1.0
 
+// Picture is a scene drawn: the image, and what is needed to say where in
+// it a place on the ground appears.
+type Picture struct {
+	Image *image.RGBA
+
+	mesh  *mesh
+	cam   view
+	depth []float64 // the supersampled frame's
+	w, h  int       // the supersampled frame's size
+}
+
+// Locate is where in the image the ground at c appears, in its pixels, and
+// whether it is seen at all: in front of the camera, inside the image, and
+// not behind nearer ground. It is for drawing on the picture things that
+// should stand upright rather than lie on the ground -- the names of places
+// -- and for leaving out those a hill hides.
+func (p *Picture) Locate(c render.Coord) (x, y float64, visible bool) {
+	m := p.mesh
+	gx, gy, err := m.grid.Pixel(c)
+	if err != nil {
+		return 0, 0, false
+	}
+	z, ok := m.heightAt(gx-0.5, gy-0.5)
+	if !ok {
+		return 0, 0, false
+	}
+	wx, wy := mercator.Project(c.Lon, c.Lat)
+	cp := p.cam.toCamera((wx-m.tx)*m.scale, -(wy-m.ty)*m.scale, z)
+	if cp[2] < nearMetres {
+		return 0, 0, false
+	}
+	sp := project(p.cam, point{cam: cp})
+	ix, iy := int(sp.x), int(sp.y)
+	if ix < 0 || iy < 0 || ix >= p.w || iy >= p.h {
+		return 0, 0, false
+	}
+	// Seen if nothing nearer was drawn there: within a few metres, or a
+	// twentieth of the distance, of the ground drawn at that pixel, so the
+	// ground the place is on does not hide the place. A twentieth, not a
+	// hundredth, because a pixel seen at a grazing angle spans a long run
+	// of ground -- 2 degrees above the ground and 6 km away it is over 200
+	// m deep -- and the ground drawn at its centre can be half that nearer
+	// than the place. A hill in the way hides by far more.
+	tolerance := math.Max(5, cp[2]/20)
+	if cp[2] > p.depth[iy*p.w+ix]+tolerance {
+		return sp.x / supersample, sp.y / supersample, false
+	}
+	return sp.x / supersample, sp.y / supersample, true
+}
+
 // Render draws the scene from the camera.
-func Render(s Scene, c Camera, o Options) (*image.RGBA, error) {
+func Render(s Scene, c Camera, o Options) (*Picture, error) {
 	if o.Width <= 0 || o.Height <= 0 {
 		return nil, fmt.Errorf("perspective: a %d by %d image has no pixels", o.Width, o.Height)
 	}
@@ -157,7 +207,7 @@ func Render(s Scene, c Camera, o Options) (*image.RGBA, error) {
 			f.triangle(cam, tex, haze, hazeM, a, cc, d)
 		}
 	}
-	return f.downsample(o.Width, o.Height), nil
+	return &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h}, nil
 }
 
 func orDefault(c, d color.RGBA) color.RGBA {
@@ -179,6 +229,30 @@ type mesh struct {
 	cols, rows int
 	v          []vertex
 	targetZ    float64 // the height of the ground looked at, exaggerated
+	// grid is the view the vertices are the pixel centres of, and tx, ty
+	// and scale how a place becomes metres around the target.
+	grid   render.View
+	tx, ty float64
+	scale  float64
+}
+
+// heightAt is the mesh's height, exaggerated, at (gx, gy) in vertex units
+// -- vertex (i, j) at (i, j) -- interpolated between the four around it;
+// false where any of them has none or it is off the mesh.
+func (m *mesh) heightAt(gx, gy float64) (float64, bool) {
+	if gx < 0 || gy < 0 || gx > float64(m.cols-1) || gy > float64(m.rows-1) {
+		return 0, false
+	}
+	i0, j0 := int(gx), int(gy)
+	i1, j1 := min(i0+1, m.cols-1), min(j0+1, m.rows-1)
+	a, b, c, d := m.at(i0, j0), m.at(i1, j0), m.at(i0, j1), m.at(i1, j1)
+	if !a.ok || !b.ok || !c.ok || !d.ok {
+		return 0, false
+	}
+	fx, fy := gx-float64(i0), gy-float64(j0)
+	top := a.z + (b.z-a.z)*fx
+	bot := c.z + (d.z-c.z)*fx
+	return top + (bot-top)*fy, true
 }
 
 func (m *mesh) at(i, j int) vertex { return m.v[j*m.cols+i] }
@@ -207,7 +281,7 @@ func buildMesh(s Scene, target render.Coord) (*mesh, error) {
 	tx, ty := mercator.Project(target.Lon, target.Lat)
 	scale := circumference * math.Cos(target.Lat*math.Pi/180)
 
-	m := &mesh{cols: cols, rows: rows, v: make([]vertex, cols*rows)}
+	m := &mesh{cols: cols, rows: rows, v: make([]vertex, cols*rows), grid: grid, tx: tx, ty: ty, scale: scale}
 	for j := 0; j < rows; j++ {
 		for i := 0; i < cols; i++ {
 			c, err := grid.Coord(float64(i)+0.5, float64(j)+0.5)

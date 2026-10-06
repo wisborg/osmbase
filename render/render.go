@@ -53,6 +53,7 @@ import (
 	"image"
 	"image/color"
 
+	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/raster"
 )
 
@@ -157,6 +158,27 @@ type Options struct {
 	// fit in a corner of a picture, and asks for it to be given, not for it
 	// to be in the pixels. See dem.ShortCredit.
 	TerrainNotice string
+
+	// LiftPointLabels keeps the names of places -- the labels at a point,
+	// as against those written along a line -- out of the image and hands
+	// them back in Result.PointLabels instead, placed as they would have
+	// been drawn. It is for a caller drawing the map some other way, such as
+	// draped over the ground in perspective, where a name lying flat on a
+	// slope is stretched across the hillside and should stand upright
+	// instead. Names along lines -- streets, rivers, contour heights --
+	// belong to the ground they follow and stay in the image.
+	LiftPointLabels bool
+}
+
+// PointLabel is the name of a place a render placed but did not draw: what
+// it says, where its centre is, and how it would have been drawn. See
+// Options.LiftPointLabels.
+type PointLabel struct {
+	Text string
+	At   Coord
+	Face font.Face
+	// Minor is a label drawn in the quieter of the two label inks.
+	Minor bool
 }
 
 // Renderer draws views from one tile source with one style.
@@ -176,6 +198,7 @@ type Renderer struct {
 	terrain       HeightSource
 	terrainCredit string
 	terrainNotice string
+	liftPoints    bool
 }
 
 // faceFor is the face a rule's labels are drawn in, falling back to the base
@@ -212,7 +235,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 	return &Renderer{
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
-		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice,
+		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels,
 	}, nil
 }
 
@@ -263,6 +286,11 @@ type Result struct {
 	// smoother than the ground.
 	TerrainCovered float64
 	TerrainZoom    uint8
+
+	// PointLabels are the names of places the render placed and did not
+	// draw, in the order they were placed -- most important first -- when
+	// Options.LiftPointLabels asked for them; nil otherwise.
+	PointLabels []PointLabel
 
 	// ContourInterval is the height between contour lines, in metres, and 0
 	// where none were drawn: at a zoom too shallow for them, or with a
@@ -388,7 +416,18 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	// by a road that happened to come after it in the rule order. They are
 	// collected from the same tiles the geometry came from, so a label cannot
 	// name a feature the picture does not show.
+	var lifted []PointLabel
 	for _, l := range labels {
+		if r.liftPoints && !l.along {
+			// The centre of the name as it would have been drawn, as a
+			// place: the box is padded evenly, so its centre is the
+			// text's.
+			cx := float64(l.box.Min.X+l.box.Max.X) / 2
+			cy := float64(l.box.Min.Y+l.box.Max.Y) / 2
+			lon, lat := mercator.Unproject(p.originX+cx/p.scale, p.originY+cy/p.scale)
+			lifted = append(lifted, PointLabel{Text: l.text, At: Coord{Lat: lat, Lon: lon}, Face: l.face, Minor: l.minor})
+			continue
+		}
 		drawLabel(surface.RGBA(), l, r.palette, r.labelPad, r.faceFor)
 	}
 
@@ -419,6 +458,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		Attribution:     credit,
 		TerrainCovered:  shaded,
 		TerrainZoom:     terrainZoom,
+		PointLabels:     lifted,
 		ContourInterval: interval,
 		TerrainNotice:   notice,
 	}, nil
