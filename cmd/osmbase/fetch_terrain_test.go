@@ -195,3 +195,54 @@ func TestRenderTerrainShadesFromTheStoreBesideTheMap(t *testing.T) {
 		t.Errorf("--contours without --terrain: exit %d\n%s", r.code, r.stderr)
 	}
 }
+
+// render3d draws from the map store and the terrain beside it, writes the
+// image, and hands over the elevation's notice; without a point to look at,
+// or without terrain, it refuses rather than drawing.
+func TestRender3dDrawsFromTheStores(t *testing.T) {
+	archive := fixtureArchive(t, 0, 0, 0, worldTile())
+	store := filepath.Join(t.TempDir(), "s")
+	out := filepath.Join(t.TempDir(), "map3d.png")
+	if r := runCLI(t, "fetch", archive, "--world", "--max-zoom", "0", "--store", store, "--yes"); r.code != 0 {
+		t.Fatalf("fetch: exit %d\n%s", r.code, r.stderr)
+	}
+	look := []string{"render3d", "--store", store, "--lat", "10", "--lon", "20", "--radius", "20", "--width", "160", "--height", "100", "--map-size", "256", "--out", out}
+	if r := runCLI(t, look...); r.code == 0 || !strings.Contains(r.stderr, "osmbase fetch --terrain") {
+		t.Errorf("no terrain: exit %d\n%s", r.code, r.stderr)
+	}
+
+	built, err := osmbasetest.BuildArchive(osmbasetest.Archive{
+		Tiles:    []osmbasetest.ArchiveTile{{ID: 0, Data: terrainPNG(t)}},
+		TileType: pmtiles.TileTypePNG, TileCompression: pmtiles.CompressionNone,
+		MinZoom: 0, MaxZoom: 12, MinLon: -180, MinLat: -85, MaxLon: 180, MaxLat: 85,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "planet.pmtiles"), built.Bytes, 0o644)
+	if r := runCLI(t, "fetch", archive, "--world", "--max-zoom", "0", "--store", store, "--terrain", "--terrain-source", dir, "--yes"); r.code != 0 {
+		t.Fatalf("terrain fetch: exit %d\n%s", r.code, r.stderr)
+	}
+
+	r := runCLI(t, look...)
+	if r.code != 0 {
+		t.Fatalf("render3d: exit %d\n%s", r.code, r.stderr)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil || img.Bounds().Dx() != 160 || img.Bounds().Dy() != 100 {
+		t.Errorf("the image: %v, %v", img.Bounds(), err)
+	}
+	if !strings.Contains(r.stdout, "looking north") || !strings.Contains(r.stdout, "give this notice with it:\nElevation: ") {
+		t.Errorf("the report:\n%s", r.stdout)
+	}
+
+	if r := runCLI(t, "render3d", "--store", store, "--out", out); r.code != 2 || !strings.Contains(r.stderr, "--lat and --lon") {
+		t.Errorf("no point to look at: exit %d\n%s", r.code, r.stderr)
+	}
+}

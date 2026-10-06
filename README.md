@@ -62,6 +62,10 @@ has to choose between them. `--terrain-source DIR` reads a directory of Mapterho
 already on disk instead, and asks nobody. The choice of source is in
 [docs/elevation.md](docs/elevation.md).
 
+`osmbase render3d --lat ... --lon ... --heading DEG --pitch DEG` draws the same map draped
+over the shape of the ground and seen from a camera in the sky -- the still image a flyover
+will be made of. It reads the map and terrain stores only.
+
 A shaded map owes its elevation sources a credit as well as OpenStreetMap, and which ones
 depends on where it is: Mapterhorn, the national survey whose data covers the view
 (Geoscience Australia around Sydney, Klimadatastyrelsen in Denmark, under CC BY 4.0), and

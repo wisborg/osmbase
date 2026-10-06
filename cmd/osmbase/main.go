@@ -78,6 +78,8 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		err = geojsonCommand(ctx, args[1:], stdout, stderr)
 	case "render":
 		err = renderCommand(ctx, args[1:], stdout, stderr)
+	case "render3d":
+		err = render3dCommand(ctx, args[1:], stdout, stderr)
 	case "fetch":
 		err = fetchCommand(ctx, args[1:], stdout, stderr)
 	case "locate":
@@ -126,6 +128,7 @@ usage:
 
 commands:
   render      the map around a coordinate, as a PNG
+  render3d    the map draped over the shape of the ground, seen from the sky
   inspect     the archive's header, sections and root directory
   tile        what one tile holds: layers, feature counts, geometry types, tags
   geojson     one tile as GeoJSON on stdout, to paste into geojson.io
