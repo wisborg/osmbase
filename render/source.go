@@ -123,8 +123,6 @@ func (c coverage) fraction(v float64) float64 {
 // Go's randomised iteration order into the image, and two renders of one
 // activity would differ.
 func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, coverage, error) {
-	x0, y0, x1, y1 := p.tileRange(p.tileZoom)
-
 	// How far outside the surface geometry is still worth keeping: a road whose
 	// centreline is just off the edge still paints half its width onto the
 	// image, so culling on the surface alone would leave a ragged strip along
@@ -132,6 +130,16 @@ func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, covera
 	// extra pixel covers the antialiased rim.
 	pad := float64(r.style.maxStrokeWidth(p)) + 1
 	keep := p.surface().inflate(pad)
+
+	// The tiles under that, not only under the surface: a road whose centreline
+	// is in the tile beyond the edge is in that tile's geometry and nowhere
+	// else -- the tile under the view carries a buffer of it, but clipped to
+	// its own square, which the centreline is not in. Reading only the tiles
+	// under the surface left half of such a road off the image. One map
+	// barely shows it; a view whose edge is a tile's edge, as every one of a
+	// flyover's fixed tiles is, cut every road running along that edge in
+	// half lengthwise, the half on the other side drawn by the neighbour.
+	x0, y0, x1, y1 := p.tileRangeOver(p.tileZoom, keep)
 
 	var (
 		cov     coverage
@@ -146,22 +154,32 @@ func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, covera
 			want := tileRef{z: p.tileZoom, x: tx, y: ty}
 			square := p.tileBox(want.z, want.x, want.y)
 			onSurface := square.intersect(p.surface())
+			// A tile only under the padding contributes strokes reaching in,
+			// and nothing to the coverage: none of its ground is on the image,
+			// so lacking it is no gap to hatch.
+			beyond := onSurface.empty()
 
-			cov.requested++
-			cov.total += onSurface.area()
+			if !beyond {
+				cov.requested++
+				cov.total += onSurface.area()
+			}
 
 			ref, data, ok, err := r.walkUp(want)
 			if err != nil {
 				return nil, coverage{}, err
 			}
 			if !ok {
-				cov.gaps = append(cov.gaps, outward(onSurface))
+				if !beyond {
+					cov.gaps = append(cov.gaps, outward(onSurface))
+				}
 				continue
 			}
-			cov.resolved++
-			cov.covered += onSurface.area()
-			if ref != want {
-				cov.over += onSurface.area()
+			if !beyond {
+				cov.resolved++
+				cov.covered += onSurface.area()
+				if ref != want {
+					cov.over += onSurface.area()
+				}
 			}
 
 			tile, seen := decoded[ref]

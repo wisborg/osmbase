@@ -275,6 +275,13 @@ func (t tileTransform) apply(x, y int32) pt {
 // 1024 by 768 view is about forty tiles whether the zoom is 4 or 19. That is
 // what makes starting at the view's own zoom and walking up cheap.
 func (p projection) tileRange(z uint8) (x0, y0, x1, y1 uint32) {
+	return p.tileRangeOver(z, p.surface())
+}
+
+// tileRangeOver is tileRange for any box on the surface rather than the
+// surface itself: what gather asks of the surface grown by the widest
+// stroke, whose tiles' roads reach into the view.
+func (p projection) tileRangeOver(z uint8, b box) (x0, y0, x1, y1 uint32) {
 	n := math.Exp2(float64(z))
 	last := uint32(1)<<z - 1
 	span := func(worldMin, worldMax float64) (uint32, uint32) {
@@ -287,8 +294,8 @@ func (p projection) tileRange(z uint8) (x0, y0, x1, y1 uint32) {
 		}
 		return lo, hi
 	}
-	x0, x1 = span(p.originX, p.originX+float64(p.width)/p.scale)
-	y0, y1 = span(p.originY, p.originY+float64(p.height)/p.scale)
+	x0, x1 = span(p.originX+b.MinX/p.scale, p.originX+b.MaxX/p.scale)
+	y0, y1 = span(p.originY+b.MinY/p.scale, p.originY+b.MaxY/p.scale)
 	return x0, y0, x1, y1
 }
 
