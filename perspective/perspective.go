@@ -35,7 +35,10 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"maps"
 	"math"
+	"runtime"
+	"sync"
 
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/render"
@@ -134,6 +137,11 @@ var (
 // supersample is how many times the image's size it is drawn at, each way,
 // before being averaged down.
 const supersample = 2
+
+// minBandRows is the fewest rows of the supersampled image a goroutine is
+// given to fill: fewer, and every goroutine passing over every triangle
+// costs more than the rows it fills.
+const minBandRows = 64
 
 // nearMetres is how close in front of the camera ground is still drawn.
 // Ground nearer than this is cut away: a triangle crossing the camera's own
@@ -264,35 +272,60 @@ func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture,
 	}
 	cam := newView(c, targetZ, fov, w, h)
 	f.paintSky(cam, c.Pitch*math.Pi/180)
-	var tex sampler
-	var pyr *pyramidSampler
 	if s.Tiles != nil {
-		if pyr, err = newPyramidSampler(ctx, s.Tiles, s.View); err != nil {
-			return nil, err
-		}
-		tex = pyr
-	} else {
-		tex = newTexture(s.Map)
-	}
-	if pyr != nil {
 		f.lod = make([]float32, w*h)
 		for i := range f.lod {
 			f.lod[i] = float32(math.NaN())
 		}
 	}
-	for j := 0; j+1 < m.rows; j++ {
-		for i := 0; i+1 < m.cols; i++ {
-			a, b, cc, d := m.at(i, j), m.at(i+1, j), m.at(i+1, j+1), m.at(i, j+1)
-			f.triangle(cam, tex, haze, hazeM, a, b, cc)
-			f.triangle(cam, tex, haze, hazeM, a, cc, d)
+
+	// The image is filled a band of rows to a goroutine, every band from
+	// every triangle -- one outside a band is passed over as soon as its
+	// rows are known. The bands share the image and its buffers and never
+	// a row of them; each has a sampler of its own, as a pyramid's keeps
+	// the tiles it last used and those it drew from.
+	n := max(1, min(runtime.GOMAXPROCS(0), h/minBandRows))
+	samplers := make([]sampler, n)
+	pyrs := make([]*pyramidSampler, n)
+	for k := range samplers {
+		if s.Tiles != nil {
+			if pyrs[k], err = newPyramidSampler(ctx, s.Tiles, s.View); err != nil {
+				return nil, err
+			}
+			samplers[k] = pyrs[k]
+		} else if k == 0 {
+			samplers[k] = newTexture(s.Map)
+		} else {
+			samplers[k] = samplers[0] // one map is only read
 		}
 	}
-	if pyr != nil && pyr.err != nil {
-		return nil, pyr.err
+	var wg sync.WaitGroup
+	for k := range n {
+		band := *f
+		band.rowLo, band.rowHi = h*k/n, h*(k+1)/n
+		wg.Add(1)
+		go func(band *frame, tex sampler) {
+			defer wg.Done()
+			for j := 0; j+1 < m.rows; j++ {
+				for i := 0; i+1 < m.cols; i++ {
+					a, b, cc, d := m.at(i, j), m.at(i+1, j), m.at(i+1, j+1), m.at(i, j+1)
+					band.triangle(cam, tex, haze, hazeM, a, b, cc)
+					band.triangle(cam, tex, haze, hazeM, a, cc, d)
+				}
+			}
+		}(&band, samplers[k])
 	}
-	pic := &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h, tex: tex, view: s.View, hazeM: hazeM}
-	if pyr != nil {
-		pic.lod, pic.used = f.lod, pyr.used
+	wg.Wait()
+
+	pic := &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h, tex: samplers[0], view: s.View, hazeM: hazeM}
+	if s.Tiles != nil {
+		pic.lod, pic.used = f.lod, map[tileKey]*Tile{}
+		for _, p := range pyrs {
+			if p.err != nil {
+				return nil, p.err
+			}
+			maps.Copy(pic.used, p.used)
+		}
 	}
 	return pic, nil
 }

@@ -23,10 +23,14 @@ type frame struct {
 	// drawn from a pyramid; nil otherwise. Names placed for a zoom are shown
 	// where the ground is drawn from it.
 	lod []float32
+	// rowLo and rowHi are the rows this frame fills, rowLo to rowHi-1: a
+	// band of the image, when the image is filled a band to a goroutine.
+	// The bands share the buffers and never a row of them.
+	rowLo, rowHi int
 }
 
 func newFrame(w, h int, sky, horizon color.RGBA) *frame {
-	f := &frame{img: image.NewRGBA(image.Rect(0, 0, w, h)), depth: make([]float64, w*h), w: w, h: h, sky: sky, hz: horizon}
+	f := &frame{img: image.NewRGBA(image.Rect(0, 0, w, h)), depth: make([]float64, w*h), w: w, h: h, sky: sky, hz: horizon, rowLo: 0, rowHi: h}
 	for i := range f.depth {
 		f.depth[i] = math.Inf(1)
 	}
@@ -137,6 +141,11 @@ func project(cv view, p point) screen {
 // the map at its interpolated position and faded by its depth.
 func (f *frame) fill(cv view, tex sampler, haze color.RGBA, hazeM float64, pa, pb, pc point) {
 	a, b, c := project(cv, pa), project(cv, pb), project(cv, pc)
+	minY := int(math.Max(float64(f.rowLo), math.Floor(math.Min(a.y, math.Min(b.y, c.y)))))
+	maxY := int(math.Min(float64(f.rowHi-1), math.Ceil(math.Max(a.y, math.Max(b.y, c.y)))))
+	if minY > maxY {
+		return // not in this band
+	}
 	area := edge(a, b, c.x, c.y)
 	if area == 0 {
 		return
@@ -154,8 +163,6 @@ func (f *frame) fill(cv view, tex sampler, haze color.RGBA, hazeM float64, pa, p
 
 	minX := int(math.Max(0, math.Floor(math.Min(a.x, math.Min(b.x, c.x)))))
 	maxX := int(math.Min(float64(f.w-1), math.Ceil(math.Max(a.x, math.Max(b.x, c.x)))))
-	minY := int(math.Max(0, math.Floor(math.Min(a.y, math.Min(b.y, c.y)))))
-	maxY := int(math.Min(float64(f.h-1), math.Ceil(math.Max(a.y, math.Max(b.y, c.y)))))
 	for y := minY; y <= maxY; y++ {
 		py := float64(y) + 0.5
 		for x := minX; x <= maxX; x++ {

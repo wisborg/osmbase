@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -240,5 +241,28 @@ func TestACameraGivenItsTargetHeightUsesIt(t *testing.T) {
 	// height exaggerated as the ground is.
 	if got, want := pic.cam.eye[2], 500+800*math.Sin(35*math.Pi/180); math.Abs(got-want) > 1e-6 {
 		t.Errorf("the eye is %.2f m up, want %.2f", got, want)
+	}
+}
+
+// A picture filled a band of rows to a goroutine is the picture filled by
+// one: the bands share nothing but rows they never both write.
+func TestBandsDrawThePictureOneGoroutineDraws(t *testing.T) {
+	tiles, _ := flatTiles(t)
+	s, cam := pyramidScene(tiles)
+	s.Heights = shape{centre: cam.Target, h: func(e, n float64) float64 { return 80 * math.Exp(-(e*e+n*n)/(2*300*300)) }}
+	draw := func(procs int) *image.RGBA {
+		t.Helper()
+		defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(procs))
+		pic, err := Render(s, cam, Options{Width: 320, Height: 240})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pic.Image
+	}
+	one, many := draw(1), draw(8)
+	for i := range one.Pix {
+		if one.Pix[i] != many.Pix[i] {
+			t.Fatalf("byte %d differs: %d drawn alone, %d in bands", i, one.Pix[i], many.Pix[i])
+		}
 	}
 }
