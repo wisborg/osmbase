@@ -47,6 +47,19 @@ func (f *frame) paintSky(v view, pitchRad float64) {
 	}
 }
 
+// sampler is where the ground's colour comes from: one map (texture), or a
+// pyramid of tiles (pyramidSampler). Positions are in the scene view's map
+// pixels either way.
+type sampler interface {
+	// at is the colour at map pixel (u, v), for a pixel of the frame
+	// spanning span map pixels, which a pyramid draws from the zoom of
+	// that size and one map ignores.
+	at(u, v, span float64) color.RGBA
+	// edgeFade is how far toward the haze the ground is drawn at (u, v),
+	// so that the map ends in the distance rather than against the sky.
+	edgeFade(u, v float64) float64
+}
+
 // point is a vertex in the camera's frame with its map position.
 type point struct {
 	cam  [3]float64
@@ -55,7 +68,7 @@ type point struct {
 
 // triangle draws one triangle of the mesh: moved into the camera's frame,
 // cut at the near plane, projected and filled.
-func (f *frame) triangle(cv view, tex *texture, haze color.RGBA, hazeM float64, a, b, c vertex) {
+func (f *frame) triangle(cv view, tex sampler, haze color.RGBA, hazeM float64, a, b, c vertex) {
 	if !a.ok || !b.ok || !c.ok {
 		return
 	}
@@ -115,12 +128,23 @@ func project(cv view, p point) screen {
 // fill rasterizes a triangle already in front of the camera: each pixel
 // whose centre is inside, nearer than what is drawn there, coloured from
 // the map at its interpolated position and faded by its depth.
-func (f *frame) fill(cv view, tex *texture, haze color.RGBA, hazeM float64, pa, pb, pc point) {
+func (f *frame) fill(cv view, tex sampler, haze color.RGBA, hazeM float64, pa, pb, pc point) {
 	a, b, c := project(cv, pa), project(cv, pb), project(cv, pc)
 	area := edge(a, b, c.x, c.y)
 	if area == 0 {
 		return
 	}
+	// How the interpolated quantities change from pixel to pixel: the
+	// plane through the three corners, for each. What a pixel spans of the
+	// map follows from them; see span below.
+	det := (b.x-a.x)*(c.y-a.y) - (c.x-a.x)*(b.y-a.y)
+	grad := func(qa, qb, qc float64) (dx, dy float64) {
+		return ((qb-qa)*(c.y-a.y) - (qc-qa)*(b.y-a.y)) / det, ((qc-qa)*(b.x-a.x) - (qb-qa)*(c.x-a.x)) / det
+	}
+	izx, izy := grad(a.iz, b.iz, c.iz)
+	uzx, uzy := grad(a.uiz, b.uiz, c.uiz)
+	vzx, vzy := grad(a.viz, b.viz, c.viz)
+
 	minX := int(math.Max(0, math.Floor(math.Min(a.x, math.Min(b.x, c.x)))))
 	maxX := int(math.Min(float64(f.w-1), math.Ceil(math.Max(a.x, math.Max(b.x, c.x)))))
 	minY := int(math.Max(0, math.Floor(math.Min(a.y, math.Min(b.y, c.y)))))
@@ -145,7 +169,13 @@ func (f *frame) fill(cv view, tex *texture, haze color.RGBA, hazeM float64, pa, 
 			f.depth[i] = z
 			u := (w0*a.uiz + w1*b.uiz + w2*c.uiz) * z
 			v := (w0*a.viz + w1*b.viz + w2*c.viz) * z
-			col := tex.at(u, v)
+			// How far across the map the pixel reaches, in map pixels: the
+			// longer of its steps across and down. u = U/I with U and I
+			// linear in the image, so du = (dU - u dI) / I.
+			ux, vx := (uzx-u*izx)*z, (vzx-v*izx)*z
+			uy, vy := (uzy-u*izy)*z, (vzy-v*izy)*z
+			span := math.Sqrt(math.Max(ux*ux+vx*vx, uy*uy+vy*vy))
+			col := tex.at(u, v, span)
 			// Faded into the haze toward the edge of the map, so the
 			// ground ends in distance rather than in a straight line
 			// against the sky; and with distance, as the air does.
@@ -218,8 +248,13 @@ const edgeFraction = 0.12
 // edgeFade is how far toward the haze the map is drawn at (u, v): 0 inside,
 // rising smoothly to 1 at its edge.
 func (t *texture) edgeFade(u, v float64) float64 {
-	m := edgeFraction * math.Min(float64(t.w), float64(t.h))
-	d := math.Min(math.Min(u, float64(t.w)-u), math.Min(v, float64(t.h)-v))
+	return fadeAt(u, v, float64(t.w), float64(t.h))
+}
+
+// fadeAt is edgeFade for an area w by h map pixels.
+func fadeAt(u, v, w, h float64) float64 {
+	m := edgeFraction * math.Min(w, h)
+	d := math.Min(math.Min(u, w-u), math.Min(v, h-v))
 	if d >= m {
 		return 0
 	}
@@ -229,7 +264,7 @@ func (t *texture) edgeFade(u, v float64) float64 {
 
 // at is the map's colour at (u, v) in its pixels, interpolated between the
 // four nearest pixel centres and clamped at the edges.
-func (t *texture) at(u, v float64) color.RGBA {
+func (t *texture) at(u, v, _ float64) color.RGBA {
 	x := math.Max(0, math.Min(float64(t.w-1), u-0.5))
 	y := math.Max(0, math.Min(float64(t.h-1), v-0.5))
 	x0, y0 := int(x), int(y)

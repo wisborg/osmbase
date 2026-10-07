@@ -30,6 +30,7 @@
 package perspective
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -80,6 +81,11 @@ type Scene struct {
 	// Map is the 2D map of the area, rendered for View.
 	Map  image.Image
 	View render.View
+	// Tiles, in place of Map, is a pyramid the ground's colour is drawn
+	// from, each part of the picture at the zoom its pixels need. View is
+	// then only the area the ground is laid over and the grid of its mesh;
+	// nothing is drawn at its size.
+	Tiles *Tiles
 	// Heights is the height of the ground: a terrain store's.
 	Heights render.HeightSource
 	// Exaggeration multiplies the heights; 0 is 1, the ground as measured.
@@ -193,11 +199,17 @@ func (p *Picture) place(c render.Coord) (x, y float64, seen, ok bool) {
 
 // Render draws the scene from the camera.
 func Render(s Scene, c Camera, o Options) (*Picture, error) {
+	return RenderContext(context.Background(), s, c, o)
+}
+
+// RenderContext is Render, drawing what tiles of a pyramid it needs under
+// ctx.
+func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture, error) {
 	if o.Width <= 0 || o.Height <= 0 {
 		return nil, fmt.Errorf("perspective: a %d by %d image has no pixels", o.Width, o.Height)
 	}
-	if s.Map == nil || s.Heights == nil {
-		return nil, errors.New("perspective: a scene needs a map and the heights under it")
+	if (s.Map == nil) == (s.Tiles == nil) || s.Heights == nil {
+		return nil, errors.New("perspective: a scene needs a map or a pyramid of tiles, not both, and the heights under it")
 	}
 	if !(c.Distance > 0) {
 		return nil, fmt.Errorf("perspective: a camera %g m from what it looks at is not looking at it", c.Distance)
@@ -228,13 +240,25 @@ func Render(s Scene, c Camera, o Options) (*Picture, error) {
 	f := newFrame(w, h, sky, horizon)
 	cam := newView(c, m.targetZ, fov, w, h)
 	f.paintSky(cam, c.Pitch*math.Pi/180)
-	tex := newTexture(s.Map)
+	var tex sampler
+	var pyr *pyramidSampler
+	if s.Tiles != nil {
+		if pyr, err = newPyramidSampler(ctx, s.Tiles, s.View); err != nil {
+			return nil, err
+		}
+		tex = pyr
+	} else {
+		tex = newTexture(s.Map)
+	}
 	for j := 0; j+1 < m.rows; j++ {
 		for i := 0; i+1 < m.cols; i++ {
 			a, b, cc, d := m.at(i, j), m.at(i+1, j), m.at(i+1, j+1), m.at(i, j+1)
 			f.triangle(cam, tex, haze, hazeM, a, b, cc)
 			f.triangle(cam, tex, haze, hazeM, a, cc, d)
 		}
+	}
+	if pyr != nil && pyr.err != nil {
+		return nil, pyr.err
 	}
 	return &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h}, nil
 }
