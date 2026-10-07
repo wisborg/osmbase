@@ -13,7 +13,7 @@ import (
 
 // field is a relief whose heights are h at each sample of a w by ht field.
 func field(w, ht int, h func(x, y int) float64) *relief {
-	rl := &relief{fw: w, fh: ht, field: make([]float32, w*ht)}
+	rl := &relief{fw: w, fh: ht, m: 1, field: make([]float32, w*ht)}
 	for y := 0; y < ht; y++ {
 		for x := 0; x < w; x++ {
 			rl.field[y*w+x] = float32(h(x, y))

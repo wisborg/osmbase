@@ -78,8 +78,9 @@ func (rl *relief) interval(z float64) (float64, bool) {
 		return 0, false
 	}
 	var rises []float64
-	for y := 1; y < rl.fh-1; y += 2 {
-		for x := 1; x < rl.fw-1; x += 2 {
+	// Over the view, not its margin: the steepest ground in view.
+	for y := max(1, rl.m); y < rl.fh-max(1, rl.m); y += 2 {
+		for x := max(1, rl.m); x < rl.fw-max(1, rl.m); x += 2 {
 			dx := float64(rl.field[y*rl.fw+x+1] - rl.field[y*rl.fw+x-1])
 			dy := float64(rl.field[(y+1)*rl.fw+x] - rl.field[(y-1)*rl.fw+x])
 			if r := math.Hypot(dx, dy) / 2; !math.IsNaN(r) {
@@ -140,6 +141,23 @@ func (rl *relief) contours(interval float64) []contourLine {
 	return out
 }
 
+// onSurface is the lines cut down to the surface the projection draws on,
+// with room for the widest stroke: they are traced over the field's margin
+// as well, so that each is kept or dropped by its whole length, and what is
+// beyond the image is drawn by nobody and must not be where a height is
+// written along it.
+func (rl *relief) onSurface(p projection, lines []contourLine) []contourLine {
+	b := p.surface().inflate(indexWidth + 1)
+	var c clipper
+	var out []contourLine
+	for _, l := range lines {
+		c.line(l.pts, b, func(run []pt, _ float64) {
+			out = append(out, contourLine{height: l.height, index: l.index, pts: slices.Clone(run)})
+		})
+	}
+	return out
+}
+
 // minContourLength is the shortest line drawn, in output pixels. Shorter
 // lines are the data's texture rather than the land's shape -- a ring round
 // a garden bed, a stub where a line clips the corner of the view -- and at
@@ -183,8 +201,8 @@ func (rl *relief) trace(h float64) [][]pt {
 		}
 		a, b := float64(f[y*w+x]), float64(f[y2*w+x2])
 		t := (h - a) / (b - a)
-		// Field sample (x, y) is the centre of surface pixel (x-1, y-1).
-		return pt{X: float64(x) - 0.5 + t*float64(x2-x), Y: float64(y) - 0.5 + t*float64(y2-y)}
+		// Field sample (x, y) is the centre of surface pixel (x-m, y-m).
+		return pt{X: float64(x-rl.m) + 0.5 + t*float64(x2-x), Y: float64(y-rl.m) + 0.5 + t*float64(y2-y)}
 	}
 
 	type seg struct{ a, b int }

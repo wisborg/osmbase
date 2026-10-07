@@ -188,6 +188,15 @@ type Options struct {
 	// fixed tiles, a camera moving over the map -- needs to show no seams
 	// and no flicker. See stack.go.
 	Areas *Areas
+
+	// ContourInterval, when above 0, is the height between contour lines in
+	// metres, in place of the one each view works out from its zoom and its
+	// steepest ground. Two neighbouring views of a hillside can work out
+	// different intervals, and a picture assembled from both -- a flyover's
+	// fixed tiles -- then shows lines twice as dense on one side of a seam.
+	// Fixed, every view draws the same lines. It does not draw contours at a
+	// zoom too shallow for any.
+	ContourInterval float64
 }
 
 // PointLabel is the name of a place a render placed but did not draw: what
@@ -221,6 +230,7 @@ type Renderer struct {
 	labelsFacing  float64
 	liftPoints    bool
 	areas         *Areas
+	interval      float64
 }
 
 // faceFor is the face a rule's labels are drawn in, falling back to the base
@@ -258,7 +268,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
 		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels,
-		labelsFacing: o.LabelsFacing * math.Pi / 180, areas: o.Areas,
+		labelsFacing: o.LabelsFacing * math.Pi / 180, areas: o.Areas, interval: o.ContourInterval,
 	}, nil
 }
 
@@ -361,8 +371,12 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 			return nil, err
 		}
 		if drawContours {
-			if iv, ok := rl.interval(p.zoom); ok {
-				interval, contours = iv, rl.contours(iv)
+			iv, ok := rl.interval(p.zoom)
+			if ok && r.interval > 0 {
+				iv = r.interval
+			}
+			if ok {
+				interval, contours = iv, rl.onSurface(p, rl.contours(iv))
 			}
 		}
 	}

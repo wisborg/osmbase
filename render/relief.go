@@ -96,10 +96,12 @@ func shadeIndex(rules []Rule) int {
 // relief is the ground under one view, worked out before anything is drawn:
 // its heights, and the shading and contours drawn from them.
 type relief struct {
-	// field is the height at every output pixel, with a pixel of margin all
-	// round, fw by fh, smoothed at street zooms; NaN where none is known.
+	// field is the height at every output pixel, with m pixels of margin
+	// all round, fw by fh, smoothed at street zooms; NaN where none is
+	// known.
 	field  []float32
 	fw, fh int
+	m      int
 	// mpp is the ground distance one output pixel spans at the view's
 	// centre, in metres.
 	mpp float64
@@ -137,26 +139,36 @@ func computeRelief(src HeightSource, p projection, shade bool) (*relief, error) 
 	if p.tileZoom > 0 {
 		dz = p.tileZoom - 1
 	}
-	g, err := readGrid(src, p, dz)
-	if err != nil {
-		return nil, err
-	}
-
-	// The height at every output pixel, with a pixel of margin all round so
-	// the edges have neighbours to take a slope from.
-	w, h := p.width+2, p.height+2
-	field, known := g.field(p, 1)
 
 	// Metres per output pixel at the view's centre: the mercator scale
 	// varies across a view, but the blur radius is a coarse number and one
 	// value serves the whole picture. The slope below uses each row's own.
 	centreLat := latOfWorldY(p.originY + float64(p.height)/2/p.scale)
 	mpp := metresPerPixel(p, centreLat)
-	if r := int(math.Round(smoothMetres / mpp)); r >= 1 {
-		boxBlur(field, w, h, min(r, maxSmooth))
+	radius := blurRadius(smoothMetres / mpp)
+
+	// The heights are read and smoothed well beyond the view, so that every
+	// pixel of it is worked out from the same ground whichever view it is
+	// in: far enough that the blur, which reaches three times its radius,
+	// never meets the field's clamped edge inside the view; and far enough
+	// that a contour leaving the view is followed for minContourLength
+	// before the field ends, so the shortest lines are dropped by their
+	// whole length rather than by how much of them one view holds. A view
+	// whose field ended a pixel past its edge shaded and contoured that
+	// edge differently from the view beside it, and a picture assembled
+	// from neighbouring views -- a flyover's fixed tiles -- showed seams.
+	m := max(int(minContourLength)+2, 3*int(math.Ceil(radius))+2)
+	g, err := readGrid(src, p, dz, m)
+	if err != nil {
+		return nil, err
+	}
+	w, h := p.width+2*m, p.height+2*m
+	field, known := g.field(p, m)
+	if radius > 0 {
+		boxBlur(field, w, h, radius)
 	}
 	rl := &relief{
-		field: field, fw: w, fh: h, mpp: mpp,
+		field: field, fw: w, fh: h, m: m, mpp: mpp,
 		zoom:   g.deepest,
 		shaded: float64(known) / float64(p.width*p.height),
 	}
@@ -171,7 +183,7 @@ func computeRelief(src HeightSource, p projection, shade bool) (*relief, error) 
 		lat := latOfWorldY(p.originY + (float64(y)+0.5)/p.scale)
 		cell := metresPerPixel(p, lat) / ex
 		for x := 0; x < p.width; x++ {
-			at := func(dx, dy int) float64 { return float64(field[(y+1+dy)*w+x+1+dx]) }
+			at := func(dx, dy int) float64 { return float64(field[(y+m+dy)*w+x+m+dx]) }
 			// Horn's method: the slope from the eight neighbours, weighted
 			// toward the four nearest. y grows southward here, so dzdy is
 			// the slope toward the south.
@@ -186,6 +198,28 @@ func computeRelief(src HeightSource, p projection, shade bool) (*relief, error) 
 	}
 	rl.amount = amount
 	return rl, nil
+}
+
+// blurRadius is the radius, in output pixels, the heights are blurred over
+// for a smoothMetres blur of r pixels: r itself, at most maxSmooth, and none
+// below a quarter of a pixel, eased in between a quarter and a half.
+//
+// It is a fraction rather than a whole number of pixels, so that it moves
+// continuously with the scale. Rounded, it jumped a whole pixel at some
+// latitude for every zoom -- at zoom 16 near Sydney the radius is about
+// 2.5 -- and two neighbouring views either side of that latitude shaded the
+// same slope at two blurs: a seam where a picture is assembled from them.
+// The ease in keeps that true where the blur starts, and keeps it away from
+// coarse views, where a blur under a pixel only softens what the data says.
+func blurRadius(r float64) float64 {
+	r = math.Min(r, maxSmooth)
+	switch {
+	case r <= 0.25:
+		return 0
+	case r < 0.5:
+		return 2*r - 0.5
+	}
+	return r
 }
 
 // field is the height at the centre of every pixel of the view p projects,
@@ -237,7 +271,7 @@ func Heights(src HeightSource, v View) ([]float32, error) {
 	if p.tileZoom > 0 {
 		dz = p.tileZoom - 1
 	}
-	g, err := readGrid(src, p, dz)
+	g, err := readGrid(src, p, dz, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -272,10 +306,11 @@ type demGrid struct {
 	deepest uint8
 }
 
-// readGrid reads the elevation tiles under the view at zoom dz, walking up
-// for each one the source lacks, into one array of samples.
-func readGrid(src HeightSource, p projection, dz uint8) (*demGrid, error) {
-	tx0, ty0, tx1, ty1 := p.tileRange(dz)
+// readGrid reads the elevation tiles under the view at zoom dz, and under
+// margin output pixels round it, walking up for each one the source lacks,
+// into one array of samples.
+func readGrid(src HeightSource, p projection, dz uint8, margin int) (*demGrid, error) {
+	tx0, ty0, tx1, ty1 := p.tileRangeOver(dz, p.surface().inflate(float64(margin)+1))
 	tiles := map[tileRef]demTile{}
 	size := 0
 	for ty := ty0; ty <= ty1; ty++ {
@@ -302,10 +337,10 @@ func readGrid(src HeightSource, p projection, dz uint8) (*demGrid, error) {
 	}
 	n := 1 << dz
 	g.worldSize = float64(size) * float64(n)
-	// The array is exactly the tiles under the view. A sample past its edge
-	// -- the view's margin pixel, where the view ends on a tile boundary --
-	// is clamped to the nearest one, which flattens the slope of that one
-	// edge pixel and nothing else.
+	// The array is exactly the tiles under the view and its margin, and one
+	// pixel more, so the margin's own outermost samples have the grid
+	// sample beyond them to interpolate toward. A sample past the array is
+	// clamped to the nearest one.
 	g.x0, g.y0 = int(tx0)*size, int(ty0)*size
 	g.w, g.h = int(tx1-tx0+1)*size, int(ty1-ty0+1)*size
 	g.v = make([]float32, g.w*g.h)
@@ -383,7 +418,12 @@ func bilinear(v []float32, w, h int, gx, gy float64) float32 {
 // boxBlur blurs the field in place with three passes of a box of radius r,
 // which is near enough a gaussian. Unknown samples stay unknown and spread:
 // a height averaged with a gap is not a height.
-func boxBlur(f []float32, w, h, r int) {
+//
+// The radius may be a fraction: the box takes the samples within the whole
+// part of it fully and the two just beyond in proportion to the rest, so
+// the blur grows smoothly with r rather than in whole pixels. See
+// blurRadius.
+func boxBlur(f []float32, w, h int, r float64) {
 	tmp := make([]float32, max(w, h))
 	for range 3 {
 		for y := 0; y < h; y++ {
@@ -395,19 +435,28 @@ func boxBlur(f []float32, w, h, r int) {
 	}
 }
 
-// blurLine box-blurs n samples spaced stride apart, clamping at the ends.
-func blurLine(f []float32, stride, n, r int, tmp []float32) {
+// blurLine box-blurs n samples spaced stride apart, clamping at the ends,
+// over a box of radius r: every sample within floor(r) fully, and the two
+// at floor(r)+1 weighted by what is left.
+func blurLine(f []float32, stride, n int, r float64, tmp []float32) {
 	for i := 0; i < n; i++ {
 		tmp[i] = f[i*stride]
 	}
+	k := int(r)
+	frac := float32(r - float64(k))
+	at := func(i int) float32 { return tmp[max(0, min(n-1, i))] }
 	var sum float32
-	for i := -r; i <= r; i++ {
-		sum += tmp[max(0, min(n-1, i))]
+	for i := -k; i <= k; i++ {
+		sum += at(i)
 	}
-	inv := 1 / float32(2*r+1)
+	inv := 1 / (float32(2*k+1) + 2*frac)
 	for i := 0; i < n; i++ {
-		f[i*stride] = sum * inv
-		sum += tmp[min(n-1, i+r+1)] - tmp[max(0, i-r)]
+		v := sum
+		if frac > 0 {
+			v += frac * (at(i-k-1) + at(i+k+1))
+		}
+		f[i*stride] = v * inv
+		sum += at(i+k+1) - at(i-k)
 	}
 }
 
