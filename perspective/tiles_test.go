@@ -190,3 +190,55 @@ func TestLatticeViewsPutVerticesOnTheLattice(t *testing.T) {
 		}
 	}
 }
+
+// The point looked at rises with the ground under it smoothly as it moves,
+// not in steps of a mesh cell: a camera moving along a slope used to take
+// its height from the nearest vertex and jumped up and down a cell's rise
+// at a time.
+func TestTheTargetRisesWithTheGroundSmoothly(t *testing.T) {
+	centre := render.Coord{Lat: -33.70, Lon: 151.10}
+	slope := shape{centre: centre, h: func(east, _ float64) float64 { return 100 + 0.2*east }}
+	l, err := NewLattice(centre.Lat, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := math.NaN()
+	for i := 0; i <= 60; i++ {
+		target := render.Coord{Lat: centre.Lat, Lon: centre.Lon + float64(i)/(111_320*math.Cos(centre.Lat*math.Pi/180))}
+		cam := Camera{Target: target, Distance: 800, Heading: 90, Pitch: 35}
+		v, err := l.View(cam.MapBounds(16.0/9), 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := buildMesh(Scene{View: v, Heights: slope, Step: 4}, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := 100 + 0.2*float64(i); math.Abs(m.targetZ-want) > 0.5 {
+			t.Errorf("%d m east the target is at %.2f m, the ground at %.2f", i, m.targetZ, want)
+		}
+		if !math.IsNaN(prev) && math.Abs(m.targetZ-prev) > 0.5 {
+			t.Errorf("a metre east the target rose %.2f m, on a slope rising 0.2", m.targetZ-prev)
+		}
+		prev = m.targetZ
+	}
+}
+
+// A camera given the height of the point it looks at uses it, whatever the
+// ground under it: the height a moving camera's path has smoothed.
+func TestACameraGivenItsTargetHeightUsesIt(t *testing.T) {
+	centre := render.Coord{Lat: -33.70, Lon: 151.10}
+	slope := shape{centre: centre, h: func(east, _ float64) float64 { return 100 + 0.2*east }}
+	cam := Camera{Target: centre, Distance: 800, Heading: 90, Pitch: 35, TargetHeight: 250, HasTargetHeight: true}
+	v := cam.MapView(cam.MapBounds(16.0/9), 300, 1024)
+	tiles, _ := flatTiles(t)
+	pic, err := Render(Scene{Tiles: tiles, View: v, Heights: slope, Exaggeration: 2}, cam, Options{Width: 160, Height: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The eye is the given height's distance up the line of sight: the
+	// height exaggerated as the ground is.
+	if got, want := pic.cam.eye[2], 500+800*math.Sin(35*math.Pi/180); math.Abs(got-want) > 1e-6 {
+		t.Errorf("the eye is %.2f m up, want %.2f", got, want)
+	}
+}

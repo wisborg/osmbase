@@ -58,6 +58,14 @@ type Camera struct {
 	Pitch float64
 	// FOV is the vertical field of view in degrees; 0 is DefaultFOV.
 	FOV float64
+	// TargetHeight, when HasTargetHeight, is the height of the point looked
+	// at in metres, as measured -- exaggerated with the ground -- in place
+	// of the ground's height under it. For a camera moving along a path:
+	// the ground rises and falls under the target from one frame to the
+	// next, and a camera that followed it exactly would bob with every
+	// rise; the path smooths the height over time and gives it here.
+	TargetHeight    float64
+	HasTargetHeight bool
 }
 
 // HazeMetres is how far from this camera ground is about two-thirds haze by
@@ -238,7 +246,15 @@ func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture,
 
 	w, h := o.Width*supersample, o.Height*supersample
 	f := newFrame(w, h, sky, horizon)
-	cam := newView(c, m.targetZ, fov, w, h)
+	targetZ := m.targetZ
+	if c.HasTargetHeight {
+		ex := s.Exaggeration
+		if ex == 0 {
+			ex = 1
+		}
+		targetZ = c.TargetHeight * ex
+	}
+	cam := newView(c, targetZ, fov, w, h)
 	f.paintSky(cam, c.Pitch*math.Pi/180)
 	var tex sampler
 	var pyr *pyramidSampler
@@ -357,10 +373,18 @@ func buildMesh(s Scene, target render.Coord) (*mesh, error) {
 		}
 	}
 	// The height under the target, so the camera looks at the ground and
-	// not at sea level beneath it: the nearest vertex with one.
+	// not at sea level beneath it: between the four vertices round it, so
+	// that it moves smoothly as the target does -- the nearest vertex's
+	// alone, which it was, rose in steps a cell's rise high and a moving
+	// camera jumped up and down. The nearest vertex with a height, where
+	// any of the four has none.
 	gx, gy, err := grid.Pixel(target)
 	if err != nil {
 		return nil, err
+	}
+	if z, ok := m.heightAt(gx-0.5, gy-0.5); ok {
+		m.targetZ = z
+		return m, nil
 	}
 	best := math.Inf(1)
 	for j := 0; j < rows; j++ {
