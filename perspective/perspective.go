@@ -190,35 +190,53 @@ func (p *Picture) Locate(c render.Coord) (x, y float64, visible bool) {
 // place is Project and Locate together: where c falls in the image, whether
 // it is in the picture at all, and whether nearer ground hides it there.
 func (p *Picture) place(c render.Coord) (x, y float64, seen, ok bool) {
+	sx, sy, z, ok := p.onFrame(c)
+	if !ok {
+		return 0, 0, false, false
+	}
+	return sx / supersample, sy / supersample, p.seenAt(int(sx), int(sy), z), true
+}
+
+// onFrame is where the ground at c falls in the supersampled frame, and how
+// far along the line of sight it is; not ok when it is off the map, behind
+// the camera or outside the frame.
+func (p *Picture) onFrame(c render.Coord) (sx, sy, depth float64, ok bool) {
 	m := p.mesh
 	gx, gy, err := m.grid.Pixel(c)
 	if err != nil {
-		return 0, 0, false, false
+		return 0, 0, 0, false
 	}
 	z, have := m.heightAt(gx-0.5, gy-0.5)
 	if !have {
-		return 0, 0, false, false
+		return 0, 0, 0, false
 	}
 	wx, wy := mercator.Project(c.Lon, c.Lat)
 	cp := p.cam.toCamera((wx-m.tx)*m.scale, -(wy-m.ty)*m.scale, z)
 	if cp[2] < nearMetres {
-		return 0, 0, false, false
+		return 0, 0, 0, false
 	}
 	sp := project(p.cam, point{cam: cp})
-	ix, iy := int(sp.x), int(sp.y)
-	if ix < 0 || iy < 0 || ix >= p.w || iy >= p.h {
-		return 0, 0, false, false
+	if sp.x < 0 || sp.y < 0 || int(sp.x) >= p.w || int(sp.y) >= p.h {
+		return 0, 0, 0, false
 	}
-	// Seen if nothing nearer was drawn there: within a few metres, or a
-	// twentieth of the distance, of the ground drawn at that pixel, so the
-	// ground the place is on does not hide the place. A twentieth, not a
-	// hundredth, because a pixel seen at a grazing angle spans a long run
-	// of ground -- 2 degrees above the ground and 6 km away it is over 200
-	// m deep -- and the ground drawn at its centre can be half that nearer
-	// than the place. A hill in the way hides by far more.
-	tolerance := math.Max(5, cp[2]/20)
-	seen = cp[2] <= p.depth[iy*p.w+ix]+tolerance
-	return sp.x / supersample, sp.y / supersample, seen, true
+	return sp.x, sp.y, cp[2], true
+}
+
+// seenAt is whether ground depth metres away is seen at supersampled pixel
+// (ix, iy): nothing nearer was drawn there -- within a few metres, or a
+// twentieth of the distance, of the ground drawn at that pixel, so the
+// ground a place is on does not hide the place. A twentieth, not a
+// hundredth, because a pixel seen at a grazing angle spans a long run of
+// ground -- 2 degrees above the ground and 6 km away it is over 200 m deep
+// -- and the ground drawn at its centre can be half that nearer than the
+// place. A hill in the way hides by far more. Outside the frame is not
+// seen.
+func (p *Picture) seenAt(ix, iy int, depth float64) bool {
+	if ix < 0 || iy < 0 || ix >= p.w || iy >= p.h {
+		return false
+	}
+	tolerance := math.Max(5, depth/20)
+	return depth <= p.depth[iy*p.w+ix]+tolerance
 }
 
 // Render draws the scene from the camera.

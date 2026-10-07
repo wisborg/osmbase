@@ -19,25 +19,34 @@ import (
 // upright, a street's or a contour's along the line as the camera sees it,
 // turned to read left to right -- in the palette the tiles were drawn in.
 //
-// # Which names, and how strongly
+// # Nothing pops
 //
-// A name belongs to the zoom its tile was drawn at: a town's name to a
-// coarse tile, a lane's to a fine one. It is shown where the ground is drawn
-// from that zoom, and as strongly as that zoom is in the colour there, so
-// as the camera nears a place and its ground blends from one zoom to the
-// next, the coarse zoom's names fade out over the same stretch the fine
-// zoom's fade in. A name is faded into the haze with the ground under it,
-// and left out where a hill hides it.
+// The pictures of a flight are frames of a video, and a name that appears
+// or vanishes from one frame to the next is a flicker. So how strongly each
+// name is shown is a continuous function of the camera: nothing about a
+// name is decided by a threshold that a small move of the camera can cross.
+// Names are drawn at fractions of a pixel, so they glide rather than step a
+// pixel at a time; and every reason a name is not shown in full is a
+// fraction of it, not a yes or a no:
 //
-// # Which names win
+//   - its zoom: a name belongs to the zoom its tile was drawn at -- a town's
+//     to a coarse tile, a lane's to a fine one -- and is shown as strongly as
+//     that zoom is in the ground's colour around it, so as the camera nears a
+//     place, the coarse zoom's names fade out over the stretch the fine
+//     zoom's fade in;
+//   - the haze, with the ground under it;
+//   - a hill: the share of the ground around it that is seen, so a name
+//     fades as a crest rises over it;
+//   - the edge of the picture, which it fades across rather than leaving the
+//     moment it touches;
+//   - the names already shown: the share of it they cover, as strongly as
+//     they are shown -- and the same name nearby counts as covering it, so a
+//     street's name from one zoom gives way to the same name from the next
+//     rather than both showing.
 //
-// Names are drawn in one order in every frame -- places, then names along
-// lines, then contour heights; coarser zooms before finer -- and one that
-// would overlap a name already drawn, or run off the picture, is left out.
-// The order does not depend on the frame, so from one frame to the next the
-// same name wins the same contest; a name changes only as its strength
-// does. Only a name at least half shown takes room from the ones after it:
-// one fading out does not keep the one replacing it from fading in.
+// Names are taken in one order in every frame -- places, then names along
+// lines, then contour heights; coarser zooms before finer -- so the same
+// name gives way to the same other name in every frame.
 //
 // Names are drawn one picture at a time, whatever goroutine draws each: a
 // font face is not safe for concurrent use -- it draws each glyph into a
@@ -58,20 +67,21 @@ func (p *Picture) DrawNames(pal render.Palette) {
 		kind  int // 0 a place, 1 along a line, 2 a contour's height
 		key   tileKey
 		i     int
-		place *render.PointLabel
-		line  *render.LineLabel
+		label render.LineLabel // a place as a name at no angle
+		place bool
 	}
 	var names []name
 	for k, t := range p.used {
-		for i := range t.Places {
-			names = append(names, name{kind: 0, key: k, i: i, place: &t.Places[i]})
+		for i, l := range t.Places {
+			names = append(names, name{kind: 0, key: k, i: i, place: true,
+				label: render.LineLabel{Text: l.Text, At: l.At, Face: l.Face, Minor: l.Minor}})
 		}
-		for i := range t.Lines {
+		for i, l := range t.Lines {
 			kind := 1
-			if t.Lines[i].Contour {
+			if l.Contour {
 				kind = 2
 			}
-			names = append(names, name{kind: kind, key: k, i: i, line: &t.Lines[i]})
+			names = append(names, name{kind: kind, key: k, i: i, label: l})
 		}
 	}
 	slices.SortFunc(names, func(a, b name) int {
@@ -80,101 +90,132 @@ func (p *Picture) DrawNames(pal render.Palette) {
 	})
 
 	type shown struct {
+		text  string
 		box   image.Rectangle
+		x, y  float64
 		alpha float64
-		draw  func(dst *image.RGBA)
+		label render.LineLabel
+		angle float64
 	}
-	var strong, faint []shown
+	bounds := p.Image.Bounds()
+	var drawn []shown
 	for _, n := range names {
-		at := render.Coord{}
-		var face font.Face
-		if n.place != nil {
-			at, face = n.place.At, n.place.Face
-		} else {
-			at, face = n.line.At, n.line.Face
-		}
-		if face == nil {
+		l := n.label
+		if l.Face == nil {
 			continue
 		}
-		alpha, x, y, ok := p.nameStrength(at, n.key.z)
+		m := l.Face.Metrics()
+		height := float64(m.Ascent.Ceil() + m.Descent.Ceil())
+		alpha, x, y, ok := p.nameStrength(l.At, n.key.z, height/2)
 		if !ok {
 			continue
 		}
-		var s shown
-		if n.place != nil {
-			l := *n.place
-			s = shown{box: placeBox(l, x, y), alpha: alpha, draw: func(dst *image.RGBA) { drawPlaceName(dst, l, x, y, pal, halo) }}
-		} else {
-			l := *n.line
-			angle, ok := p.screenAngle(at, l.Angle)
-			if !ok {
+		angle := 0.0
+		if !n.place {
+			if angle, ok = p.screenAngle(l.At, l.Angle); !ok {
 				continue
 			}
-			s = shown{box: alongBox(l, x, y, angle), alpha: alpha, draw: func(dst *image.RGBA) { render.DrawLineLabel(dst, l, x, y, angle, pal, halo) }}
 		}
-		if !s.box.In(p.Image.Bounds()) {
+		s := shown{text: l.Text, box: alongBox(l, x, y, angle), x: x, y: y, label: l, angle: angle}
+		alpha *= edgeFadeBox(s.box, bounds, 2*height)
+		for _, o := range drawn {
+			alpha *= 1 - o.alpha*cover(s.box, o.box, s.text == o.text)
+		}
+		if alpha < 1.0/64 {
 			continue
 		}
-		if s.alpha >= 0.5 {
-			strong = append(strong, s)
-		} else {
-			faint = append(faint, s)
-		}
+		s.alpha = alpha
+		drawn = append(drawn, s)
 	}
-
-	var taken []image.Rectangle
-	overlaps := func(b image.Rectangle) bool { return slices.ContainsFunc(taken, b.Overlaps) }
-	var draws []shown
-	for _, s := range strong {
-		if !overlaps(s.box) {
-			taken = append(taken, s.box)
-			draws = append(draws, s)
-		}
-	}
-	for _, s := range faint {
-		if !overlaps(s.box) {
-			draws = append(draws, s)
-		}
-	}
-	for _, s := range draws {
-		drawFaded(p.Image, s.box, s.alpha, s.draw)
+	for _, s := range drawn {
+		drawFaded(p.Image, s.box, s.alpha, func(dst *image.RGBA) {
+			render.DrawLineLabel(dst, s.label, s.x, s.y, s.angle, pal, halo)
+		})
 	}
 }
 
 // namesMu is held while names are drawn; see DrawNames.
 var namesMu sync.Mutex
 
+// cover is how much of one name's box another covers, as a share of the
+// smaller and tripled -- a third of a name hidden is all of it lost --
+// at most 1. Two boxes of the same name count as covering each other more
+// the nearer they are, up to twice the longer one's width apart: two copies
+// of one street's name a little apart are one name too many.
+func cover(a, b image.Rectangle, same bool) float64 {
+	c := 0.0
+	if in := a.Intersect(b); !in.Empty() {
+		small := math.Min(float64(a.Dx()*a.Dy()), float64(b.Dx()*b.Dy()))
+		if small > 0 {
+			c = math.Min(1, 3*float64(in.Dx()*in.Dy())/small)
+		}
+	}
+	if same {
+		ax, ay := float64(a.Min.X+a.Max.X)/2, float64(a.Min.Y+a.Max.Y)/2
+		bx, by := float64(b.Min.X+b.Max.X)/2, float64(b.Min.Y+b.Max.Y)/2
+		reach := 2 * float64(max(a.Dx(), b.Dx()))
+		if reach > 0 {
+			c = math.Max(c, math.Max(0, 1-math.Hypot(ax-bx, ay-by)/reach))
+		}
+	}
+	return c
+}
+
+// edgeFadeBox is how strongly a name in box is shown at the picture's edge:
+// in full inside it, fading out as the box crosses the edge, gone once it
+// is ramp pixels past it.
+func edgeFadeBox(box, bounds image.Rectangle, ramp float64) float64 {
+	d := float64(min(box.Min.X-bounds.Min.X, box.Min.Y-bounds.Min.Y, bounds.Max.X-box.Max.X, bounds.Max.Y-box.Max.Y))
+	if d >= 0 {
+		return 1
+	}
+	return smoothstep((d + ramp) / ramp)
+}
+
+// nameSamples are where around a name's anchor its zoom and whether it is
+// seen are read, as fractions of the radius: the anchor and a ring round
+// it, so both change smoothly as a crest or the edge of a zoom crosses the
+// name rather than flipping as it crosses one pixel.
+var nameSamples = [][2]float64{{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {0.7, 0.7}, {-0.7, 0.7}, {0.7, -0.7}, {-0.7, -0.7}}
+
 // nameStrength is how strongly a name of zoom z centred at c is shown, and
-// where in the image: as strongly as zoom z is in the ground's colour there,
-// eased so the change from one zoom's names to the next is brief, and faded
-// with the ground into the haze. Not ok where c is not seen.
-func (p *Picture) nameStrength(c render.Coord, z uint8) (alpha, x, y float64, ok bool) {
-	x, y, seen, in := p.place(c)
-	if !in || !seen {
+// where in the image: as strongly as zoom z is in the ground's colour around
+// it, eased so the change from one zoom's names to the next is brief; as
+// much as the ground within r image pixels of it is seen; and faded with
+// the ground into the haze. Not ok where it would not be shown at all.
+func (p *Picture) nameStrength(c render.Coord, z uint8, r float64) (alpha, x, y float64, ok bool) {
+	sx, sy, depth, in := p.onFrame(c)
+	if !in {
 		return 0, 0, 0, false
 	}
-	ix, iy := int(x*supersample), int(y*supersample)
-	if ix < 0 || iy < 0 || ix >= p.w || iy >= p.h {
-		return 0, 0, 0, false
+	var seen, lodSum, lodN float64
+	for _, d := range nameSamples {
+		ix, iy := int(sx+d[0]*r*supersample), int(sy+d[1]*r*supersample)
+		if p.seenAt(ix, iy, depth) {
+			seen++
+		}
+		if ix >= 0 && iy >= 0 && ix < p.w && iy < p.h {
+			if l := p.lod[iy*p.w+ix]; !math.IsNaN(float64(l)) {
+				lodSum, lodN = lodSum+float64(l), lodN+1
+			}
+		}
 	}
-	i := iy*p.w + ix
-	lod := float64(p.lod[i])
-	if math.IsNaN(lod) {
+	if seen == 0 || lodN == 0 {
 		return 0, 0, 0, false
 	}
 	// The zoom's weight in the colour there, from the blend of the two
 	// zooms either side; eased over the middle of the blend.
-	w := 1 - math.Abs(lod-float64(z))
-	alpha = smoothstep((w - 0.35) / 0.3)
+	w := 1 - math.Abs(lodSum/lodN-float64(z))
+	alpha = smoothstep((w-0.35)/0.3) * seen / float64(len(nameSamples))
 	u, v, err := p.view.Pixel(c)
 	if err != nil {
 		return 0, 0, 0, false
 	}
-	alpha *= 1 - math.Max(p.tex.edgeFade(u, v), hazeAt(p.depth[i], p.hazeM))
+	alpha *= 1 - math.Max(p.tex.edgeFade(u, v), hazeAt(depth, p.hazeM))
 	if alpha < 1.0/64 {
 		return 0, 0, 0, false
 	}
-	return alpha, x, y, true
+	return alpha, sx / supersample, sy / supersample, true
 }
 
 // screenAngle is the direction, on the picture, of a line through c running

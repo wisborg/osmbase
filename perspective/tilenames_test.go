@@ -45,13 +45,13 @@ func TestNamesAreShownWhereTheirZoomIs(t *testing.T) {
 		return best
 	}
 	underCamera, distance := at(200, 285), at(200, 40)
-	if a, _, _, ok := pic.nameStrength(underCamera, 16); !ok || a < 0.9 {
+	if a, _, _, ok := pic.nameStrength(underCamera, 16, 6); !ok || a < 0.9 {
 		t.Errorf("a zoom 16 name under the camera is shown at %.2f, want in full", a)
 	}
-	if a, _, _, ok := pic.nameStrength(underCamera, 13); ok && a > 0 {
+	if a, _, _, ok := pic.nameStrength(underCamera, 13, 6); ok && a > 0 {
 		t.Errorf("a zoom 13 name under the camera is shown at %.2f, want not at all", a)
 	}
-	if a, _, _, ok := pic.nameStrength(distance, 16); ok && a > 0 {
+	if a, _, _, ok := pic.nameStrength(distance, 16, 6); ok && a > 0 {
 		t.Errorf("a zoom 16 name in the distance is shown at %.2f, want not at all", a)
 	}
 }
@@ -139,3 +139,84 @@ var (
 	colorWhite = color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
 	colorBlack = color.RGBA{A: 0xff}
 )
+
+// A name fades across the picture's edge: in full inside, less the further
+// it runs off, a step at a time and never all at once.
+func TestANameFadesAcrossThePicturesEdge(t *testing.T) {
+	bounds := image.Rect(0, 0, 400, 300)
+	prev := 1.0
+	for x := 10; x >= -40; x-- {
+		f := edgeFadeBox(image.Rect(x, 100, x+80, 120), bounds, 30)
+		if x >= 0 && f != 1 {
+			t.Errorf("a name %d pixels inside the edge is shown at %.2f", x, f)
+		}
+		if f > prev || prev-f > 0.1 {
+			t.Fatalf("at %d pixels a name crossing the edge went from %.2f to %.2f", x, prev, f)
+		}
+		prev = f
+	}
+	if prev != 0 {
+		t.Errorf("a name 40 pixels past the edge of a 30-pixel ramp is shown at %.2f", prev)
+	}
+}
+
+// How much one name covers another grows with their overlap, a step at a
+// time; and two copies of one name cover each other the more the nearer
+// they are, without overlapping at all.
+func TestNamesCoverEachOtherByDegrees(t *testing.T) {
+	a := image.Rect(100, 100, 200, 120)
+	prev := 0.0
+	for dx := 120; dx >= 0; dx-- {
+		c := cover(a, a.Add(image.Pt(dx, 0)), false)
+		if c < prev || c-prev > 0.1 {
+			t.Fatalf("moving over by a pixel to %d, the cover went from %.2f to %.2f", dx, prev, c)
+		}
+		prev = c
+	}
+	if prev != 1 {
+		t.Errorf("a name on top of another covers it %.2f", prev)
+	}
+	apart := a.Add(image.Pt(150, 0))
+	if c := cover(a, apart, false); c != 0 {
+		t.Errorf("two names apart cover each other %.2f", c)
+	}
+	if c := cover(a, apart, true); c <= 0 || c >= 1 {
+		t.Errorf("two copies of one name a little apart cover each other %.2f, want some but not all", c)
+	}
+	if c := cover(a, a.Add(image.Pt(500, 0)), true); c != 0 {
+		t.Errorf("two copies of one name far apart cover each other %.2f", c)
+	}
+}
+
+// A name half behind a crest is shown at about half strength, not in full
+// or not at all: its strength is the share of the ground round it that is
+// seen.
+func TestANameBehindACrestIsShownByTheShareSeen(t *testing.T) {
+	tiles, _ := flatTiles(t)
+	s, cam := pyramidScene(tiles)
+	pic, err := Render(s, cam, Options{Width: 400, Height: 300, HazeMetres: 1e9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A name of the zoom the ground there is drawn from.
+	cx, cy, _, ok := pic.onFrame(cam.Target)
+	if !ok {
+		t.Fatal("the point looked at is not in the picture")
+	}
+	z := uint8(math.Round(float64(pic.lod[int(cy)*pic.w+int(cx)])))
+	full, x, y, ok := pic.nameStrength(cam.Target, z, 6)
+	if !ok {
+		t.Fatal("the point looked at is not shown")
+	}
+	// Raise a wall of nearer ground over the top half of the samples.
+	sx, sy := int(x*supersample), int(y*supersample)
+	for j := sy - 20; j <= sy; j++ {
+		for i := sx - 20; i <= sx+20; i++ {
+			pic.depth[j*pic.w+i] = 1
+		}
+	}
+	part, _, _, ok := pic.nameStrength(cam.Target, z, 6)
+	if !ok || part <= 0 || part >= full {
+		t.Errorf("half behind a crest a name is shown at %.2f (ok %v), in the open at %.2f; want part of it", part, ok, full)
+	}
+}
