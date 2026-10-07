@@ -179,6 +179,15 @@ type Options struct {
 	// each is turned the other way when that is what reads left to right
 	// for the camera instead.
 	LabelsFacing float64
+
+	// Areas, when set, are how large each area is for drawing the smaller of
+	// two overlapping ones on top: measured once over a fixed region by
+	// MeasureAreas, rather than by how much of each the view holds. Every
+	// view of the region then stacks its areas alike, which is what a
+	// picture assembled from views of neighbouring ground -- a flyover's
+	// fixed tiles, a camera moving over the map -- needs to show no seams
+	// and no flicker. See stack.go.
+	Areas *Areas
 }
 
 // PointLabel is the name of a place a render placed but did not draw: what
@@ -211,6 +220,7 @@ type Renderer struct {
 	terrainNotice string
 	labelsFacing  float64
 	liftPoints    bool
+	areas         *Areas
 }
 
 // faceFor is the face a rule's labels are drawn in, falling back to the base
@@ -248,7 +258,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
 		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels,
-		labelsFacing: o.LabelsFacing * math.Pi / 180,
+		labelsFacing: o.LabelsFacing * math.Pi / 180, areas: o.Areas,
 	}, nil
 }
 
@@ -360,7 +370,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	surface := raster.NewSurface(p.width, p.height)
 	surface.Background(r.palette.Background)
 
-	d := drawer{p: p, palette: r.palette, language: r.language, facing: r.labelsFacing}
+	d := drawer{p: p, palette: r.palette, language: r.language, facing: r.labelsFacing, areas: r.areas}
 
 	// Labels are placed before anything is drawn -- where they go depends
 	// on the tiles and the contours, not on the pixels -- because the

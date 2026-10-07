@@ -106,3 +106,38 @@ func TestStack_NoSeamWhereAPolygonCrossesATileEdge(t *testing.T) {
 		at(t, img, x, 128, testPalette.Green, "the wood either side of the tile edge")
 	}
 }
+
+// Measured once over a region, the areas rank a polygon the same in every
+// view of it, however little of it the view holds. Without them, a view of
+// tile 0 alone sees only the wood's left half -- smaller than the
+// residential area, so on top -- while a view of both tiles sees all of it
+// and puts the residential area on top: two neighbouring views of one
+// ground disagree, and a flyover drawn from fixed tiles shows the seam.
+func TestStack_MeasuredAreasRankAlikeInEveryView(t *testing.T) {
+	src := newSource()
+	src.put(t, 10, 0, 0, wholeTile("earth", ""), landuse(area(7, "wood", 0, 1638, 0, 4096, 4096), area(8, "residential", 0, 0, 0, 4096, 3072)))
+	src.put(t, 10, 1, 0, wholeTile("earth", ""), landuse(area(7, "wood", 0, 0, 0, 2458, 4096)))
+	both := tileView(t, 10, 0, 0, 1, 0, 256)
+
+	alone := drawStackStyle(t, src, tileView(t, 10, 0, 0, 0, 0, 256)).Image
+	at(t, alone, 200, 100, testPalette.Green, "unmeasured, tile 0 alone ranks the wood by its half")
+
+	o := render.Options{Style: stackStyle(), Palette: testPalette}
+	areas, err := render.MeasureAreas(context.Background(), src, o, both.Bounds, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Areas = areas
+	r, err := render.New(src, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []render.View{tileView(t, 10, 0, 0, 0, 0, 256), both} {
+		res, err := r.Render(context.Background(), v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at(t, res.Image, 200, 100, testPalette.Built, "the residential area over the larger wood, whatever the view holds of it")
+		at(t, res.Image, 200, 230, testPalette.Green, "the wood where nothing overlaps it")
+	}
+}

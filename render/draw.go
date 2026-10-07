@@ -33,8 +33,10 @@ type drawer struct {
 	language string
 	// facing is Options.LabelsFacing, in radians.
 	facing float64
-	path   raster.Path
-	clip   clipper
+	// areas is Options.Areas: nil, or what the stack ranks areas by.
+	areas *Areas
+	path  raster.Path
+	clip  clipper
 
 	// src is the current ring or line transformed into surface pixels, and dst
 	// the clipped result converted to the rasterizer's float32.

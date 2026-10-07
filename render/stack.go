@@ -37,6 +37,19 @@ import (
 // areas are added up by id first, and the whole view agrees on one order. A
 // feature with no id is ranked by its own piece.
 //
+// That makes one view agree with itself and not with its neighbours. A view
+// holding half a wood ranks it by the half, and the view beside it, holding
+// all of it, ranks it by the whole: where the wood overlaps something of a
+// size between the two, they draw the overlap in different colours. One map
+// drawn once never shows it. A picture put together from views of
+// neighbouring ground does -- a flyover's fixed tiles, side by side, or one
+// view a frame as a camera moves, where the same ground changes colour from
+// one frame to the next. So a caller can measure the areas once, over the
+// whole region its views will cover (MeasureAreas), and every view ranks by
+// that instead (Options.Areas). Areas are compared in Web Mercator's world
+// units either way, so a measured one and one only seen in the view rank
+// against each other at the same scale.
+//
 // # Why this does not break the one-pass rule
 //
 // One rasterizer pass per rule is what keeps two clipped halves of a polygon
@@ -129,6 +142,15 @@ func (d *drawer) drawStack(s *raster.Surface, rules []*Rule, inks []color.Color,
 			a.area += area
 			a.pieces = append(a.pieces, piece)
 			a.bounds = a.bounds.union(piece.bounds())
+		}
+	}
+	// In world units, so that an area measured over the region and one the
+	// region does not hold are compared at one scale.
+	perWorld := d.p.scale * d.p.scale
+	for _, a := range areas {
+		a.area /= perWorld
+		if w, ok := d.areas.of(a); ok {
+			a.area = w
 		}
 	}
 	slices.SortStableFunc(areas, func(a, b *stackArea) int {
