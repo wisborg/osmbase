@@ -195,34 +195,43 @@ func (d *drawer) appendRing(ring mvt.Ring, tr tileTransform, clip box) {
 	d.path.Ring(d.points(clipped))
 }
 
-// appendLines strokes one feature's parts, threading the dash phase along the
-// way.
+// appendLines strokes one feature's parts, dashing each piece at its own place
+// in the pattern.
 //
-// The parts are walked in order, and each part's clipped runs in order, and the
-// phase each stroke ENDS on is what the next one starts from. Restarting the
-// pattern at every piece would put a phase jump wherever the pieces were cut,
-// which for a tile clip is every tile boundary in the map -- invisible within
-// one tile and obvious across one, the same shape of failure as the coverage
-// seam. The arithmetic belongs to raster, which accumulates arc length per
-// segment in the float32 the stroker already works in; a start-phase-plus-
-// length computed here in float64 is a second implementation that drifts from
-// the first over a long way.
+// Where a piece starts in the pattern is how far along the feature's geometry
+// it starts: the parts before it, whole, and the line it belongs to up to the
+// point the clip box cut it. Measured from the geometry, the pattern is the
+// line's own, the same in every view that holds it -- not restarted where a
+// view's edge happens to cut the line, which drew the same path with its
+// dashes shifted in two views of the same ground. One map never shows that; a
+// picture assembled from views of neighbouring ground -- a flyover's fixed
+// tiles, or a view a frame under a moving camera -- shows it as a seam or as
+// dashes crawling along a still path. It also covers what threading the phase
+// from one piece to the next did: a piece starts where the one before ended,
+// along the line, so a way cut into runs by the clip is dashed as one.
 //
-// raster.Path.Stroke names two conditions the caller owns, and both are met
-// here. The pieces are consecutive, because clipping a polyline cuts it into
-// runs in order along the line. And they do not OVERLAP, because each tile's
-// geometry is clipped to that tile's own square: a vector tile carries a buffer
-// of the same way from beyond its edge, and two tiles' copies of one stretch of
-// path, dashed at two phases, would be colliding dashes rather than the free
-// duplicate a solid stroke gets.
+// raster.Path.Stroke takes the phase in surface pixels, as the geometry here
+// is, and reduces it into one cycle in float32. A long way at a deep zoom is
+// many thousands of pixels from its start, where float32 has lost the
+// fraction of a pixel that keeps dashes still, so the phase is reduced in
+// float64 first.
+//
+// The pieces still must not OVERLAP, because each tile's geometry is clipped
+// to that tile's own square: a vector tile carries a buffer of the same way
+// from beyond its edge, and two tiles' copies of one stretch of path, dashed
+// at two phases, would be colliding dashes rather than the free duplicate a
+// solid stroke gets.
 //
 // What is still not threaded is one way arriving as separate FEATURES in two
-// tiles. Those are two features with two identities and no order between them,
-// and stitching them would mean matching geometry across tiles before drawing
-// anything. The pattern therefore restarts at a tile edge for a dashed way that
-// crosses one. That is a real and visible limit, written down here rather than
-// left to be discovered.
+// tiles. Those are two features with two identities and no order between
+// them, and stitching them would mean matching geometry across tiles before
+// drawing anything. The pattern therefore restarts at a source tile's edge
+// for a dashed way that crosses one -- in the same place in every view drawn
+// from the same tiles, so it does not move, but a real and visible limit,
+// written down here rather than left to be discovered.
 func (d *drawer) appendLines(lines [][]mvt.Point, tr tileTransform, clip box, s raster.Stroke) {
+	period := dashPeriod(s.Dash)
+	var before float64 // the feature's parts before this one, whole
 	for _, line := range lines {
 		if len(line) < 2 {
 			continue
@@ -231,10 +240,34 @@ func (d *drawer) appendLines(lines [][]mvt.Point, tr tileTransform, clip box, s 
 		for _, p := range line {
 			d.src = append(d.src, tr.apply(p.X, p.Y))
 		}
-		d.clip.line(d.src, clip, func(run []pt) {
-			s.DashPhase = d.path.Stroke(d.points(run), s)
+		d.clip.line(d.src, clip, func(run []pt, start float64) {
+			s.DashPhase = 0
+			if period > 0 {
+				s.DashPhase = float32(math.Mod(before+start, period))
+			}
+			d.path.Stroke(d.points(run), s)
 		})
+		for i := 1; i < len(d.src); i++ {
+			before += math.Hypot(d.src[i].X-d.src[i-1].X, d.src[i].Y-d.src[i-1].Y)
+		}
 	}
+}
+
+// dashPeriod is how long a dash pattern takes to repeat, in its own units: its
+// sum, twice over for an odd count, which raster repeats to make on and off
+// alternate. 0 for a pattern that dashes nothing.
+func dashPeriod(dash []float32) float64 {
+	var total float64
+	for _, v := range dash {
+		if !(v >= 0) || math.IsInf(float64(v), 0) {
+			return 0
+		}
+		total += float64(v)
+	}
+	if len(dash)%2 != 0 {
+		total *= 2
+	}
+	return total
 }
 
 // points converts clipped surface coordinates to the rasterizer's float32.
@@ -301,7 +334,7 @@ func (d *drawer) hatch(s *raster.Surface, gaps []image.Rectangle) {
 				pt{X: off + b.MinY, Y: b.MinY},
 				pt{X: off + b.MaxY, Y: b.MaxY},
 			)
-			d.clip.line(d.src, b, func(run []pt) {
+			d.clip.line(d.src, b, func(run []pt, _ float64) {
 				d.path.Stroke(d.points(run), raster.Stroke{Width: float32(width)})
 			})
 		}

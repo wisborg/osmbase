@@ -130,7 +130,7 @@ func TestClipLine_LeavingAndReenteringIsTwoRunsNotOne(t *testing.T) {
 	line := []pt{{10, 50}, {40, 50}, {40, 500}, {70, 500}, {70, 50}, {90, 50}}
 
 	var runs [][]pt
-	c.line(line, b, func(run []pt) { runs = append(runs, append([]pt(nil), run...)) })
+	c.line(line, b, func(run []pt, _ float64) { runs = append(runs, append([]pt(nil), run...)) })
 
 	if len(runs) != 2 {
 		t.Fatalf("a line leaving and re-entering the box gave %d runs, want 2: %v", len(runs), runs)
@@ -157,7 +157,7 @@ func TestClipLine_EndsLandExactlyOnTheBoxEdge(t *testing.T) {
 	b := box{MinX: 0, MinY: 0, MaxX: 100, MaxY: 100}
 
 	var got []pt
-	c.line([]pt{{50, 50}, {150, 50}}, b, func(run []pt) { got = append([]pt(nil), run...) })
+	c.line([]pt{{50, 50}, {150, 50}}, b, func(run []pt, _ float64) { got = append([]pt(nil), run...) })
 
 	if len(got) != 2 {
 		t.Fatalf("clipping gave %d points, want 2: %v", len(got), got)
@@ -186,7 +186,7 @@ func TestClipLine_SegmentParallelToAnEdgeSurvives(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := 0
-			c.line(tc.line, b, func([]pt) { n++ })
+			c.line(tc.line, b, func([]pt, float64) { n++ })
 			if n != tc.want {
 				t.Errorf("got %d runs, want %d", n, tc.want)
 			}

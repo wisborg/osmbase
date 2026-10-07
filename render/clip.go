@@ -1,5 +1,7 @@
 package render
 
+import "math"
+
 // Culling and clipping, which the rasterizer deliberately does not do.
 //
 // raster.Surface.Fill draws geometry outside the surface correctly and at a
@@ -205,19 +207,26 @@ func lerp(a, b, t float64) float64 { return a + (b-a)*t }
 // The slice handed to emit is REUSED between calls, as raster's own dash walk
 // does and for the same reason: the caller strokes it immediately, and a fresh
 // slice per run is one allocation per road per tile.
-func (c *clipper) line(in []pt, b box, emit func([]pt)) {
+//
+// Each run comes with how far along the unclipped polyline it starts, in the
+// polyline's own units: what a dashed stroke takes its phase from, so the
+// pattern belongs to the line and not to wherever the box cut into it.
+func (c *clipper) line(in []pt, b box, emit func(run []pt, start float64)) {
 	if len(in) < 2 || b.empty() {
 		return
 	}
 	run := c.run[:0]
+	var start, along float64 // where the run starts; where in[i-1] is
 	flush := func() {
 		if len(run) >= 2 {
-			emit(run)
+			emit(run, start)
 		}
 		run = run[:0]
 	}
 	for i := 1; i < len(in); i++ {
 		a, z, ok := clipSegment(in[i-1], in[i], b)
+		segStart := along
+		along += math.Hypot(in[i].X-in[i-1].X, in[i].Y-in[i-1].Y)
 		if !ok {
 			flush()
 			continue
@@ -229,6 +238,7 @@ func (c *clipper) line(in []pt, b box, emit func([]pt)) {
 			flush()
 		}
 		if len(run) == 0 {
+			start = segStart + math.Hypot(a.X-in[i-1].X, a.Y-in[i-1].Y)
 			run = append(run, a)
 		}
 		run = append(run, z)

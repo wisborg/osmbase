@@ -210,7 +210,7 @@ func (o *overlayDrawer) stroke(s *raster.Surface, points []Coord, st raster.Stro
 		for _, c := range piece {
 			o.src = append(o.src, o.pixel(c))
 		}
-		o.clip.line(o.src, clip, func(run []pt) {
+		o.clip.line(o.src, clip, func(run []pt, _ float64) {
 			o.dst = o.dst[:0]
 			for _, q := range run {
 				o.dst = append(o.dst, raster.Point{X: float32(q.X), Y: float32(q.Y)})
