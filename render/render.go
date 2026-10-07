@@ -180,6 +180,19 @@ type Options struct {
 	// for the camera instead.
 	LabelsFacing float64
 
+	// LiftLabels keeps every name out of the image -- places, and names
+	// along lines: streets, rivers, contour heights -- and hands them back
+	// in Result.PointLabels and Result.LineLabels, for a caller that draws
+	// names itself, over a picture of its own. It also places them as if
+	// the map went on past the image's edges, so a name near an edge is
+	// handed back where the map would put it rather than left out because
+	// its box runs off the image: a flyover's tiles are views of
+	// neighbouring ground, and placing names only where they fitted inside
+	// each left a band without names along every edge between them. A name
+	// handed back may therefore be centred off the image; the caller keeps
+	// those it wants.
+	LiftLabels bool
+
 	// Areas, when set, are how large each area is for drawing the smaller of
 	// two overlapping ones on top: measured once over a fixed region by
 	// MeasureAreas, rather than by how much of each the view holds. Every
@@ -197,6 +210,25 @@ type Options struct {
 	// Fixed, every view draws the same lines. It does not draw contours at a
 	// zoom too shallow for any.
 	ContourInterval float64
+}
+
+// LineLabel is a name written along a line that a render placed but did not
+// draw, with Options.LiftLabels: what it says, where its centre is, the
+// direction it runs, and how it would have been drawn.
+type LineLabel struct {
+	Text string
+	At   Coord
+	// Angle is the direction the text runs, in radians clockwise from east
+	// on a north-up map: 0 reads west to east, π/2 north to south.
+	Angle float64
+	// Face is the face it was placed in, and big the same at several times
+	// the size, which it is drawn from to be turned smoothly; nil when the
+	// render had no LabelFaceFor.
+	Face, big font.Face
+	// Minor is a name in the quieter of the two label inks; Contour, a
+	// contour's height; OnRoad, a name written on its road, which is drawn
+	// with a halo in the road's colour.
+	Minor, Contour, OnRoad bool
 }
 
 // PointLabel is the name of a place a render placed but did not draw: what
@@ -229,6 +261,7 @@ type Renderer struct {
 	terrainNotice string
 	labelsFacing  float64
 	liftPoints    bool
+	liftAll       bool
 	areas         *Areas
 	interval      float64
 }
@@ -267,7 +300,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 	return &Renderer{
 		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
-		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels,
+		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels, liftAll: o.LiftLabels,
 		labelsFacing: o.LabelsFacing * math.Pi / 180, areas: o.Areas, interval: o.ContourInterval,
 	}, nil
 }
@@ -324,6 +357,10 @@ type Result struct {
 	// draw, in the order they were placed -- most important first -- when
 	// Options.LiftPointLabels asked for them; nil otherwise.
 	PointLabels []PointLabel
+
+	// LineLabels are the names along lines the render placed and did not
+	// draw, when Options.LiftLabels asked for them; nil otherwise.
+	LineLabels []LineLabel
 
 	// ContourInterval is the height between contour lines, in metres, and 0
 	// where none were drawn: at a zoom too shallow for them, or with a
@@ -394,7 +431,22 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	if r.labelFace != nil && (len(r.style.Labels) > 0 || len(contours) > 0) {
 		cands := d.collectLabels(r.style.Labels, r.style.LabelGrowth, tiles, p.tileZoom, r.faceFor)
 		cands = append(cands, contourLabels(contours, r.labelFace, r.labelsFacing)...)
-		labels = placeLabels(cands, r.labelPad, surface.Bounds())
+		bounds := surface.Bounds()
+		if r.liftAll {
+			// As if the map went on: as far again past every edge as the
+			// longest name could reach.
+			bounds = bounds.Inset(-max(bounds.Dx(), bounds.Dy()) / 2)
+		}
+		labels = placeLabels(cands, r.labelPad, bounds)
+	}
+
+	// Contour lines are cut under their heights, as printed maps break
+	// them -- unless the heights are lifted off the map, when whoever
+	// draws them may not draw every one, and a cut with nothing over it is
+	// a gap in the line.
+	cutUnder := labels
+	if r.liftAll {
+		cutUnder = nil
 	}
 
 	shadeAt := shadeIndex(r.style.Rules)
@@ -407,7 +459,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	for i := 0; i < len(r.style.Rules); i++ {
 		if i == shadeAt && rl != nil {
 			rl.apply(surface, r.palette)
-			d.drawContours(surface, contours, labels)
+			d.drawContours(surface, contours, cutUnder)
 		}
 		rule := &r.style.Rules[i]
 		if !drawn(rule) {
@@ -446,7 +498,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	}
 	if shadeAt == len(r.style.Rules) && rl != nil {
 		rl.apply(surface, r.palette)
-		d.drawContours(surface, contours, labels)
+		d.drawContours(surface, contours, cutUnder)
 	}
 
 	// Labels last of all except the hatch, so that a name is never drawn over
@@ -454,8 +506,25 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	// collected from the same tiles the geometry came from, so a label cannot
 	// name a feature the picture does not show.
 	var lifted []PointLabel
+	var liftedLines []LineLabel
 	for _, l := range labels {
-		if r.liftPoints && !l.along {
+		if r.liftAll && l.along {
+			lon, lat := mercator.Unproject(p.originX+l.x/p.scale, p.originY+l.y/p.scale)
+			scale := l.scale
+			if scale == 0 {
+				scale = 1
+			}
+			var big font.Face
+			if r.labelFaces != nil {
+				big = r.labelFaces(scale * alongSupersample)
+			}
+			liftedLines = append(liftedLines, LineLabel{
+				Text: l.text, At: Coord{Lat: lat, Lon: lon}, Angle: l.angle,
+				Face: l.face, big: big, Minor: l.minor, Contour: l.contour, OnRoad: l.onRoad,
+			})
+			continue
+		}
+		if (r.liftPoints || r.liftAll) && !l.along {
 			// The centre of the name as it would have been drawn, as a
 			// place: the box is padded evenly, so its centre is the
 			// text's.
@@ -496,6 +565,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 		TerrainCovered:  shaded,
 		TerrainZoom:     terrainZoom,
 		PointLabels:     lifted,
+		LineLabels:      liftedLines,
 		ContourInterval: interval,
 		TerrainNotice:   notice,
 	}, nil

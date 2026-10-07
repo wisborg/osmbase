@@ -318,6 +318,27 @@ func drawAlong(dst *image.RGBA, l placed, ink, halo color.RGBA, big font.Face) {
 	}
 }
 
+// DrawLineLabel writes l on dst centred at (x, y), its text running at
+// angle radians clockwise from the image's x axis, as a render would have
+// drawn it there: in the palette's label ink, or its quieter one for a minor
+// name, turned smoothly from l's large face. A name on its road has a halo
+// in the road's colour; any other, one in halo -- the zero colour for none.
+// For a caller drawing lifted names over a picture of its own; see
+// Options.LiftLabels.
+func DrawLineLabel(dst *image.RGBA, l LineLabel, x, y, angle float64, p Palette, halo color.RGBA) {
+	if l.Face == nil || l.Text == "" {
+		return
+	}
+	w := float64(font.MeasureString(l.Face, l.Text).Ceil())
+	m := l.Face.Metrics()
+	h := float64(m.Ascent.Ceil() + m.Descent.Ceil())
+	if l.OnRoad {
+		halo = p.nameHalo()
+	}
+	pl := placed{text: l.Text, face: l.Face, along: true, x: x, y: y, angle: angle, quad: alongQuad(x, y, angle, w, h, int(math.Ceil(haloWidth))+1)}
+	drawAlong(dst, pl, labelInk(p, l.Minor), halo, l.big)
+}
+
 // dilate is mask grown by r pixels every way: each pixel the most covered
 // within r of it, along each axis in turn, which grows a square rather than
 // a disc -- at a halo's width the corners are a fraction of a pixel and not
