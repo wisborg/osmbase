@@ -25,7 +25,7 @@ var zoomColours = map[uint8]color.RGBA{
 func flatTiles(t *testing.T) (*Tiles, *sync.Map) {
 	t.Helper()
 	var seen sync.Map // tileKey -> number of times drawn
-	draw := func(_ context.Context, z uint8, x, y uint32) (*image.RGBA, error) {
+	draw := func(_ context.Context, z uint8, x, y uint32) (*Tile, error) {
 		n, _ := seen.LoadOrStore(tileKey{z, x, y}, new(int))
 		*n.(*int)++
 		img := image.NewRGBA(image.Rect(0, 0, TileSize, TileSize))
@@ -33,7 +33,7 @@ func flatTiles(t *testing.T) (*Tiles, *sync.Map) {
 		for i := 0; i < len(img.Pix); i += 4 {
 			img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = c.R, c.G, c.B, c.A
 		}
-		return img, nil
+		return &Tile{Image: img}, nil
 	}
 	tiles, err := NewTiles(draw, 13, 16, 0)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestPyramidDrawsEachTileOnce(t *testing.T) {
 // in the ground the colour of nothing.
 func TestPyramidReportsATileItCouldNotDraw(t *testing.T) {
 	broken := errors.New("no map here")
-	tiles, err := NewTiles(func(context.Context, uint8, uint32, uint32) (*image.RGBA, error) { return nil, broken }, 13, 16, 0)
+	tiles, err := NewTiles(func(context.Context, uint8, uint32, uint32) (*Tile, error) { return nil, broken }, 13, 16, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

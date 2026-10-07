@@ -34,27 +34,42 @@ func (p *Picture) DrawPlaceNames(labels []render.PointLabel, pal render.Palette)
 		if !seen || l.Face == nil {
 			continue
 		}
-		w := font.MeasureString(l.Face, l.Text).Ceil()
-		m := l.Face.Metrics()
-		asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
-		box := image.Rect(int(x)-w/2-4, int(y)-(asc+desc)/2-4, int(x)+w/2+4, int(y)+(asc+desc)/2+4)
+		box := placeBox(l, x, y)
 		if !box.In(img.Bounds()) || slices.ContainsFunc(drawn, box.Overlaps) {
 			continue
 		}
 		drawn = append(drawn, box)
-		ink := pal.Label
-		if l.Minor && pal.LabelMinor != (color.RGBA{}) {
-			ink = pal.LabelMinor
-		}
-		base := fixed.P(int(x)-w/2, int(y)-(asc+desc)/2+asc)
-		d := font.Drawer{Dst: img, Face: l.Face, Src: image.NewUniform(halo)}
-		for _, o := range [][2]int{{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}, {-2, 0}, {2, 0}, {0, -2}, {0, 2}} {
-			d.Dot = base.Add(fixed.P(o[0], o[1]))
-			d.DrawString(l.Text)
-		}
-		d.Src, d.Dot = image.NewUniform(ink), base
+		drawPlaceName(img, l, x, y, pal, halo)
+	}
+}
+
+// placeBox is the space a place's name centred on (x, y) takes, with room
+// for its halo and some air.
+func placeBox(l render.PointLabel, x, y float64) image.Rectangle {
+	w := font.MeasureString(l.Face, l.Text).Ceil()
+	m := l.Face.Metrics()
+	asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
+	return image.Rect(int(x)-w/2-4, int(y)-(asc+desc)/2-4, int(x)+w/2+4, int(y)+(asc+desc)/2+4)
+}
+
+// drawPlaceName writes a place's name upright, centred on (x, y), in the
+// palette's ink over a halo.
+func drawPlaceName(img *image.RGBA, l render.PointLabel, x, y float64, pal render.Palette, halo color.RGBA) {
+	w := font.MeasureString(l.Face, l.Text).Ceil()
+	m := l.Face.Metrics()
+	asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
+	ink := pal.Label
+	if l.Minor && pal.LabelMinor != (color.RGBA{}) {
+		ink = pal.LabelMinor
+	}
+	base := fixed.P(int(x)-w/2, int(y)-(asc+desc)/2+asc)
+	d := font.Drawer{Dst: img, Face: l.Face, Src: image.NewUniform(halo)}
+	for _, o := range [][2]int{{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}, {-2, 0}, {2, 0}, {0, -2}, {0, 2}} {
+		d.Dot = base.Add(fixed.P(o[0], o[1]))
 		d.DrawString(l.Text)
 	}
+	d.Src, d.Dot = image.NewUniform(ink), base
+	d.DrawString(l.Text)
 }
 
 // DrawMarkers draws markers -- a route's start and finish, its distance

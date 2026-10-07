@@ -19,6 +19,10 @@ type frame struct {
 	// is -- distance, beyond the edge of the map.
 	horizonRow float64
 	sky, hz    color.RGBA
+	// lod is the zoom each pixel's ground was drawn from, when it was
+	// drawn from a pyramid; nil otherwise. Names placed for a zoom are shown
+	// where the ground is drawn from it.
+	lod []float32
 }
 
 func newFrame(w, h int, sky, horizon color.RGBA) *frame {
@@ -58,6 +62,9 @@ type sampler interface {
 	// edgeFade is how far toward the haze the ground is drawn at (u, v),
 	// so that the map ends in the distance rather than against the sky.
 	edgeFade(u, v float64) float64
+	// lod is the zoom the last colour came from, for a pyramid; NaN for
+	// one map, which has none.
+	lod() float32
 }
 
 // point is a vertex in the camera's frame with its map position.
@@ -181,6 +188,9 @@ func (f *frame) fill(cv view, tex sampler, haze color.RGBA, hazeM float64, pa, p
 			// against the sky; and with distance, as the air does.
 			fade := math.Max(tex.edgeFade(u, v), hazeAt(z, hazeM))
 			col = mixRGBA(col, haze, fade)
+			if f.lod != nil {
+				f.lod[i] = tex.lod()
+			}
 			o := i * 4
 			f.img.Pix[o], f.img.Pix[o+1], f.img.Pix[o+2], f.img.Pix[o+3] = col.R, col.G, col.B, 0xff
 		}
@@ -264,6 +274,8 @@ func fadeAt(u, v, w, h float64) float64 {
 
 // at is the map's colour at (u, v) in its pixels, interpolated between the
 // four nearest pixel centres and clamped at the edges.
+func (t *texture) lod() float32 { return float32(math.NaN()) }
+
 func (t *texture) at(u, v, _ float64) color.RGBA {
 	x := math.Max(0, math.Min(float64(t.w-1), u-0.5))
 	y := math.Max(0, math.Min(float64(t.h-1), v-0.5))

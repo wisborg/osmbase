@@ -149,6 +149,14 @@ type Picture struct {
 	cam   view
 	depth []float64 // the supersampled frame's
 	w, h  int       // the supersampled frame's size
+
+	// From a pyramid: the zoom each supersampled pixel was drawn from, the
+	// tiles drawn from, and what fades ground into the haze; see DrawNames.
+	lod   []float32
+	used  map[tileKey]*Tile
+	tex   sampler
+	view  render.View
+	hazeM float64
 }
 
 // Project is where in the image the ground at c falls, in its pixels,
@@ -266,6 +274,12 @@ func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture,
 	} else {
 		tex = newTexture(s.Map)
 	}
+	if pyr != nil {
+		f.lod = make([]float32, w*h)
+		for i := range f.lod {
+			f.lod[i] = float32(math.NaN())
+		}
+	}
 	for j := 0; j+1 < m.rows; j++ {
 		for i := 0; i+1 < m.cols; i++ {
 			a, b, cc, d := m.at(i, j), m.at(i+1, j), m.at(i+1, j+1), m.at(i, j+1)
@@ -276,7 +290,11 @@ func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture,
 	if pyr != nil && pyr.err != nil {
 		return nil, pyr.err
 	}
-	return &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h}, nil
+	pic := &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h, tex: tex, view: s.View, hazeM: hazeM}
+	if pyr != nil {
+		pic.lod, pic.used = f.lod, pyr.used
+	}
+	return pic, nil
 }
 
 func orDefault(c, d color.RGBA) color.RGBA {

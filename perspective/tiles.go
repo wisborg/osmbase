@@ -22,9 +22,26 @@ const TileSize = 512
 // Every tile has to be drawn as part of one map, so that the tiles meet
 // without seams: the same stacking of overlapping areas and the same
 // contour interval in all of them (render.Options.Areas and
-// ContourInterval), and no names, which are placed per tile and would be
-// cut at its edges and differ either side of them.
-type DrawTile func(ctx context.Context, z uint8, x, y uint32) (*image.RGBA, error)
+// ContourInterval), and no names in the image, which would be cut at its
+// edges and differ either side of them. The names come back beside it
+// instead (render.Options.LiftLabels), and Picture.DrawNames stands them on
+// the picture.
+//
+// The names' faces are drawn with afterwards, by DrawNames, one picture at
+// a time. A font face is not safe for concurrent use, so they must not be
+// faces anything else draws with meanwhile -- another tile being drawn, in
+// particular, as tiles are drawn in parallel for frames drawn in parallel.
+// Faces made for each tile are safe.
+type DrawTile func(ctx context.Context, z uint8, x, y uint32) (*Tile, error)
+
+// Tile is one tile of a pyramid: its map, and the names placed on it,
+// lifted off it. Of the names, a pyramid keeps those centred on the tile's
+// own ground, so that each belongs to the one tile it is in.
+type Tile struct {
+	Image  *image.RGBA
+	Places []render.PointLabel
+	Lines  []render.LineLabel
+}
 
 // Tiles is a map as a pyramid of fixed tiles, drawn when first seen and
 // kept: what a moving camera drapes over the ground instead of one map.
@@ -58,7 +75,7 @@ type tileKey struct {
 type tileEntry struct {
 	key  tileKey
 	done chan struct{}
-	img  *image.RGBA
+	tile *Tile
 	err  error
 }
 
@@ -93,14 +110,14 @@ func (t *Tiles) Drawn() int {
 }
 
 // tile is tile z/x/y, drawn now if it has not been.
-func (t *Tiles) tile(ctx context.Context, k tileKey) (*image.RGBA, error) {
+func (t *Tiles) tile(ctx context.Context, k tileKey) (*Tile, error) {
 	t.mu.Lock()
 	if el, ok := t.tiles[k]; ok {
 		t.lru.MoveToFront(el)
 		e := el.Value.(*tileEntry)
 		t.mu.Unlock()
 		<-e.done
-		return e.img, e.err
+		return e.tile, e.err
 	}
 	e := &tileEntry{key: k, done: make(chan struct{})}
 	t.tiles[k] = t.lru.PushFront(e)
@@ -112,9 +129,12 @@ func (t *Tiles) tile(ctx context.Context, k tileKey) (*image.RGBA, error) {
 	}
 	t.mu.Unlock()
 
-	img, err := t.draw(ctx, k.z, k.x, k.y)
-	if err == nil && (img == nil || img.Rect.Dx() != TileSize || img.Rect.Dy() != TileSize) {
+	tile, err := t.draw(ctx, k.z, k.x, k.y)
+	if err == nil && (tile == nil || tile.Image == nil || tile.Image.Rect != image.Rect(0, 0, TileSize, TileSize)) {
 		err = fmt.Errorf("perspective: tile %d/%d/%d came back not %d pixels square", k.z, k.x, k.y, TileSize)
+	}
+	if err == nil {
+		tile = ownNames(tile, k)
 	}
 	if err != nil {
 		err = fmt.Errorf("perspective: drawing tile %d/%d/%d: %w", k.z, k.x, k.y, err)
@@ -126,9 +146,32 @@ func (t *Tiles) tile(ctx context.Context, k tileKey) (*image.RGBA, error) {
 		}
 		t.mu.Unlock()
 	}
-	e.img, e.err = img, err
+	e.tile, e.err = tile, err
 	close(e.done)
-	return img, err
+	return tile, err
+}
+
+// ownNames is the tile with only the names centred on its own ground: a
+// render places names past the edges of the view it draws, and the tile
+// beside it places the same names again, from its own side.
+func ownNames(t *Tile, k tileKey) *Tile {
+	n := math.Exp2(float64(k.z))
+	in := func(c render.Coord) bool {
+		x, y := mercator.Project(c.Lon, c.Lat)
+		return math.Floor(x*n) == float64(k.x) && math.Floor(y*n) == float64(k.y)
+	}
+	out := &Tile{Image: t.Image}
+	for _, l := range t.Places {
+		if in(l.At) {
+			out.Places = append(out.Places, l)
+		}
+	}
+	for _, l := range t.Lines {
+		if in(l.At) {
+			out.Lines = append(out.Lines, l)
+		}
+	}
+	return out
 }
 
 // lodBias shifts the zoom each pixel is drawn from: 0 is one tile pixel to
@@ -150,7 +193,12 @@ type pyramidSampler struct {
 		x, y uint32
 		img  *image.RGBA
 	}
-	err error
+	// used is every tile the frame drew from: whose names may be in it.
+	used map[tileKey]*Tile
+	// lastLOD is the zoom the last pixel was drawn at, clamped to the
+	// pyramid's.
+	lastLOD float32
+	err     error
 }
 
 func newPyramidSampler(ctx context.Context, t *Tiles, v render.View) (*pyramidSampler, error) {
@@ -167,7 +215,7 @@ func newPyramidSampler(ctx context.Context, t *Tiles, v render.View) (*pyramidSa
 	if !(x1 > x0) {
 		return nil, fmt.Errorf("perspective: the scene's view has no width")
 	}
-	return &pyramidSampler{ctx: ctx, t: t, x0: x0, y0: y0, scale: float64(v.Width) / (x1 - x0), w: float64(v.Width), h: float64(v.Height)}, nil
+	return &pyramidSampler{ctx: ctx, t: t, x0: x0, y0: y0, scale: float64(v.Width) / (x1 - x0), w: float64(v.Width), h: float64(v.Height), used: map[tileKey]*Tile{}}, nil
 }
 
 // at is the map's colour at map pixel (u, v), for a pixel of the frame
@@ -179,6 +227,7 @@ func (s *pyramidSampler) at(u, v, span float64) color.RGBA {
 	lod := math.Log2(s.scale/(TileSize*math.Max(span, 1e-9))) + lodBias
 	lo, hi := float64(s.t.minZoom), float64(s.t.maxZoom)
 	lod = math.Max(lo, math.Min(hi, lod))
+	s.lastLOD = float32(lod)
 	z0 := math.Floor(lod)
 	frac := lod - z0
 	c0 := s.sample(uint8(z0), wx, wy)
@@ -215,14 +264,16 @@ func (s *pyramidSampler) texel(z uint8, px, py int64) (float64, float64, float64
 	tx, ty := uint32(px/TileSize), uint32(py/TileSize)
 	c := &s.last[z]
 	if c.img == nil || c.x != tx || c.y != ty {
-		img, err := s.t.tile(s.ctx, tileKey{z: z, x: tx, y: ty})
+		k := tileKey{z: z, x: tx, y: ty}
+		tile, err := s.t.tile(s.ctx, k)
 		if err != nil {
 			if s.err == nil {
 				s.err = err
 			}
 			return 0, 0, 0
 		}
-		c.x, c.y, c.img = tx, ty, img
+		s.used[k] = tile
+		c.x, c.y, c.img = tx, ty, tile.Image
 	}
 	o := c.img.PixOffset(int(px%TileSize), int(py%TileSize))
 	return float64(c.img.Pix[o]), float64(c.img.Pix[o+1]), float64(c.img.Pix[o+2])
@@ -233,6 +284,8 @@ func (s *pyramidSampler) texel(z uint8, px, py int64) (float64, float64, float64
 func (s *pyramidSampler) edgeFade(u, v float64) float64 {
 	return fadeAt(u, v, s.w, s.h)
 }
+
+func (s *pyramidSampler) lod() float32 { return s.lastLOD }
 
 // Lattice is a grid of points fixed to the ground, a whole number of cells
 // apart: where a moving camera's mesh puts its vertices.
