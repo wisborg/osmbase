@@ -195,6 +195,14 @@ type pyramidSampler struct {
 	}
 	// used is every tile the frame drew from: whose names may be in it.
 	used map[tileKey]*Tile
+	// plan is true for a picture drawn to plan names: no colour is
+	// sampled and no tile drawn, and planned collects the tiles each pixel
+	// would have been drawn from, at zooms shifted by lodShift; see
+	// planning.
+	plan     bool
+	lodShift float64
+	planned  map[tileKey]bool
+	lastPlan [mercator.MaxZoom + 1]tileKey
 	// lastLOD is the zoom the last pixel was drawn at, clamped to the
 	// pyramid's.
 	lastLOD float32
@@ -224,17 +232,38 @@ func newPyramidSampler(ctx context.Context, t *Tiles, v render.View) (*pyramidSa
 func (s *pyramidSampler) at(u, v, span float64) color.RGBA {
 	wx, wy := s.x0+u/s.scale, s.y0+v/s.scale
 	// The zoom at which one tile pixel is span map pixels.
-	lod := math.Log2(s.scale/(TileSize*math.Max(span, 1e-9))) + lodBias
+	lod := math.Log2(s.scale/(TileSize*math.Max(span, 1e-9))) + lodBias + s.lodShift
 	lo, hi := float64(s.t.minZoom), float64(s.t.maxZoom)
 	lod = math.Max(lo, math.Min(hi, lod))
 	s.lastLOD = float32(lod)
 	z0 := math.Floor(lod)
 	frac := lod - z0
+	if s.plan {
+		s.note(uint8(z0), wx, wy)
+		if frac >= 1.0/256 && z0 < hi {
+			s.note(uint8(z0)+1, wx, wy)
+		}
+		return color.RGBA{}
+	}
 	c0 := s.sample(uint8(z0), wx, wy)
 	if frac < 1.0/256 || z0 >= hi {
 		return c0
 	}
 	return mixRGBA(c0, s.sample(uint8(z0)+1, wx, wy), frac)
+}
+
+// note records, for a plan, the tile of zoom z that world (wx, wy) is in.
+func (s *pyramidSampler) note(z uint8, wx, wy float64) {
+	n := math.Exp2(float64(z))
+	last := uint32(n) - 1
+	k := tileKey{z: z, x: min(last, uint32(max(0, wx*n))), y: min(last, uint32(max(0, wy*n)))}
+	if s.lastPlan[z] == k && s.planned != nil {
+		return
+	}
+	if s.planned == nil {
+		s.planned = map[tileKey]bool{}
+	}
+	s.planned[k], s.lastPlan[z] = true, k
 }
 
 // sample is the colour at world (wx, wy) at zoom z, interpolated between the

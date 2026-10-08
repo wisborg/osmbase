@@ -247,6 +247,20 @@ func Render(s Scene, c Camera, o Options) (*Picture, error) {
 // RenderContext is Render, drawing what tiles of a pyramid it needs under
 // ctx.
 func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture, error) {
+	return renderScene(ctx, s, c, o, nil)
+}
+
+// planning is how a picture is drawn to plan a flight's names rather than
+// to be seen: smaller than the frame it stands for by scale each way, its
+// zooms shifted by log2(scale) so each part of it is the zoom the frame's
+// pixels would take there, and no colour sampled from the tiles -- only
+// which tiles each part is drawn from, so their names are known.
+type planning struct {
+	scale float64
+}
+
+// renderScene is RenderContext, or with plan, a picture drawn to plan names.
+func renderScene(ctx context.Context, s Scene, c Camera, o Options, plan *planning) (*Picture, error) {
 	if o.Width <= 0 || o.Height <= 0 {
 		return nil, fmt.Errorf("perspective: a %d by %d image has no pixels", o.Width, o.Height)
 	}
@@ -310,6 +324,9 @@ func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture,
 			if pyrs[k], err = newPyramidSampler(ctx, s.Tiles, s.View); err != nil {
 				return nil, err
 			}
+			if plan != nil {
+				pyrs[k].plan, pyrs[k].lodShift = true, math.Log2(plan.scale)
+			}
 			samplers[k] = pyrs[k]
 		} else if k == 0 {
 			samplers[k] = newTexture(s.Map)
@@ -343,6 +360,15 @@ func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture,
 				return nil, p.err
 			}
 			maps.Copy(pic.used, p.used)
+			// A plan samples no colour, so it has drawn no tile: those it
+			// would have drawn from are drawn, or found drawn, now.
+			for k := range p.planned {
+				t, err := s.Tiles.tile(ctx, k)
+				if err != nil {
+					return nil, err
+				}
+				pic.used[k] = t
+			}
 		}
 	}
 	return pic, nil

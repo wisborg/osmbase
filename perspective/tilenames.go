@@ -58,22 +58,39 @@ func (p *Picture) DrawNames(pal render.Palette) {
 	}
 	namesMu.Lock()
 	defer namesMu.Unlock()
-	halo := pal.Land
-	if pal.Omits(render.RoleLand) {
-		halo = pal.Background
+	for _, s := range p.shownNames(1) {
+		p.drawName(pal, s.label, s.x, s.y, s.angle, s.alpha)
 	}
+}
 
-	type name struct {
-		kind  int // 0 a place, 1 along a line, 2 a contour's height
-		key   tileKey
-		i     int
-		label render.LineLabel // a place as a name at no angle
-		place bool
-	}
-	var names []name
+// nameID is a name of a pyramid: the tile it belongs to, what kind of name
+// it is, and which of the tile's names of that kind. It sorts names in the
+// order they are taken in.
+type nameID struct {
+	kind int // 0 a place, 1 along a line, 2 a contour's height
+	key  tileKey
+	i    int
+}
+
+func (a nameID) compare(b nameID) int {
+	return cmp.Or(cmp.Compare(a.kind, b.kind), cmp.Compare(a.key.z, b.key.z),
+		cmp.Compare(a.key.y, b.key.y), cmp.Compare(a.key.x, b.key.x), cmp.Compare(a.i, b.i))
+}
+
+// name is one name of a pyramid, a place's as a name at no angle.
+type name struct {
+	id    nameID
+	label render.LineLabel
+	place bool
+}
+
+// names are the names of the tiles the picture was drawn from, in the
+// order they are taken in.
+func (p *Picture) names() []name {
+	var out []name
 	for k, t := range p.used {
 		for i, l := range t.Places {
-			names = append(names, name{kind: 0, key: k, i: i, place: true,
+			out = append(out, name{id: nameID{kind: 0, key: k, i: i}, place: true,
 				label: render.LineLabel{Text: l.Text, At: l.At, Face: l.Face, Minor: l.Minor}})
 		}
 		for i, l := range t.Lines {
@@ -81,57 +98,73 @@ func (p *Picture) DrawNames(pal render.Palette) {
 			if l.Contour {
 				kind = 2
 			}
-			names = append(names, name{kind: kind, key: k, i: i, label: l})
+			out = append(out, name{id: nameID{kind: kind, key: k, i: i}, label: l})
 		}
 	}
-	slices.SortFunc(names, func(a, b name) int {
-		return cmp.Or(cmp.Compare(a.kind, b.kind), cmp.Compare(a.key.z, b.key.z),
-			cmp.Compare(a.key.y, b.key.y), cmp.Compare(a.key.x, b.key.x), cmp.Compare(a.i, b.i))
-	})
+	slices.SortFunc(out, func(a, b name) int { return a.id.compare(b.id) })
+	return out
+}
 
-	type shown struct {
-		text  string
-		box   image.Rectangle
-		x, y  float64
-		alpha float64
-		label render.LineLabel
-		angle float64
-	}
-	bounds := p.Image.Bounds()
-	var drawn []shown
-	for _, n := range names {
+// shownName is a name as shown: where, at what angle, how strongly, and
+// the box it takes.
+type shownName struct {
+	name
+	box   image.Rectangle
+	x, y  float64
+	angle float64
+	alpha float64
+}
+
+// shownNames are the names shown on the picture and how strongly; see
+// DrawNames. Positions and boxes are in the pixels of a frame scale times
+// the picture's size each way -- 1 for the picture itself, more for a
+// picture drawn small to plan a full-size frame's names, whose boxes have
+// to be measured as they will be drawn.
+func (p *Picture) shownNames(scale float64) []shownName {
+	b := p.Image.Bounds()
+	bounds := image.Rect(0, 0, int(math.Round(float64(b.Dx())*scale)), int(math.Round(float64(b.Dy())*scale)))
+	var shown []shownName
+	for _, n := range p.names() {
 		l := n.label
 		if l.Face == nil {
 			continue
 		}
 		m := l.Face.Metrics()
 		height := float64(m.Ascent.Ceil() + m.Descent.Ceil())
-		alpha, x, y, ok := p.nameStrength(l.At, n.key.z, height/2)
+		alpha, x, y, ok := p.nameStrength(l.At, n.id.key.z, height/2/scale)
 		if !ok {
 			continue
 		}
+		x, y = x*scale, y*scale
 		angle := 0.0
 		if !n.place {
 			if angle, ok = p.screenAngle(l.At, l.Angle); !ok {
 				continue
 			}
 		}
-		s := shown{text: l.Text, box: alongBox(l, x, y, angle), x: x, y: y, label: l, angle: angle}
+		s := shownName{name: n, box: alongBox(l, x, y, angle), x: x, y: y, angle: angle}
 		alpha *= edgeFadeBox(s.box, bounds, 2*height)
-		for _, o := range drawn {
-			alpha *= 1 - o.alpha*cover(s.box, o.box, s.text == o.text)
+		for _, o := range shown {
+			alpha *= 1 - o.alpha*cover(s.box, o.box, l.Text == o.label.Text)
 		}
 		if alpha < 1.0/64 {
 			continue
 		}
 		s.alpha = alpha
-		drawn = append(drawn, s)
+		shown = append(shown, s)
 	}
-	for _, s := range drawn {
-		drawFaded(p.Image, s.box, s.alpha, func(dst *image.RGBA) {
-			render.DrawLineLabel(dst, s.label, s.x, s.y, s.angle, pal, halo)
-		})
+	return shown
+}
+
+// drawName draws one name at alpha strength.
+func (p *Picture) drawName(pal render.Palette, l render.LineLabel, x, y, angle, alpha float64) {
+	halo := pal.Land
+	if pal.Omits(render.RoleLand) {
+		halo = pal.Background
 	}
+	drawFaded(p.Image, alongBox(l, x, y, angle), alpha, func(dst *image.RGBA) {
+		render.DrawLineLabel(dst, l, x, y, angle, pal, halo)
+	})
 }
 
 // namesMu is held while names are drawn; see DrawNames.
