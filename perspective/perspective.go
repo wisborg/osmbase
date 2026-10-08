@@ -162,6 +162,7 @@ type Picture struct {
 	// tiles drawn from, and what fades ground into the haze; see DrawNames.
 	lod   []float32
 	used  map[tileKey]*Tile
+	noted map[tileKey]bool // a plan's that only notes; see TilesSeen
 	tex   sampler
 	view  render.View
 	hazeM float64
@@ -257,6 +258,10 @@ func RenderContext(ctx context.Context, s Scene, c Camera, o Options) (*Picture,
 // which tiles each part is drawn from, so their names are known.
 type planning struct {
 	scale float64
+	// noted, when set, only notes the tiles: none is drawn, or found
+	// drawn, and the picture has no names. For asking which tiles a frame
+	// needs before the map they are drawn from is there; see TilesSeen.
+	noted bool
 }
 
 // renderScene is RenderContext, or with plan, a picture drawn to plan names.
@@ -354,12 +359,16 @@ func renderScene(ctx context.Context, s Scene, c Camera, o Options, plan *planni
 
 	pic := &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h, tex: samplers[0], view: s.View, hazeM: hazeM}
 	if s.Tiles != nil {
-		pic.lod, pic.used = f.lod, map[tileKey]*Tile{}
+		pic.lod, pic.used, pic.noted = f.lod, map[tileKey]*Tile{}, map[tileKey]bool{}
 		for _, p := range pyrs {
 			if p.err != nil {
 				return nil, p.err
 			}
 			maps.Copy(pic.used, p.used)
+			if plan != nil && plan.noted {
+				maps.Copy(pic.noted, p.planned)
+				continue
+			}
 			// A plan samples no colour, so it has drawn no tile: those it
 			// would have drawn from are drawn, or found drawn, now.
 			for k := range p.planned {
