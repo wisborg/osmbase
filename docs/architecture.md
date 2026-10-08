@@ -527,6 +527,21 @@ from zoom 15 they are a solid line of ink that widens with the map, with dashes 
 surface along it, the dashes measured in multiples of the line's width so they keep their
 shape as it grows.
 
+**Paths are found, not glimpsed.** Footpaths and walking tracks were the same 0.7-pixel
+dashed line at every zoom, in the road ink, until a flyover of a run along the Bouddi
+Coastal Walk showed no walk at all: the data held it, named, and the map drew it thinner
+than a pixel. They now widen with the map, from under a pixel at 12 to four at 18, dashed
+in multiples of their width, and named from 15 like minor streets. They have their own
+role, `RolePath`, because the ink they shared is the rail's and the boundaries', which
+should stay the quietest lines on the map while a trail should be easy to find; a palette
+that names none draws paths in `Ink`, as before. The darkest red-brown of a walking map was
+tried and is not allowed: the overlay inks have to read 3:1 over every map ink, and a route
+runs along trails. So each built-in palette's path ink is the one, found by searching the
+colours the contrast check passes, that stands furthest from the land and the green -- by
+hue, since luminance is capped -- and well apart from the contours. The red-brown the search
+found first passed every rule and still ran into the contour lines on a map with terrain; a
+mauve does not.
+
 **A line's name is written along it.** A street's or a river's name is centred on the
 line and turned to its direction, on the first straight enough stretch at least as long as
 the name, tried from the middle outwards, and again every 600 pixels or four lengths of the

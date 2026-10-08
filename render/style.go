@@ -111,6 +111,15 @@ const (
 	// terrain under the map. It is drawn only with terrain, and only by a
 	// palette naming a Contour colour.
 	RoleContour
+
+	// RolePath is a footpath, a walking track, a bridleway: the ways a map
+	// of where somebody ran or walked is most about.
+	//
+	// Its own role because the ink they shared, Ink, is also the rail and
+	// the boundaries', and those want to stay the darkest, quietest lines on
+	// the map while a trail wants to be found. A palette that names no Path
+	// draws paths in Ink, as every palette did before this role.
+	RolePath
 )
 
 // Palette is the colour for each role.
@@ -171,6 +180,11 @@ type Palette struct {
 	// draws no contours, which is what every palette written before them
 	// did.
 	Contour color.RGBA
+
+	// Path is the colour footpaths and walking tracks are drawn in. A zero
+	// value draws them in Ink, which is what every palette written before
+	// it did.
+	Path color.RGBA
 
 	// Omitted names roles this palette does not draw at all.
 	//
@@ -258,6 +272,11 @@ func (p Palette) colour(r Role) color.RGBA {
 		return p.Built
 	case RoleContour:
 		return p.Contour
+	case RolePath:
+		if p.Path != (color.RGBA{}) {
+			return p.Path
+		}
+		return p.Ink
 	}
 	return p.Ink
 }

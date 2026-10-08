@@ -96,9 +96,15 @@ func BasemapStyle() Style {
 			// rather than being interrupted by it. Up to zoom 14 a road is a
 			// line; see wideRoads for what it is closer than that.
 			{
+				// Footpaths and walking tracks, in an ink of their own and
+				// wider the closer the map: a fixed 0.7 pixels was a
+				// hairline at every zoom, under a pixel by the time a map was
+				// close enough to be of a walk, and the Bouddi Coastal Walk
+				// vanished from a flyover of a run along it. Dashed, as
+				// walking maps draw trails, the dash growing with the width.
 				Layer: "roads", Kinds: []string{"path"},
 				MinZoom: 12, MaxZoom: MaxRuleZoom,
-				Paint: Paint{Role: RoleRoad, Width: 0.7, Dash: []float32{3, 2}},
+				Paint: Paint{Role: RolePath, Widths: []WidthStop{{12, 0.7}, {14, 1}, {15, 1.4}, {16, 2}, {17, 3}, {18, 4}, {20, 6}}, Dash: []float32{3, 1.5}},
 			},
 			{
 				Layer: "roads", Kinds: []string{"minor_road", "other"},
@@ -376,6 +382,23 @@ func placeLabelRules() []LabelRule {
 			OnRoad:      true,
 		},
 		{
+			// A named walking track, from the zoom a map is close enough
+			// to be of a walk: in bushland the trails are the only names
+			// there are, and one a map of a run along it should give. At
+			// a minor street's size and just above its priority; written
+			// beside the path, which is a dashed line with no surface to
+			// write on.
+			Layer:     "roads",
+			Kinds:     []string{"path"},
+			Field:     "name",
+			Placement: PlaceLine,
+			MinZoom:   15, MaxZoom: MaxRuleZoom,
+			Priority:    4,
+			SizeScale:   0.9,
+			Minor:       true,
+			OncePerName: true,
+		},
+		{
 			// The street outside a front door. Only at the zoom where that is
 			// what the map is of, which is one deeper than the roads that
 			// connect districts: at 15 these put about seventy names on a
@@ -439,6 +462,12 @@ func LightPalette() Palette {
 		// maps, and the darkest of it the overlay's accent still reads
 		// on at 3:1.
 		Contour: color.RGBA{R: 0xd0, G: 0xa8, B: 0x98, A: 0xff},
+		// A trail's mauve: as strong against the land as the contrast
+		// rules allow -- apart from the green by its hue, not its
+		// darkness, so a route along it still reads over it -- and well
+		// clear of the contour lines' red-brown, which a walking map's
+		// red-brown trail ran into. Found by search.
+		Path: color.RGBA{R: 0xd8, G: 0x9f, B: 0xc9, A: 0xff},
 	}
 }
 
@@ -470,6 +499,12 @@ func DarkPalette() Palette {
 		Shade:     color.RGBA{A: 0xff},
 		Highlight: color.RGBA{R: 0x50, G: 0x58, B: 0x64, A: 0xff},
 		Contour:   color.RGBA{R: 0x4a, G: 0x38, B: 0x30, A: 0xff},
+		// A trail's mauve: as strong against the land as the contrast
+		// rules allow -- apart from the green by its hue, not its
+		// darkness, so a route along it still reads over it -- and well
+		// clear of the contour lines' red-brown, which a walking map's
+		// red-brown trail ran into. Found by search.
+		Path: color.RGBA{R: 0x5d, G: 0x30, B: 0x57, A: 0xff},
 	}
 }
 
@@ -533,6 +568,12 @@ func DarkLineworkPalette() Palette {
 		Shade:     color.RGBA{A: 0xff},
 		Highlight: color.RGBA{R: 0x50, G: 0x58, B: 0x64, A: 0xff},
 		Contour:   color.RGBA{R: 0x4a, G: 0x38, B: 0x30, A: 0xff},
+		// A trail's mauve: as strong against the land as the contrast
+		// rules allow -- apart from the green by its hue, not its
+		// darkness, so a route along it still reads over it -- and well
+		// clear of the contour lines' red-brown, which a walking map's
+		// red-brown trail ran into. Found by search.
+		Path: color.RGBA{R: 0x5d, G: 0x30, B: 0x57, A: 0xff},
 	}
 }
 
@@ -578,6 +619,12 @@ func OutdoorsPalette() Palette {
 		// The red-brown of contours on printed maps, darker than the light
 		// palette's because the ground under it is.
 		Contour: color.RGBA{R: 0xb9, G: 0x80, B: 0x60, A: 0xff},
+		// A trail's mauve: as strong against the land as the contrast
+		// rules allow -- apart from the green by its hue, not its
+		// darkness, so a route along it still reads over it -- and well
+		// clear of the contour lines' red-brown, which a walking map's
+		// red-brown trail ran into. Found by search.
+		Path: color.RGBA{R: 0x9f, G: 0x6f, B: 0x99, A: 0xff},
 	}
 }
 

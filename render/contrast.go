@@ -105,6 +105,10 @@ func (p Palette) context() []namedColour {
 	if (p.Contour != color.RGBA{}) {
 		all = append(all, namedColour{name: "Contour", c: p.Contour, role: RoleContour})
 	}
+	// A palette naming no Path draws paths in Ink, which is already here.
+	if (p.Path != color.RGBA{}) {
+		all = append(all, namedColour{name: "Path", c: p.Path, role: RolePath})
+	}
 	drawn := make([]namedColour, 0, len(all))
 	for _, c := range all {
 		if !p.Omits(c.role) {
