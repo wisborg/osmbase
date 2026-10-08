@@ -96,6 +96,11 @@ type Request struct {
 
 	// Limits bound coalescing. The zero value is the defaults.
 	Limits Limits
+
+	// Areas, when any are given, are the ground to cover in place of
+	// Bounds and MaxZoom: several pieces of it, each to its own depth --
+	// see Area. Each depth is capped at the archive's.
+	Areas []Area
 }
 
 // Group is one unit of a fetch: the shared overview, or one cell.
@@ -113,6 +118,10 @@ type Group struct {
 	// between every cell beneath them, and are never evicted.
 	Cell     slice.Cell
 	Overview bool
+
+	// Depth is how deep this cell is filled, when a plan of several areas
+	// fills its cells to different depths; 0 is the plan's Zoom.
+	Depth uint8
 
 	// Refs is every tile of the group, in the order the store enumerates them.
 	// It is what FillOverview is given; a cell group is filled by zoom range
@@ -233,6 +242,9 @@ func PlanFor(ctx context.Context, a Archive, dst *slice.Source, req Request) (*P
 		return nil, fmt.Errorf("acquire: the archive's own zoom range: %w", err)
 	}
 
+	if len(req.Areas) > 0 {
+		return planAreas(ctx, a, dst, req)
+	}
 	depth, err := depthFor(req)
 	if err != nil {
 		return nil, err
@@ -308,6 +320,12 @@ func PlanFor(ctx context.Context, a Archive, dst *slice.Source, req Request) (*P
 		p.Zoom = slice.EmptyZoomRange()
 	}
 
+	p.total()
+	return p, nil
+}
+
+// total adds up the groups' figures into the plan's.
+func (p *Plan) total() {
 	var useful int64
 	for _, g := range p.Groups {
 		p.Tiles += len(g.Tiles)
@@ -319,7 +337,6 @@ func PlanFor(ctx context.Context, a Archive, dst *slice.Source, req Request) (*P
 		useful += usefulBytes(locationsOf(g.Tiles))
 	}
 	p.Waste = p.Transfer - useful
-	return p, nil
 }
 
 // depthFor resolves the request's depth, whether it was given or is to be

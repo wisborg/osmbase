@@ -104,3 +104,47 @@ func TestFillFetchesAnAreaToTheArchivesDeepestZoom(t *testing.T) {
 		t.Errorf("a second Fill wrote %d tiles (%v), want none", res.Written, err)
 	}
 }
+
+// A fill of several areas fills each cell to the depth its area asks for:
+// one area to zoom 14 and another to the cell zoom alone come out recorded
+// as exactly that, the shallow one not dragged to the deep one's depth.
+func TestFillOfAreasFillsEachCellToItsOwnDepth(t *testing.T) {
+	a, err := fetch.Open(writeDeepArchive(t, 14), fetch.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	root := filepath.Join(t.TempDir(), "store")
+	deep := slice.Bounds{West: 151.100, South: -33.710, East: 151.101, North: -33.709}
+	shallow := slice.Bounds{West: 150.100, South: -33.710, East: 150.101, North: -33.709}
+	_, err = fetch.Fill(context.Background(), root, a, "(c) test", acquire.Request{Areas: []acquire.Area{
+		{Bounds: deep, MaxZoom: 14}, {Bounds: shallow, MaxZoom: slice.DefaultCellZoom},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	st, err := slice.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, _ := st.Sources()
+	src, err := st.Source(ms[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		b    slice.Bounds
+		want uint8
+	}{{deep, 14}, {shallow, slice.DefaultCellZoom}} {
+		cells, _ := slice.CellsForZoom(c.b, slice.DefaultCellZoom)
+		for _, cell := range cells {
+			info, complete, err := src.Cell(cell)
+			if err != nil || !complete {
+				t.Fatalf("cell %v not complete (%v)", cell, err)
+			}
+			if info.Zoom.Max != c.want {
+				t.Errorf("cell %v filled to zoom %d, want %d", cell, info.Zoom.Max, c.want)
+			}
+		}
+	}
+}

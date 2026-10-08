@@ -116,7 +116,11 @@ func Fetch(ctx context.Context, p *Plan, a Archive, dst *slice.Source, opt Fetch
 		if g.Overview {
 			f, err = dst.FillOverview(ctx, buf, g.Refs)
 		} else {
-			f, err = dst.Fill(ctx, buf, g.Cell, p.Zoom)
+			z := p.Zoom
+			if g.Depth != 0 {
+				z.Max = g.Depth
+			}
+			f, err = dst.Fill(ctx, buf, g.Cell, z)
 		}
 		if err != nil {
 			return res, fmt.Errorf("acquire: storing %s of %s: %w", g.Label(), a.Name, err)
