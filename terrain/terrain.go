@@ -264,11 +264,10 @@ type Plan struct {
 	archives            []*fetch.Archive
 	sourcesTo           string
 
-	// depth is the elevation zoom asked for, and exhaust the area's cells
-	// when that is deeper than the global archive goes: the ones Settle
-	// records as holding all there is to depth.
-	depth   uint8
-	exhaust []slice.Cell
+	// exhaust is the area's cells where the elevation zoom asked for is
+	// deeper than the global archive goes, and that zoom for each: the ones
+	// Settle records as holding all there is to it.
+	exhaust map[slice.Cell]uint8
 }
 
 // RegionPlan is one regional archive's part of a terrain fetch.
@@ -373,6 +372,7 @@ func Prepare(ctx context.Context, l Layout, st *slice.Store, req acquire.Request
 
 	want := req.MaxZoom
 	switch {
+	case len(req.Areas) > 0:
 	case want != acquire.AutoZoom:
 		want = max(0, want-1)
 	case req.World:
@@ -384,34 +384,45 @@ func Prepare(ctx context.Context, l Layout, st *slice.Store, req acquire.Request
 		}
 		want = max(0, int(d.Max)-1)
 	}
+	// The ground as areas, each at its elevation zoom: one, or the
+	// request's own, each a zoom shallower than its map's.
+	areas := []acquire.Area{{Bounds: req.Bounds, MaxZoom: uint8(max(0, want))}}
+	if len(req.Areas) > 0 {
+		areas = make([]acquire.Area, len(req.Areas))
+		for i, a := range req.Areas {
+			areas[i] = acquire.Area{Bounds: a.Bounds, MaxZoom: max(a.MaxZoom, 1) - 1}
+		}
+	}
 
-	// Which regions the area's cells are in, before anything is planned,
+	// Which regions the areas' cells are in, before anything is planned,
 	// so the elevation source's zoom range can say how deep it goes.
 	type need struct {
 		region Region
-		cells  []slice.Cell
 	}
 	var needs []need
-	if !req.World && want > int(gh.MaxZoom) {
-		cells, err := slice.CellsForZoom(req.Bounds, req.CellZoom)
-		if err != nil {
-			return nil, err
-		}
-		byRegion := map[slice.TileRef]int{}
-		for _, c := range cells {
-			r, ok := l.regionFor(c, req.CellZoom)
-			if !ok {
+	if !req.World {
+		byRegion := map[slice.TileRef]bool{}
+		for _, a := range areas {
+			if a.MaxZoom <= gh.MaxZoom {
 				continue
 			}
-			i, seen := byRegion[r.Tile]
-			if !seen {
-				i = len(needs)
-				byRegion[r.Tile] = i
+			cells, err := slice.CellsForZoom(a.Bounds, req.CellZoom)
+			if err != nil {
+				return nil, err
+			}
+			for _, c := range cells {
+				if p.exhaust == nil {
+					p.exhaust = map[slice.Cell]uint8{}
+				}
+				p.exhaust[c] = max(p.exhaust[c], a.MaxZoom)
+				r, ok := l.regionFor(c, req.CellZoom)
+				if !ok || byRegion[r.Tile] {
+					continue
+				}
+				byRegion[r.Tile] = true
 				needs = append(needs, need{region: r})
 			}
-			needs[i].cells = append(needs[i].cells, c)
 		}
-		p.depth, p.exhaust = uint8(want), cells
 	}
 	zoom := slice.ZoomRange{Min: gh.MinZoom, Max: gh.MaxZoom}
 	for _, n := range needs {
@@ -433,7 +444,11 @@ func Prepare(ctx context.Context, l Layout, st *slice.Store, req acquire.Request
 	}
 
 	g := req
-	g.MaxZoom = min(want, int(gh.MaxZoom))
+	if len(req.Areas) > 0 {
+		g.Areas = capAreas(areas, nil, gh.MinZoom, gh.MaxZoom)
+	} else {
+		g.MaxZoom = min(want, int(gh.MaxZoom))
+	}
 	if p.Global, err = p.global.Plan(ctx, p.elevation, g); err != nil {
 		return nil, err
 	}
@@ -442,10 +457,18 @@ func Prepare(ctx context.Context, l Layout, st *slice.Store, req acquire.Request
 		rp := &p.Regions[i]
 		h := rp.archive.Reader().Header()
 		r := req
-		r.Bounds = intersect(req.Bounds, tileBounds(rp.Region.Tile))
-		r.MaxZoom = min(want, int(h.MaxZoom))
-		if r.MaxZoom < int(h.MinZoom) {
-			continue
+		if len(req.Areas) > 0 {
+			tb := tileBounds(rp.Region.Tile)
+			r.Areas = capAreas(areas, &tb, h.MinZoom, h.MaxZoom)
+			if len(r.Areas) == 0 {
+				continue
+			}
+		} else {
+			r.Bounds = intersect(req.Bounds, tileBounds(rp.Region.Tile))
+			r.MaxZoom = min(want, int(h.MaxZoom))
+			if r.MaxZoom < int(h.MinZoom) {
+				continue
+			}
 		}
 		if rp.Plan, err = rp.archive.Plan(ctx, p.elevation, r); err != nil {
 			return nil, err
@@ -461,7 +484,12 @@ func Prepare(ctx context.Context, l Layout, st *slice.Store, req acquire.Request
 			return nil, err
 		}
 		c := req
-		c.MaxZoom = min(want, int(p.cover.Reader().Header().MaxZoom))
+		ch := p.cover.Reader().Header()
+		if len(req.Areas) > 0 {
+			c.Areas = capAreas(areas, nil, 0, ch.MaxZoom)
+		} else {
+			c.MaxZoom = min(want, int(ch.MaxZoom))
+		}
 		if p.Coverage, err = p.cover.Plan(ctx, p.coverage, c); err != nil {
 			return nil, err
 		}
@@ -586,9 +614,9 @@ func (p *Plan) Fetch(ctx context.Context, progress func(acquire.Progress)) (Resu
 // rather than at each region's own, finds those cells short however often
 // they are fetched, and every map of them offers the same download.
 func (p *Plan) Settle() error {
-	for _, c := range p.exhaust {
-		if err := p.elevation.Exhaust(c, p.depth); err != nil {
-			return fmt.Errorf("terrain: recording cell %s as complete to zoom %d: %w", c, p.depth, err)
+	for c, depth := range p.exhaust {
+		if err := p.elevation.Exhaust(c, depth); err != nil {
+			return fmt.Errorf("terrain: recording cell %s as complete to zoom %d: %w", c, depth, err)
 		}
 	}
 	return nil
@@ -637,6 +665,27 @@ func tileBounds(t slice.TileRef) slice.Bounds {
 	lon := func(x float64) float64 { return x/n*360 - 180 }
 	lat := func(y float64) float64 { return 180 / math.Pi * math.Atan(math.Sinh(math.Pi*(1-2*y/n))) }
 	return slice.Bounds{West: lon(float64(t.X)), East: lon(float64(t.X + 1)), North: lat(float64(t.Y)), South: lat(float64(t.Y + 1))}
+}
+
+// capAreas is the areas an archive of zooms lo to hi is asked for: each no
+// deeper than hi, within inside when it is given, and none whose depth is
+// shallower than the archive starts.
+func capAreas(areas []acquire.Area, inside *slice.Bounds, lo, hi uint8) []acquire.Area {
+	var out []acquire.Area
+	for _, a := range areas {
+		if a.MaxZoom < lo {
+			continue
+		}
+		b := a.Bounds
+		if inside != nil {
+			if b.East <= inside.West || b.West >= inside.East || b.North <= inside.South || b.South >= inside.North {
+				continue
+			}
+			b = intersect(b, *inside)
+		}
+		out = append(out, acquire.Area{Bounds: b, MaxZoom: min(a.MaxZoom, hi)})
+	}
+	return out
 }
 
 // intersect is the overlap of two areas, which a caller has made sure is not

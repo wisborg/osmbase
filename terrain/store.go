@@ -182,6 +182,34 @@ func Measure(root string, b slice.Bounds, mapZoom uint8) (Shortfall, bool) {
 	return s, true
 }
 
+// MeasureAreas is Measure for ground given as areas, each at its own map
+// zoom; see acquire.Area. The shortfall is summed over them, its Bounds the
+// rectangle round them and its Zoom the deepest.
+func MeasureAreas(root string, areas []acquire.Area) (Shortfall, bool) {
+	var total Shortfall
+	lacking := false
+	for i, a := range areas {
+		s, short := Measure(root, a.Bounds, a.MaxZoom)
+		if s.Empty {
+			s.Bounds, s.Zoom = a.Bounds, max(a.MaxZoom, 1)-1
+		}
+		if i == 0 {
+			total = s
+		} else {
+			total.Held += s.Held
+			total.Wanted += s.Wanted
+			total.Zoom = max(total.Zoom, s.Zoom)
+			total.Bounds = slice.Bounds{
+				West: min(total.Bounds.West, s.Bounds.West), South: min(total.Bounds.South, s.Bounds.South),
+				East: max(total.Bounds.East, s.Bounds.East), North: max(total.Bounds.North, s.Bounds.North),
+			}
+			total.Empty = total.Empty || s.Empty
+		}
+		lacking = lacking || short
+	}
+	return total, lacking
+}
+
 // IndexLimit bounds the index of archives Locate reads: Mapterhorn's lists
 // four hundred and fifty archives in under a hundred kilobytes, so anything
 // past a few megabytes is not an index.
@@ -222,7 +250,24 @@ func Fill(ctx context.Context, l Layout, root string, b slice.Bounds, mapZoom ui
 	if err != nil {
 		return Result{}, fmt.Errorf("terrain: opening the store at %s: %w", root, err)
 	}
-	p, err := Prepare(ctx, l, st, acquire.Request{Bounds: b, MaxZoom: int(mapZoom), CellZoom: st.CellZoom()}, open)
+	return fill(ctx, l, st, acquire.Request{Bounds: b, MaxZoom: int(mapZoom), CellZoom: st.CellZoom()}, open, report, progress)
+}
+
+// FillAreas is Fill for ground given as areas, each at its own map zoom;
+// see acquire.Area.
+func FillAreas(ctx context.Context, l Layout, root string, areas []acquire.Area, open Opener,
+	report func(*Plan), progress func(acquire.Progress)) (Result, error) {
+	st, err := slice.Create(root, slice.Config{})
+	if err != nil {
+		return Result{}, fmt.Errorf("terrain: opening the store at %s: %w", root, err)
+	}
+	return fill(ctx, l, st, acquire.Request{Areas: areas, MaxZoom: acquire.AutoZoom, CellZoom: st.CellZoom()}, open, report, progress)
+}
+
+// fill is Fill and FillAreas once the store is open.
+func fill(ctx context.Context, l Layout, st *slice.Store, req acquire.Request, open Opener,
+	report func(*Plan), progress func(acquire.Progress)) (Result, error) {
+	p, err := Prepare(ctx, l, st, req, open)
 	if err != nil {
 		return Result{}, err
 	}

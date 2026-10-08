@@ -234,3 +234,34 @@ func TestFillWithNothingToFetchRecordsTheDepth(t *testing.T) {
 		t.Errorf("after a fill with nothing to fetch, still lacking: %+v", s)
 	}
 }
+
+// Ground given as areas goes through the same lifecycle as one area:
+// measured as lacking from the disk, filled, measured as lacking nothing --
+// here with a deep area and a shallower one over the same cell, which has
+// to come out complete to the deeper.
+func TestMeasureAndFillAreas(t *testing.T) {
+	dir := layoutDir(t)
+	root := filepath.Join(t.TempDir(), "maps-terrain")
+	b := cellBounds()
+	areas := []acquire.Area{{Bounds: b, MaxZoom: 16}, {Bounds: b, MaxZoom: 13}}
+	if s, short := MeasureAreas(root, areas); !short || !s.Empty {
+		t.Errorf("measuring no store: %+v, %v", s, short)
+	}
+	l, err := ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := FillAreas(context.Background(), l, root, areas, opener, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written == 0 {
+		t.Fatal("nothing written")
+	}
+	if s, short := MeasureAreas(root, areas); short {
+		t.Errorf("after the fill, still lacking: %+v", s)
+	}
+	if s, short := Measure(root, b, 16); short {
+		t.Errorf("the cell is not complete to the deeper area's depth: %+v", s)
+	}
+}
