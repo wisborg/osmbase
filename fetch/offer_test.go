@@ -148,3 +148,45 @@ func TestFillOfAreasFillsEachCellToItsOwnDepth(t *testing.T) {
 		}
 	}
 }
+
+// A fetch made of one group -- here every tile above the cell zoom, as a
+// flight's corridor is -- says how far it has got as each of the group's
+// ranges arrives, not only when all of them have: before this, such a
+// fetch showed nothing moved until it was done.
+func TestFillReportsProgressWithinAGroup(t *testing.T) {
+	a, err := fetch.Open(writeDeepArchive(t, 3), fetch.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	root := filepath.Join(t.TempDir(), "store")
+	var planned *acquire.Plan
+	var seen []acquire.Progress
+	_, err = fetch.Fill(context.Background(), root, a, "(c) test",
+		acquire.Request{Bounds: slice.Bounds{West: -170, South: -80, East: 170, North: 80}, MaxZoom: 3,
+			Limits: acquire.Limits{MaxRequest: 64, MaxGap: 0}},
+		func(p *acquire.Plan) { planned = p }, func(pr acquire.Progress) { seen = append(seen, pr) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned == nil || len(planned.Groups) != 1 || planned.Requests < 3 {
+		t.Fatalf("precondition: want one group of several requests, got %d groups, %d requests", len(planned.Groups), planned.Requests)
+	}
+	before := 0
+	prev := int64(0)
+	for _, pr := range seen {
+		if pr.DoneTransfer < prev {
+			t.Errorf("progress went back from %d to %d", prev, pr.DoneTransfer)
+		}
+		prev = pr.DoneTransfer
+		if !pr.GroupDone && pr.DoneTransfer > 0 && pr.DoneTransfer < planned.Transfer {
+			before++
+		}
+	}
+	if before == 0 {
+		t.Errorf("no progress reported before the group finished; calls: %+v", seen)
+	}
+	if last := seen[len(seen)-1]; !last.GroupDone || last.DoneTransfer != planned.Transfer {
+		t.Errorf("the last call %+v, want the group done at the plan's %d bytes", last, planned.Transfer)
+	}
+}

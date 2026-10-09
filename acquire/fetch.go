@@ -32,12 +32,23 @@ type Progress struct {
 	DoneTransfer, PlanTransfer int64
 
 	Elapsed time.Duration
+
+	// GroupDone is true on the call made as the group finishes and is
+	// stored -- once a group, with Written its own -- and false on those
+	// made as each of its ranges arrives, which carry DoneTransfer forward
+	// and nothing else.
+	GroupDone bool
 }
 
 // FetchOptions are the knobs a fetch has beyond the plan.
 type FetchOptions struct {
-	// Progress, when set, is called as each group finishes. It is called from
-	// the goroutine running the fetch, in group order.
+	// Progress, when set, is called as each range of a group arrives and
+	// again as the group finishes (GroupDone). It is called from the
+	// goroutine running the fetch, in order.
+	//
+	// Called as each group finished, as it first was, a fetch made of one
+	// group -- a flight's corridor, all of it above the cell zoom -- showed
+	// nothing moved until all of it had: nine hundred megabytes at 0 bytes.
 	Progress func(Progress)
 }
 
@@ -105,7 +116,17 @@ func Fetch(ctx context.Context, p *Plan, a Archive, dst *slice.Source, opt Fetch
 			return res, fmt.Errorf("acquire: fetching %s of %s: %w", g.Label(), a.Name, err)
 		}
 		groupStart := time.Now()
-		buf, err := fetchRanges(ctx, a, g)
+		var arrived int64
+		buf, err := fetchRanges(ctx, a, g, func(n int64) {
+			arrived += n
+			if opt.Progress != nil {
+				opt.Progress(Progress{
+					Group: i + 1, Groups: len(p.Groups), Label: g.Label(),
+					DoneTransfer: res.Transfer + arrived, PlanTransfer: p.Transfer,
+					Elapsed: time.Since(groupStart),
+				})
+			}
+		})
 		if err != nil {
 			return res, err
 		}
@@ -138,7 +159,7 @@ func Fetch(ctx context.Context, p *Plan, a Archive, dst *slice.Source, opt Fetch
 				Group: i + 1, Groups: len(p.Groups), Label: g.Label(),
 				Requests: len(g.Ranges), Transfer: g.Transfer, Written: f.Written,
 				DoneTransfer: res.Transfer, PlanTransfer: p.Transfer,
-				Elapsed: time.Since(groupStart),
+				Elapsed: time.Since(groupStart), GroupDone: true,
 			})
 		}
 	}
@@ -147,8 +168,8 @@ func Fetch(ctx context.Context, p *Plan, a Archive, dst *slice.Source, opt Fetch
 }
 
 // fetchRanges reads one group's coalesced ranges and returns an archive over
-// them.
-func fetchRanges(ctx context.Context, a Archive, g Group) (*bufferArchive, error) {
+// them, telling arrived the size of each range as it is read.
+func fetchRanges(ctx context.Context, a Archive, g Group, arrived func(int64)) (*bufferArchive, error) {
 	buf := &bufferArchive{
 		archive: a.Name,
 		label:   g.Label(),
@@ -178,6 +199,9 @@ func fetchRanges(ctx context.Context, a Archive, g Group) (*bufferArchive, error
 			return nil, fmt.Errorf("acquire: reading bytes %d to %d of %s for %s: %w", r.Offset, r.End()-1, a.Name, g.Label(), err)
 		}
 		data[i] = b
+		if arrived != nil {
+			arrived(r.Length)
+		}
 	}
 
 	for _, t := range g.Tiles {
