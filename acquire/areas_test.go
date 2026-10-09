@@ -100,3 +100,48 @@ func TestAreas_ADepthIsCappedAtTheArchives(t *testing.T) {
 		t.Errorf("depth %d from an area asking 18 of an archive holding 15", p.Depth.Max)
 	}
 }
+
+// More areas than one plan takes are split into batches each plan takes,
+// in their order, losing none: a strip of street-level areas along a
+// corridor long enough to be over MaxPlanCells cells.
+func TestSplitAreasKeepsEachBatchWithinAPlan(t *testing.T) {
+	var areas []Area
+	for i := range 1500 {
+		lon := -100.0 + float64(i)*0.09 // about one zoom 12 cell apart
+		areas = append(areas, Area{Bounds: slice.Bounds{West: lon, South: -30.01, East: lon + 0.01, North: -30.0}, MaxZoom: 14})
+	}
+	batches, err := SplitAreas(areas, slice.DefaultCellZoom, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) < 2 {
+		t.Fatalf("%d batches for areas over %d cells", len(batches), MaxPlanCells)
+	}
+	n := 0
+	for i, b := range batches {
+		for _, a := range b {
+			if a != areas[n] {
+				t.Fatalf("batch %d: area %d out of order", i, n)
+			}
+			n++
+		}
+		p, err := PlanFor(context.Background(),
+			Archive{Index: &everyTile{}, Bytes: bytes.NewReader(nil), Name: "test.pmtiles"}, nil,
+			Request{Areas: b, CellZoom: slice.DefaultCellZoom, SourceZoom: slice.ZoomRange{Min: 0, Max: 15}})
+		if err != nil {
+			t.Fatalf("batch %d does not plan: %v", i, err)
+		}
+		if len(p.Cells) > MaxPlanCells {
+			t.Errorf("batch %d plans %d cells", i, len(p.Cells))
+		}
+	}
+	if n != len(areas) {
+		t.Errorf("%d of %d areas in the batches", n, len(areas))
+	}
+	// The whole would not have planned.
+	if _, err := PlanFor(context.Background(),
+		Archive{Index: &everyTile{}, Bytes: bytes.NewReader(nil), Name: "test.pmtiles"}, nil,
+		Request{Areas: areas, CellZoom: slice.DefaultCellZoom, SourceZoom: slice.ZoomRange{Min: 0, Max: 15}}); err == nil {
+		t.Error("precondition: all the areas planned as one, so the split proves nothing")
+	}
+}

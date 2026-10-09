@@ -316,7 +316,12 @@ func (a *Archive) Plan(ctx context.Context, dst *slice.Source, req acquire.Reque
 	req.SourceZoom = slice.ZoomRange{Min: h.MinZoom, Max: h.MaxZoom}
 	p, err := acquire.PlanFor(ctx, a.acquireArchive(), dst, req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch: planning a fetch of %s from %s: %w", BoundsText(req.Bounds), a.name, err)
+		what := BoundsText(req.Bounds)
+		if len(req.Areas) > 0 {
+			// The box is not what a request of areas asks for, and is zero.
+			what = fmt.Sprintf("%d areas", len(req.Areas))
+		}
+		return nil, fmt.Errorf("fetch: planning a fetch of %s from %s: %w", what, a.name, err)
 	}
 	return p, nil
 }

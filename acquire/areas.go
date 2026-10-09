@@ -120,3 +120,63 @@ func planAreas(ctx context.Context, a Archive, dst *slice.Source, req Request) (
 	p.total()
 	return p, nil
 }
+
+// SplitAreas divides areas into batches one plan each can take: no more
+// than MaxPlanCells cells at cellZoom and MaxOverviewTiles shallow tiles
+// above it, each area's depth capped at sourceMax as a plan caps it. The
+// areas keep their order, so a batch of areas listed along a route is a
+// stretch of it.
+//
+// A flight's corridor, followed close by on the runway and from high above
+// at cruise, came to just past MaxPlanCells and its fetch was refused. The
+// limit is there to keep one plan's reading of the archive's directories in
+// bounds, so a program asks it of several plans in turn rather than raising
+// it.
+func SplitAreas(areas []Area, cellZoom, sourceMax uint8) ([][]Area, error) {
+	var batches [][]Area
+	var cur []Area
+	cells := map[slice.Cell]bool{}
+	overview := map[slice.TileRef]bool{}
+	for _, ar := range areas {
+		d := min(ar.MaxZoom, sourceMax)
+		refs, err := overviewTiles(ar.Bounds, cellZoom, Depth{Max: d})
+		if err != nil {
+			return nil, err
+		}
+		var cs []slice.Cell
+		if d >= cellZoom {
+			if cs, err = slice.CellsForZoom(ar.Bounds, cellZoom); err != nil {
+				return nil, err
+			}
+		}
+		if len(cs) > MaxPlanCells || len(refs) > MaxOverviewTiles {
+			return nil, fmt.Errorf("acquire: one area is more than one plan takes: %d cells, %d shallow tiles", len(cs), len(refs))
+		}
+		newCells, newRefs := 0, 0
+		for _, c := range cs {
+			if !cells[c] {
+				newCells++
+			}
+		}
+		for _, r := range refs {
+			if !overview[r] {
+				newRefs++
+			}
+		}
+		if len(cur) > 0 && (len(cells)+newCells > MaxPlanCells || len(overview)+newRefs > MaxOverviewTiles) {
+			batches = append(batches, cur)
+			cur, cells, overview = nil, map[slice.Cell]bool{}, map[slice.TileRef]bool{}
+		}
+		cur = append(cur, ar)
+		for _, c := range cs {
+			cells[c] = true
+		}
+		for _, r := range refs {
+			overview[r] = true
+		}
+	}
+	if len(cur) > 0 {
+		batches = append(batches, cur)
+	}
+	return batches, nil
+}
