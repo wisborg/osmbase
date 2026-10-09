@@ -21,8 +21,9 @@ type TileID struct {
 // those tiles are drawn from before it draws them. frame gives each frame's
 // scene and camera as PlanNames's does, Tiles aside -- the scene's Tiles are
 // not consulted, and need not be able to draw. The frames are drawn small, as
-// a plan's are, with the zooms of the full size.
-func TilesSeen(ctx context.Context, frames []int, frame PlanFrame, minZoom, maxZoom uint8) ([]TileID, error) {
+// a plan's are, with the zooms of the full size. progress, when not nil, is
+// told how many of the frames are done as each is.
+func TilesSeen(ctx context.Context, frames []int, frame PlanFrame, minZoom, maxZoom uint8, progress func(done, total int)) ([]TileID, error) {
 	none, err := NewTiles(func(context.Context, uint8, uint32, uint32) (*Tile, error) {
 		return nil, fmt.Errorf("perspective: TilesSeen draws no tile")
 	}, minZoom, maxZoom, 0)
@@ -30,7 +31,10 @@ func TilesSeen(ctx context.Context, frames []int, frame PlanFrame, minZoom, maxZ
 		return nil, err
 	}
 	seen := map[tileKey]bool{}
-	for _, i := range frames {
+	for n, i := range frames {
+		if progress != nil {
+			progress(n, len(frames))
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -47,6 +51,9 @@ func TilesSeen(ctx context.Context, frames []int, frame PlanFrame, minZoom, maxZ
 			return nil, err
 		}
 		maps.Copy(seen, pic.noted)
+	}
+	if progress != nil {
+		progress(len(frames), len(frames))
 	}
 	out := make([]TileID, 0, len(seen))
 	for k := range seen {

@@ -46,15 +46,20 @@ type PlanFrame func(i int) (Scene, Camera, Options, error)
 
 // PlanNames plans the names of a flight of the given number of frames, each
 // drawn as frame says, smoothing each name's strength over smooth frames
-// either side. Each frame is drawn small, without colour -- enough to know
+// either side; progress, when not nil, is told how many frames are planned
+// of how many as each is -- a long flight's plan takes minutes, and a
+// program with nothing to show for them looks as if it has hung. Each frame is drawn small, without colour -- enough to know
 // where its names fall, which zoom the ground there is drawn from, and what
 // a hill hides -- and its names' strengths worked out as DrawNames works
 // them out for a picture of the full size. The tiles the frames are drawn
 // from are drawn as they are needed, as they would be by the frames
 // themselves.
-func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int) (*NamePlan, error) {
+func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int, progress func(done, total int)) (*NamePlan, error) {
 	plan := &NamePlan{names: map[nameID]*plannedName{}}
 	for i := range frames {
+		if progress != nil {
+			progress(i, frames)
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -84,6 +89,9 @@ func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int) (*N
 			}
 			pn.alpha[i-pn.first] = float32(sn.alpha)
 		}
+	}
+	if progress != nil {
+		progress(frames, frames)
 	}
 	// Both totals over the frames the names were shown in before
 	// smoothing, which spreads each over a few more.

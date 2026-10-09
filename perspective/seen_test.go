@@ -18,7 +18,7 @@ func TestTilesSeenAreTheTilesAFrameIsDrawnFrom(t *testing.T) {
 	}
 	seen, err := TilesSeen(context.Background(), []int{0}, func(int) (Scene, Camera, Options, error) {
 		return Scene{View: s.View, Heights: s.Heights}, cam, o, nil
-	}, 13, 16)
+	}, 13, 16, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

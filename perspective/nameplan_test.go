@@ -87,7 +87,7 @@ func TestPlannedNamesChangeNoFasterThanTheWindow(t *testing.T) {
 		c := cams[i]
 		return Scene{Tiles: tiles, View: c.MapView(c.MapBounds(4.0/3), 300, 1024), Heights: Level}, c, Options{Width: 400, Height: 300, HazeMetres: 1e9}, nil
 	}
-	plan, err := PlanNames(context.Background(), frames, frame, smooth)
+	plan, err := PlanNames(context.Background(), frames, frame, smooth, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
