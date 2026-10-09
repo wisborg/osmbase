@@ -2,8 +2,8 @@ github.com/clipperhouse/uax29/v2 v2.2.0 h1:ChwIKnQN3kcZteTXMgb1wztSgaU+ZemkgWdoh
 github.com/clipperhouse/uax29/v2 v2.2.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
 github.com/mattn/go-runewidth v0.0.28 h1:rPyg2ybwEKPebvpzVWe1gKBkH8EQFkxO4Y0hjBeLaBU=
 github.com/mattn/go-runewidth v0.0.28/go.mod h1:3qAiGCV4Koz/yuveO58qUefmUTRm8r0IGEXZ9jeHp/8=
-github.com/wisborg/output v0.3.1 h1:E3injsidEGROGFNfygnR8189fbLL8ynEsKNeQcEV58U=
-github.com/wisborg/output v0.3.1/go.mod h1:m794j//Iv9G8HvwtVJZ7ugPIOfzHNPbIh5q61HV6AEU=
+github.com/wisborg/output v0.4.0 h1:G3NmgZyBvdaUF/D5C6tKQoIYPfh0ur3HL7bbqTCsfZ8=
+github.com/wisborg/output v0.4.0/go.mod h1:m794j//Iv9G8HvwtVJZ7ugPIOfzHNPbIh5q61HV6AEU=
 golang.org/x/image v0.44.0 h1:+tDekMZED9+LrtB3G5xzRggpVh9CARjZqROla3R3R+I=
 golang.org/x/image v0.44.0/go.mod h1:V8K3KE9KKKE+pLpQDOeN18w9oacNSvy1tDOirTu4xtY=
 golang.org/x/text v0.40.0 h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=

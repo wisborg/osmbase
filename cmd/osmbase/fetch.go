@@ -415,7 +415,7 @@ type fetchBar struct {
 
 func startFetchBar(w io.Writer, label string, total int64) *fetchBar {
 	d := progress.New(w, progress.Options{Palette: progress.DefaultGradient()})
-	return &fetchBar{display: d, bar: d.Bar(progress.BarSpec{Label: label, Total: total, Unit: "B"})}
+	return &fetchBar{display: d, bar: d.Bar(progress.BarSpec{Label: label, Total: total, Unit: "B", Bytes: true})}
 }
 
 // update is the bar as a fetch's progress callback. A nil bar ignores it,
