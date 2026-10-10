@@ -74,7 +74,8 @@ const (
 // with attrs saying who each is: Mapterhorn, then each source's producer and
 // licence in the order given. A source missing from attrs is credited by its
 // id, which is less than it is owed and more than nothing -- and is what
-// says the list is out of date. No ids is no credit.
+// says the list is out of date. Sources credited in the same words are
+// credited once. No ids is no credit.
 func Credit(ids []string, attrs []Attribution) string {
 	if len(ids) == 0 {
 		return ""
@@ -98,7 +99,13 @@ func Credit(ids []string, attrs []Attribution) string {
 		if l := cleanCredit(a.License); l != "" {
 			s += " (" + l + ")"
 		}
-		parts = append(parts, s)
+		// Several datasets of one producer under one licence -- a national
+		// survey's, region by region -- are credited once: the same words
+		// again say nothing more, and a long flight's notice named the
+		// U.S. Geological Survey seventeen times.
+		if !slices.Contains(parts, s) {
+			parts = append(parts, s)
+		}
 	}
 	return strings.Join(parts, "; ")
 }

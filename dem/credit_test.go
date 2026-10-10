@@ -104,3 +104,19 @@ func TestSortSources(t *testing.T) {
 		t.Errorf("SortSources = %v, want %v", got, want)
 	}
 }
+
+// Two datasets of one producer under one licence are credited once.
+func TestCreditNamesAProducerOnce(t *testing.T) {
+	attrs := []Attribution{
+		{Source: "usgs-a", Producer: "U.S. Geological Survey", License: "Public Domain"},
+		{Source: "usgs-b", Producer: "U.S. Geological Survey", License: "Public Domain"},
+		{Source: "ign", Producer: "IGN", License: "Licence Ouverte"},
+	}
+	got := Credit([]string{"ign", "usgs-a", "usgs-b"}, attrs)
+	if n := strings.Count(got, "U.S. Geological Survey"); n != 1 {
+		t.Errorf("credit %q names the survey %d times, want once", got, n)
+	}
+	if !strings.Contains(got, "IGN (Licence Ouverte)") {
+		t.Errorf("credit %q lost a producer", got)
+	}
+}
