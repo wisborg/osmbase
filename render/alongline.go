@@ -266,26 +266,41 @@ const haloWidth = 1.5
 // that drawing. A halo, if not the zero colour, goes under the glyphs first,
 // haloWidth round them.
 func drawAlong(dst *image.RGBA, l placed, ink, halo color.RGBA, big font.Face) {
-	face := l.face
-	adv := font.MeasureString(face, l.text)
-	k := 1.0
+	mask, haloMask, k := alongMasks(l.text, l.face, big, halo != (color.RGBA{}))
+	paintAlong(dst, l, mask, haloMask, k, ink, halo)
+}
+
+// alongMasks is the text drawn in face, or in big when big draws it half as
+// large again or more, with a margin for its halo: the text's coverage, the
+// halo's when withHalo, and how many times the size of face it was drawn.
+// It is the only part of drawing a name along a line that uses a face.
+func alongMasks(text string, face, big font.Face, withHalo bool) (mask, haloMask *image.Alpha, k float64) {
+	adv := font.MeasureString(face, text)
+	k = 1.0
 	if big != nil {
-		if bigAdv := font.MeasureString(big, l.text); adv > 0 && float64(bigAdv)/float64(adv) >= 1.5 {
+		if bigAdv := font.MeasureString(big, text); adv > 0 && float64(bigAdv)/float64(adv) >= 1.5 {
 			face, k = big, float64(bigAdv)/float64(adv)
 		}
 	}
 	m := face.Metrics()
 	margin := int(math.Ceil(haloWidth*k)) + 2
-	w := font.MeasureString(face, l.text).Ceil()
+	w := font.MeasureString(face, text).Ceil()
 	asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
-	mask := image.NewAlpha(image.Rect(0, 0, w+2*margin, asc+desc+2*margin))
+	mask = image.NewAlpha(image.Rect(0, 0, w+2*margin, asc+desc+2*margin))
 	d := font.Drawer{Dst: mask, Src: image.Opaque, Face: face, Dot: fixed.P(margin, margin+asc)}
-	d.DrawString(l.text)
-	var haloMask *image.Alpha
-	if halo != (color.RGBA{}) {
+	d.DrawString(text)
+	if withHalo {
 		haloMask = dilate(mask, int(math.Round(haloWidth*k)))
 	}
+	return mask, haloMask, k
+}
 
+// paintAlong draws the masks at l's place and angle: the halo, when there
+// is a mask for it and a colour, and the text over it.
+func paintAlong(dst *image.RGBA, l placed, mask, haloMask *image.Alpha, k float64, ink, halo color.RGBA) {
+	if halo == (color.RGBA{}) {
+		haloMask = nil
+	}
 	cx, cy := float64(mask.Rect.Dx())/2, float64(mask.Rect.Dy())/2
 	c, s := math.Cos(l.angle), math.Sin(l.angle)
 	bounds := image.Rectangle{}
@@ -326,17 +341,57 @@ func drawAlong(dst *image.RGBA, l placed, ink, halo color.RGBA, big font.Face) {
 // For a caller drawing lifted names over a picture of its own; see
 // Options.LiftLabels.
 func DrawLineLabel(dst *image.RGBA, l LineLabel, x, y, angle float64, p Palette, halo color.RGBA) {
+	PrepareLineLabel(l).Draw(dst, x, y, angle, p, halo)
+}
+
+// PreparedLabel is a LineLabel made ready to be drawn many times: its text
+// drawn once, with its halo, at the size it is drawn at, so that drawing it
+// again -- somewhere else, at another angle, in other inks -- uses no font
+// face. A face is not safe for two goroutines to draw with at once, and
+// drawing a name's text was most of what drawing it cost; a picture standing
+// the same names on frame after frame, several frames at once, prepares each
+// name once and draws it from any goroutine. Its drawing is DrawLineLabel's
+// to the last pixel; DrawLineLabel is exactly preparing and drawing.
+type PreparedLabel struct {
+	l              LineLabel
+	w, h           float64
+	mask, haloMask *image.Alpha
+	k              float64
+}
+
+// PrepareLineLabel prepares l to be drawn; see PreparedLabel. It uses l's
+// faces, and so must not run while anything else draws with them. nil for
+// a label with no face or no text, which draws nothing.
+func PrepareLineLabel(l LineLabel) *PreparedLabel {
 	if l.Face == nil || l.Text == "" {
+		return nil
+	}
+	m := l.Face.Metrics()
+	pl := &PreparedLabel{
+		l: l,
+		w: float64(font.MeasureString(l.Face, l.Text).Ceil()),
+		h: float64(m.Ascent.Ceil() + m.Descent.Ceil()),
+	}
+	pl.mask, pl.haloMask, pl.k = alongMasks(l.Text, l.Face, l.big, true)
+	return pl
+}
+
+// Size is the label's text's width and height in pixels at its face:
+// the box it is drawn in before its halo and turning.
+func (pl *PreparedLabel) Size() (w, h float64) { return pl.w, pl.h }
+
+// Draw writes the prepared label on dst as DrawLineLabel would: centred at
+// (x, y), at angle, in p's label ink, its halo in halo -- the road's colour
+// for a name on its road, the zero colour for none. Safe for concurrent use.
+func (pl *PreparedLabel) Draw(dst *image.RGBA, x, y, angle float64, p Palette, halo color.RGBA) {
+	if pl == nil {
 		return
 	}
-	w := float64(font.MeasureString(l.Face, l.Text).Ceil())
-	m := l.Face.Metrics()
-	h := float64(m.Ascent.Ceil() + m.Descent.Ceil())
-	if l.OnRoad {
+	if pl.l.OnRoad {
 		halo = p.nameHalo()
 	}
-	pl := placed{text: l.Text, face: l.Face, along: true, x: x, y: y, angle: angle, quad: alongQuad(x, y, angle, w, h, int(math.Ceil(haloWidth))+1)}
-	drawAlong(dst, pl, labelInk(p, l.Minor), halo, l.big)
+	at := placed{text: pl.l.Text, face: pl.l.Face, along: true, x: x, y: y, angle: angle, quad: alongQuad(x, y, angle, pl.w, pl.h, int(math.Ceil(haloWidth))+1)}
+	paintAlong(dst, at, pl.mask, pl.haloMask, pl.k, labelInk(p, pl.l.Minor), halo)
 }
 
 // dilate is mask grown by r pixels every way: each pixel the most covered
