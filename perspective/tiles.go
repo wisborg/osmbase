@@ -234,7 +234,7 @@ func (s *pyramidSampler) at(u, v, span float64) color.RGBA {
 	// The zoom at which one tile pixel is span map pixels.
 	lod := math.Log2(s.scale/(TileSize*math.Max(span, 1e-9))) + lodBias + s.lodShift
 	lo, hi := float64(s.t.minZoom), float64(s.t.maxZoom)
-	lod = math.Max(lo, math.Min(hi, lod))
+	lod = max(lo, min(hi, lod))
 	s.lastLOD = float32(lod)
 	z0 := math.Floor(lod)
 	frac := lod - z0
@@ -266,16 +266,40 @@ func (s *pyramidSampler) note(z uint8, wx, wy float64) {
 	s.planned[k], s.lastPlan[z] = true, k
 }
 
+// worldPixels is how many tile pixels the world is across at each zoom.
+var worldPixels = func() (n [mercator.MaxZoom + 1]float64) {
+	for z := range n {
+		n[z] = TileSize * math.Exp2(float64(z))
+	}
+	return n
+}()
+
 // sample is the colour at world (wx, wy) at zoom z, interpolated between the
 // four nearest tile pixels, from whichever tiles they are in.
 func (s *pyramidSampler) sample(z uint8, wx, wy float64) color.RGBA {
-	n := TileSize * math.Exp2(float64(z))
+	n := worldPixels[z]
 	gx, gy := wx*n-0.5, wy*n-0.5
 	x0, y0 := math.Floor(gx), math.Floor(gy)
 	fx, fy := gx-x0, gy-y0
 	var r, g, b [4]float64
-	for i, d := range [4][2]float64{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
-		r[i], g[i], b[i] = s.texel(z, int64(x0+d[0]), int64(y0+d[1]))
+	px, py := int64(x0), int64(y0)
+	if last := int64(TileSize)<<z - 1; px >= 0 && py >= 0 && px < last && py < last &&
+		px%TileSize != TileSize-1 && py%TileSize != TileSize-1 {
+		// All four in one tile, as nearly every sample's are: that tile's
+		// pixels read directly, rather than the tile looked for four times.
+		img := s.tileImage(z, uint32(px/TileSize), uint32(py/TileSize))
+		if img == nil {
+			return color.RGBA{}
+		}
+		o := img.PixOffset(int(px%TileSize), int(py%TileSize))
+		for i, d := range [4]int{0, 4, img.Stride, img.Stride + 4} {
+			p := img.Pix[o+d : o+d+3 : o+d+3]
+			r[i], g[i], b[i] = float64(p[0]), float64(p[1]), float64(p[2])
+		}
+	} else {
+		for i, d := range [4][2]float64{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
+			r[i], g[i], b[i] = s.texel(z, int64(x0+d[0]), int64(y0+d[1]))
+		}
 	}
 	lerp := func(c [4]float64) uint8 {
 		top := c[0] + (c[1]-c[0])*fx
@@ -290,22 +314,39 @@ func (s *pyramidSampler) sample(z uint8, wx, wy float64) color.RGBA {
 func (s *pyramidSampler) texel(z uint8, px, py int64) (float64, float64, float64) {
 	last := int64(TileSize)<<z - 1
 	px, py = max(0, min(last, px)), max(0, min(last, py))
-	tx, ty := uint32(px/TileSize), uint32(py/TileSize)
+	img := s.tileImage(z, uint32(px/TileSize), uint32(py/TileSize))
+	if img == nil {
+		return 0, 0, 0
+	}
+	o := img.PixOffset(int(px%TileSize), int(py%TileSize))
+	return float64(img.Pix[o]), float64(img.Pix[o+1]), float64(img.Pix[o+2])
+}
+
+// tileImage is tile z/tx/ty's picture: the one last used at zoom z, or the
+// frame's own, or the pyramid's; nil, with the error noted, if it could not
+// be drawn.
+func (s *pyramidSampler) tileImage(z uint8, tx, ty uint32) *image.RGBA {
 	c := &s.last[z]
 	if c.img == nil || c.x != tx || c.y != ty {
+		// The frame's own tiles first: asking the pyramid takes its lock,
+		// and every band's sampler asking it at every tile edge they
+		// crossed -- pixels either side of one, at two zooms -- made a
+		// frame slower on two cores than on one.
 		k := tileKey{z: z, x: tx, y: ty}
-		tile, err := s.t.tile(s.ctx, k)
-		if err != nil {
-			if s.err == nil {
-				s.err = err
+		tile, ok := s.used[k]
+		if !ok {
+			var err error
+			if tile, err = s.t.tile(s.ctx, k); err != nil {
+				if s.err == nil {
+					s.err = err
+				}
+				return nil
 			}
-			return 0, 0, 0
+			s.used[k] = tile
 		}
-		s.used[k] = tile
 		c.x, c.y, c.img = tx, ty, tile.Image
 	}
-	o := c.img.PixOffset(int(px%TileSize), int(py%TileSize))
-	return float64(c.img.Pix[o]), float64(c.img.Pix[o+1]), float64(c.img.Pix[o+2])
+	return c.img
 }
 
 // edgeFade is as texture's: the scene's area fades into the haze at its

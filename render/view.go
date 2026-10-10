@@ -345,6 +345,32 @@ func (v View) Coord(x, y float64) (Coord, error) {
 	return Coord{Lat: lat, Lon: lon}, nil
 }
 
+// Resolved is a view worked out once, for a caller turning many places into
+// pixels and back: Coord and Pixel each work the view out again on every
+// call, which is nothing for a label and most of the cost of laying a mesh
+// of hundreds of thousands of vertices over a view a frame. Its answers are
+// View's to the last bit.
+type Resolved struct{ p projection }
+
+// Resolve works v out for many places; see Resolved.
+func (v View) Resolve() (Resolved, error) {
+	p, err := resolve(v)
+	return Resolved{p}, err
+}
+
+// Coord is View.Coord.
+func (r Resolved) Coord(x, y float64) Coord {
+	lon, lat := mercator.Unproject(r.p.originX+x/r.p.scale, r.p.originY+y/r.p.scale)
+	return Coord{Lat: lat, Lon: lon}
+}
+
+// WorldPixel is View.Pixel of the place at world (wx, wy), as
+// mercator.Project gives it: for a caller that has projected the place
+// already.
+func (r Resolved) WorldPixel(wx, wy float64) (x, y float64) {
+	return r.p.pixelX(wx), r.p.pixelY(wy)
+}
+
 // Pixel is Coord undone: where in the view, in its pixels from the
 // north-west corner, the point c is drawn. A point outside the view gives a
 // position outside the image.

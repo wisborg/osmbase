@@ -39,6 +39,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/render"
@@ -138,9 +139,13 @@ var (
 // before being averaged down.
 const supersample = 2
 
-// minBandRows is the fewest rows of the supersampled image a goroutine is
-// given to fill: fewer, and every goroutine passing over every triangle
-// costs more than the rows it fills.
+// minBandRows is the fewest rows of the supersampled image a band is: fewer,
+// and every band passing over every triangle costs more than the rows it
+// fills. The image is cut into as many bands as that allows, far more than
+// there are goroutines, and each goroutine takes the next band left: the
+// ground is not spread evenly down a picture -- sky above, the near ground
+// many times the work of the far -- and one band a goroutine left most of
+// them idle while the one with the foreground worked.
 const minBandRows = 64
 
 // nearMetres is how close in front of the camera ground is still drawn.
@@ -321,7 +326,8 @@ func renderScene(ctx context.Context, s Scene, c Camera, o Options, plan *planni
 	// rows are known. The bands share the image and its buffers and never
 	// a row of them; each has a sampler of its own, as a pyramid's keeps
 	// the tiles it last used and those it drew from.
-	n := max(1, min(runtime.GOMAXPROCS(0), h/minBandRows))
+	bands := max(1, h/minBandRows)
+	n := max(1, min(runtime.GOMAXPROCS(0), bands))
 	samplers := make([]sampler, n)
 	pyrs := make([]*pyramidSampler, n)
 	for k := range samplers {
@@ -339,21 +345,41 @@ func renderScene(ctx context.Context, s Scene, c Camera, o Options, plan *planni
 			samplers[k] = samplers[0] // one map is only read
 		}
 	}
+	// Every vertex placed in the camera's frame once, the rows shared
+	// among the bands' goroutines, before any band fills from them.
+	pl := make([]placed, len(m.v))
 	var wg sync.WaitGroup
 	for k := range n {
-		band := *f
-		band.rowLo, band.rowHi = h*k/n, h*(k+1)/n
 		wg.Add(1)
-		go func(band *frame, tex sampler) {
+		go func(lo, hi int) {
 			defer wg.Done()
-			for j := 0; j+1 < m.rows; j++ {
-				for i := 0; i+1 < m.cols; i++ {
-					a, b, cc, d := m.at(i, j), m.at(i+1, j), m.at(i+1, j+1), m.at(i, j+1)
-					band.triangle(cam, tex, haze, hazeM, a, b, cc)
-					band.triangle(cam, tex, haze, hazeM, a, cc, d)
+			for i := lo; i < hi; i++ {
+				pl[i] = place(cam, m.v[i])
+			}
+		}(len(m.v)*k/n, len(m.v)*(k+1)/n)
+	}
+	wg.Wait()
+	var next atomic.Int64
+	for k := range n {
+		wg.Add(1)
+		go func(tex sampler) {
+			defer wg.Done()
+			for {
+				b := int(next.Add(1) - 1)
+				if b >= bands {
+					return
+				}
+				band := *f
+				band.rowLo, band.rowHi = h*b/bands, h*(b+1)/bands
+				for j := 0; j+1 < m.rows; j++ {
+					for i := 0; i+1 < m.cols; i++ {
+						a, b, cc, d := &pl[j*m.cols+i], &pl[j*m.cols+i+1], &pl[(j+1)*m.cols+i+1], &pl[(j+1)*m.cols+i]
+						band.triangle(cam, tex, haze, hazeM, a, b, cc)
+						band.triangle(cam, tex, haze, hazeM, a, cc, d)
+					}
 				}
 			}
-		}(&band, samplers[k])
+		}(samplers[k])
 	}
 	wg.Wait()
 
@@ -455,27 +481,43 @@ func buildMesh(s Scene, target render.Coord) (*mesh, error) {
 	scale := circumference * math.Cos(target.Lat*math.Pi/180)
 
 	m := &mesh{cols: cols, rows: rows, v: make([]vertex, cols*rows), grid: grid, tx: tx, ty: ty, scale: scale}
-	for j := 0; j < rows; j++ {
-		for i := 0; i < cols; i++ {
-			c, err := grid.Coord(float64(i)+0.5, float64(j)+0.5)
-			if err != nil {
-				return nil, err
-			}
-			u, v, err := s.View.Pixel(c)
-			if err != nil {
-				return nil, err
-			}
-			wx, wy := mercator.Project(c.Lon, c.Lat)
-			h := float64(hs[j*cols+i])
-			m.v[j*cols+i] = vertex{
-				x: (wx - tx) * scale,
-				y: -(wy - ty) * scale, // world y runs south; north is up here
-				z: h * ex,
-				u: u, v: v,
-				ok: !math.IsNaN(h),
-			}
-		}
+	// The views worked out once rather than for every vertex, each place
+	// projected once for both its position and its map pixel, and the rows
+	// laid across the processors: a frame's mesh was laid one vertex after
+	// another, the views worked out twice for each, while the rest of the
+	// machine waited to fill from it.
+	gr, err := grid.Resolve()
+	if err != nil {
+		return nil, err
 	}
+	vr, err := s.View.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	n := max(1, min(runtime.GOMAXPROCS(0), rows))
+	var wg sync.WaitGroup
+	for k := range n {
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for j := lo; j < hi; j++ {
+				for i := 0; i < cols; i++ {
+					c := gr.Coord(float64(i)+0.5, float64(j)+0.5)
+					wx, wy := mercator.Project(c.Lon, c.Lat)
+					u, v := vr.WorldPixel(wx, wy)
+					h := float64(hs[j*cols+i])
+					m.v[j*cols+i] = vertex{
+						x: (wx - tx) * scale,
+						y: -(wy - ty) * scale, // world y runs south; north is up here
+						z: h * ex,
+						u: u, v: v,
+						ok: !math.IsNaN(h),
+					}
+				}
+			}
+		}(rows*k/n, rows*(k+1)/n)
+	}
+	wg.Wait()
 	// The height under the target, so the camera looks at the ground and
 	// not at sea level beneath it: between the four vertices round it, so
 	// that it moves smoothly as the target does -- the nearest vertex's

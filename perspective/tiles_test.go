@@ -23,7 +23,7 @@ var zoomColours = map[uint8]color.RGBA{
 	16: {R: 0xff, G: 0xff, A: 0xff},
 }
 
-func flatTiles(t *testing.T) (*Tiles, *sync.Map) {
+func flatTiles(t testing.TB) (*Tiles, *sync.Map) {
 	t.Helper()
 	var seen sync.Map // tileKey -> number of times drawn
 	draw := func(_ context.Context, z uint8, x, y uint32) (*Tile, error) {

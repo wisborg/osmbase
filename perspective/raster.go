@@ -77,44 +77,75 @@ type point struct {
 	u, v float64
 }
 
-// triangle draws one triangle of the mesh: moved into the camera's frame,
-// cut at the near plane, projected and filled.
-func (f *frame) triangle(cv view, tex sampler, haze color.RGBA, hazeM float64, a, b, c vertex) {
+// placed is a mesh vertex moved into the camera's frame, and, when it is in
+// front of the near plane, projected: worked out once a frame for each
+// vertex rather than once for each of the six triangles it is a corner of
+// in each band of the image, which allocated as it went and was most of
+// the time a frame took.
+type placed struct {
+	p     point
+	s     screen
+	ok    bool // a height is known
+	front bool // in front of the near plane, so s is its projection
+}
+
+// place is v moved into the camera's frame, and projected.
+func place(cv view, v vertex) placed {
+	pl := placed{p: point{cv.toCamera(v.x, v.y, v.z), v.u, v.v}, ok: v.ok}
+	if pl.p.cam[2] >= nearMetres {
+		pl.front, pl.s = true, project(cv, pl.p)
+	}
+	return pl
+}
+
+// triangle draws one triangle of the mesh, its corners already placed: cut
+// at the near plane where it crosses it, and filled.
+func (f *frame) triangle(cv view, tex sampler, haze color.RGBA, hazeM float64, a, b, c *placed) {
 	if !a.ok || !b.ok || !c.ok {
 		return
 	}
-	poly := []point{
-		{cv.toCamera(a.x, a.y, a.z), a.u, a.v},
-		{cv.toCamera(b.x, b.y, b.z), b.u, b.v},
-		{cv.toCamera(c.x, c.y, c.z), c.u, c.v},
+	if a.front && b.front && c.front {
+		// Most triangles: whole, and most of them in another band, which
+		// their rows say before anything is filled.
+		lo := math.Floor(math.Min(a.s.y, math.Min(b.s.y, c.s.y)))
+		hi := math.Ceil(math.Max(a.s.y, math.Max(b.s.y, c.s.y)))
+		if int(math.Max(float64(f.rowLo), lo)) > int(math.Min(float64(f.rowHi-1), hi)) {
+			return
+		}
+		f.fillScreen(cv, tex, haze, hazeM, a.s, b.s, c.s)
+		return
 	}
-	poly = clipNear(poly)
+	var poly [4]point
+	n := clipNear([3]point{a.p, b.p, c.p}, &poly)
 	// A triangle cut by the near plane is a quadrilateral at most; drawn
 	// as a fan of triangles from its first corner.
-	for k := 1; k+1 < len(poly); k++ {
+	for k := 1; k+1 < n; k++ {
 		f.fill(cv, tex, haze, hazeM, poly[0], poly[k], poly[k+1])
 	}
 }
 
-// clipNear is the polygon cut to the part in front of the near plane, by
-// Sutherland-Hodgman against that one plane.
-func clipNear(in []point) []point {
-	var out []point
+// clipNear cuts the triangle in to the part in front of the near plane, by
+// Sutherland-Hodgman against that one plane, into out, and says how many of
+// out's corners it has: none, three or four.
+func clipNear(in [3]point, out *[4]point) int {
+	n := 0
 	for i := range in {
 		p, q := in[i], in[(i+1)%len(in)]
 		pIn, qIn := p.cam[2] >= nearMetres, q.cam[2] >= nearMetres
 		if pIn {
-			out = append(out, p)
+			out[n] = p
+			n++
 		}
 		if pIn != qIn {
 			t := (nearMetres - p.cam[2]) / (q.cam[2] - p.cam[2])
-			out = append(out, point{
+			out[n] = point{
 				cam: [3]float64{p.cam[0] + t*(q.cam[0]-p.cam[0]), p.cam[1] + t*(q.cam[1]-p.cam[1]), nearMetres},
 				u:   p.u + t*(q.u-p.u), v: p.v + t*(q.v-p.v),
-			})
+			}
+			n++
 		}
 	}
-	return out
+	return n
 }
 
 // screen is a point projected: its pixel position, and the reciprocal of
@@ -140,9 +171,13 @@ func project(cv view, p point) screen {
 // whose centre is inside, nearer than what is drawn there, coloured from
 // the map at its interpolated position and faded by its depth.
 func (f *frame) fill(cv view, tex sampler, haze color.RGBA, hazeM float64, pa, pb, pc point) {
-	a, b, c := project(cv, pa), project(cv, pb), project(cv, pc)
-	minY := int(math.Max(float64(f.rowLo), math.Floor(math.Min(a.y, math.Min(b.y, c.y)))))
-	maxY := int(math.Min(float64(f.rowHi-1), math.Ceil(math.Max(a.y, math.Max(b.y, c.y)))))
+	f.fillScreen(cv, tex, haze, hazeM, project(cv, pa), project(cv, pb), project(cv, pc))
+}
+
+// fillScreen is fill, its corners already projected.
+func (f *frame) fillScreen(cv view, tex sampler, haze color.RGBA, hazeM float64, a, b, c screen) {
+	minY := int(max(float64(f.rowLo), math.Floor(min(a.y, min(b.y, c.y)))))
+	maxY := int(min(float64(f.rowHi-1), math.Ceil(max(a.y, max(b.y, c.y)))))
 	if minY > maxY {
 		return // not in this band
 	}
@@ -161,8 +196,8 @@ func (f *frame) fill(cv view, tex sampler, haze color.RGBA, hazeM float64, pa, p
 	uzx, uzy := grad(a.uiz, b.uiz, c.uiz)
 	vzx, vzy := grad(a.viz, b.viz, c.viz)
 
-	minX := int(math.Max(0, math.Floor(math.Min(a.x, math.Min(b.x, c.x)))))
-	maxX := int(math.Min(float64(f.w-1), math.Ceil(math.Max(a.x, math.Max(b.x, c.x)))))
+	minX := int(max(0, math.Floor(min(a.x, min(b.x, c.x)))))
+	maxX := int(min(float64(f.w-1), math.Ceil(max(a.x, max(b.x, c.x)))))
 	for y := minY; y <= maxY; y++ {
 		py := float64(y) + 0.5
 		for x := minX; x <= maxX; x++ {
@@ -188,12 +223,12 @@ func (f *frame) fill(cv view, tex sampler, haze color.RGBA, hazeM float64, pa, p
 			// linear in the image, so du = (dU - u dI) / I.
 			ux, vx := (uzx-u*izx)*z, (vzx-v*izx)*z
 			uy, vy := (uzy-u*izy)*z, (vzy-v*izy)*z
-			span := math.Sqrt(math.Max(ux*ux+vx*vx, uy*uy+vy*vy))
+			span := math.Sqrt(max(ux*ux+vx*vx, uy*uy+vy*vy))
 			col := tex.at(u, v, span)
 			// Faded into the haze toward the edge of the map, so the
 			// ground ends in distance rather than in a straight line
 			// against the sky; and with distance, as the air does.
-			fade := math.Max(tex.edgeFade(u, v), hazeAt(z, hazeM))
+			fade := max(tex.edgeFade(u, v), hazeAt(z, hazeM))
 			col = mixRGBA(col, haze, fade)
 			if f.lod != nil {
 				f.lod[i] = tex.lod()
@@ -270,12 +305,12 @@ func (t *texture) edgeFade(u, v float64) float64 {
 
 // fadeAt is edgeFade for an area w by h map pixels.
 func fadeAt(u, v, w, h float64) float64 {
-	m := edgeFraction * math.Min(w, h)
-	d := math.Min(math.Min(u, w-u), math.Min(v, h-v))
+	m := edgeFraction * min(w, h)
+	d := min(min(u, w-u), min(v, h-v))
 	if d >= m {
 		return 0
 	}
-	x := 1 - math.Max(0, d)/m
+	x := 1 - max(0, d)/m
 	return x * x * (3 - 2*x)
 }
 
