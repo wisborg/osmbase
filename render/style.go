@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/wisborg/osmbase/mercator"
+	"github.com/wisborg/osmbase/mvt"
 )
 
 // MaxRuleZoom is the deepest zoom a rule can name, and is what a rule with no
@@ -120,6 +121,12 @@ const (
 	// the map while a trail wants to be found. A palette that names no Path
 	// draws paths in Ink, as every palette did before this role.
 	RolePath
+
+	// RoleAeroway is a runway or a taxiway: in a grey of its own, as a
+	// printed map draws an airfield, rather than the roads' ink, in which an
+	// airport read as a knot of roads. A palette that names no Aeroway draws
+	// them in Road.
+	RoleAeroway
 )
 
 // Palette is the colour for each role.
@@ -185,6 +192,10 @@ type Palette struct {
 	// value draws them in Ink, which is what every palette written before
 	// it did.
 	Path color.RGBA
+
+	// Aeroway is runways and taxiways; see RoleAeroway. Zero draws them in
+	// Road.
+	Aeroway color.RGBA
 
 	// Omitted names roles this palette does not draw at all.
 	//
@@ -277,6 +288,11 @@ func (p Palette) colour(r Role) color.RGBA {
 			return p.Path
 		}
 		return p.Ink
+	case RoleAeroway:
+		if p.Aeroway != (color.RGBA{}) {
+			return p.Aeroway
+		}
+		return p.Road
 	}
 	return p.Ink
 }
@@ -426,6 +442,13 @@ type Rule struct {
 	// hashing anyway.
 	Kinds []string
 
+	// Details, when not empty, narrows Kinds to the features whose
+	// "kind_detail" is one of these. The schema gives one kind to things a
+	// map draws differently: an aeroway is a runway or a taxiway, and a
+	// runway is twice a taxiway's width. A feature with no kind_detail is
+	// not drawn by a rule that asks for details.
+	Details []string
+
 	// MinZoom and MaxZoom bound the zooms this rule draws at, both inclusive
 	// and both required. A rule with no deepest zoom says MaxRuleZoom.
 	MinZoom, MaxZoom uint8
@@ -441,18 +464,25 @@ type Rule struct {
 // one square of it because the data underneath came from two zooms up.
 func (r Rule) appliesAt(z uint8) bool { return z >= r.MinZoom && z <= r.MaxZoom }
 
-// matches reports whether the rule draws a feature with this kind. present says
-// whether the feature carried a kind attribute at all.
+// matches reports whether the rule draws feature f, by its kind and, when
+// the rule names details, its kind_detail.
 //
 // A feature with no kind is drawn only by a rule that asked for no kinds. The
 // alternative -- treating a missing kind as the empty string and letting a rule
 // list "" -- would make a feature whose kind attribute is genuinely empty and
 // one that has no kind attribute the same feature, which they are not. mvt is
 // careful to keep those apart and this is where that care would be thrown away.
-func (r Rule) matches(kind string, present bool) bool {
+func (r Rule) matches(f *mvt.Feature) bool {
+	if len(r.Details) > 0 {
+		d, ok := f.Tag("kind_detail")
+		if !ok || d.Kind != mvt.ValueString || !slices.Contains(r.Details, d.Str) {
+			return false
+		}
+	}
 	if len(r.Kinds) == 0 {
 		return true
 	}
+	kind, present := featureKind(f)
 	if !present {
 		return false
 	}

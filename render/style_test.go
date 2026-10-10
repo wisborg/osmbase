@@ -1,6 +1,7 @@
 package render
 
 import (
+	"github.com/wisborg/osmbase/mvt"
 	"math"
 	"strings"
 	"testing"
@@ -80,10 +81,44 @@ func TestRuleMatches_AMissingKindIsNotTheEmptyString(t *testing.T) {
 		{"no kinds listed, feature has none", anything, "", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.rule.matches(tc.kind, tc.present); got != tc.want {
+			f := &mvt.Feature{Tags: map[string]mvt.Value{}}
+			if tc.present {
+				f.Tags["kind"] = mvt.Value{Kind: mvt.ValueString, Str: tc.kind}
+			}
+			if got := tc.rule.matches(f); got != tc.want {
 				t.Errorf("matches(%q, %v) = %v, want %v", tc.kind, tc.present, got, tc.want)
 			}
 		})
+	}
+}
+
+// A rule naming details draws the features of its kinds with one of those
+// kind_details and no others: a runway and a taxiway share the kind
+// aeroway, and are drawn at different widths.
+func TestRuleMatches_Details(t *testing.T) {
+	runway := Rule{Kinds: []string{"aeroway"}, Details: []string{"runway"}}
+	feature := func(kind, detail string) *mvt.Feature {
+		f := &mvt.Feature{Tags: map[string]mvt.Value{"kind": {Kind: mvt.ValueString, Str: kind}}}
+		if detail != "" {
+			f.Tags["kind_detail"] = mvt.Value{Kind: mvt.ValueString, Str: detail}
+		}
+		return f
+	}
+	for _, tc := range []struct {
+		kind, detail string
+		want         bool
+	}{
+		{"aeroway", "runway", true},
+		{"aeroway", "taxiway", false},
+		{"aeroway", "", false},
+		{"highway", "runway", false},
+	} {
+		if got := runway.matches(feature(tc.kind, tc.detail)); got != tc.want {
+			t.Errorf("runway rule matches %s/%q = %v, want %v", tc.kind, tc.detail, got, tc.want)
+		}
+	}
+	if !(Rule{Kinds: []string{"aeroway"}}).matches(feature("aeroway", "taxiway")) {
+		t.Error("a rule naming no details does not draw every detail of its kind")
 	}
 }
 

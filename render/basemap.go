@@ -92,6 +92,26 @@ func BasemapStyle() Style {
 				Paint: Paint{Role: RoleBuilding, Fill: true},
 			},
 
+			// Runways and taxiways, on the airfield's built-up ground and
+			// under every road. The schema draws them as lines of kind
+			// aeroway, told apart by kind_detail, and with no width; a
+			// runway is about forty-five metres wide and a taxiway about
+			// half, so from zoom 13 each doubles with the zoom, staying that
+			// wide on the ground, and further out each is held to a line
+			// that can still be seen. They were not drawn at all, and a
+			// flyover coming down to an airport followed its route across
+			// a blank expanse of airfield.
+			{
+				Layer: "roads", Kinds: []string{"aeroway"}, Details: []string{"runway"},
+				MinZoom: 10, MaxZoom: MaxRuleZoom,
+				Paint: Paint{Role: RoleAeroway, Widths: []WidthStop{{10, 1.2}, {13, 3}, {20, 400}}},
+			},
+			{
+				Layer: "roads", Kinds: []string{"aeroway"}, Details: []string{"taxiway"},
+				MinZoom: 11, MaxZoom: MaxRuleZoom,
+				Paint: Paint{Role: RoleAeroway, Widths: []WidthStop{{11, 0.8}, {13, 1.6}, {20, 200}}},
+			},
+
 			// Roads, thinnest first, so a motorway crosses over a footpath
 			// rather than being interrupted by it. Up to zoom 14 a road is a
 			// line; see wideRoads for what it is closer than that.
@@ -468,6 +488,10 @@ func LightPalette() Palette {
 		// clear of the contour lines' red-brown, which a walking map's
 		// red-brown trail ran into. Found by search.
 		Path: color.RGBA{R: 0xd8, G: 0x9f, B: 0xc9, A: 0xff},
+		// Runways and taxiways in a grey of their own -- see RoleAeroway --
+		// the nearest to the road's lightness the contrast rules allow,
+		// found by search.
+		Aeroway: color.RGBA{R: 0xc6, G: 0xca, B: 0xd6, A: 0xff},
 	}
 }
 
@@ -505,6 +529,8 @@ func DarkPalette() Palette {
 		// clear of the contour lines' red-brown, which a walking map's
 		// red-brown trail ran into. Found by search.
 		Path: color.RGBA{R: 0x5d, G: 0x30, B: 0x57, A: 0xff},
+		// No Aeroway: no grey near the road's passes the contrast rules
+		// here, and the road is a grey already, so runways are drawn in it.
 	}
 }
 
@@ -574,6 +600,10 @@ func DarkLineworkPalette() Palette {
 		// clear of the contour lines' red-brown, which a walking map's
 		// red-brown trail ran into. Found by search.
 		Path: color.RGBA{R: 0x5d, G: 0x30, B: 0x57, A: 0xff},
+		// Runways and taxiways in a grey of their own -- see RoleAeroway --
+		// the nearest to the road's lightness the contrast rules allow,
+		// found by search.
+		Aeroway: color.RGBA{R: 0x3c, G: 0x3c, B: 0x3c, A: 0xff},
 	}
 }
 
@@ -625,6 +655,10 @@ func OutdoorsPalette() Palette {
 		// clear of the contour lines' red-brown, which a walking map's
 		// red-brown trail ran into. Found by search.
 		Path: color.RGBA{R: 0x9f, G: 0x6f, B: 0x99, A: 0xff},
+		// Runways and taxiways in a grey of their own -- see RoleAeroway --
+		// the nearest to the road's lightness the contrast rules allow,
+		// found by search.
+		Aeroway: color.RGBA{R: 0xb3, G: 0xb7, B: 0xc3, A: 0xff},
 	}
 }
 

@@ -118,8 +118,7 @@ func (d *drawer) drawStack(s *raster.Surface, rules []*Rule, inks []color.Color,
 			if f.Type != mvt.GeomPolygon {
 				continue
 			}
-			kind, present := featureKind(f)
-			ri := slices.IndexFunc(rules, func(r *Rule) bool { return r.matches(kind, present) })
+			ri := slices.IndexFunc(rules, func(r *Rule) bool { return r.matches(f) })
 			if ri < 0 {
 				continue
 			}

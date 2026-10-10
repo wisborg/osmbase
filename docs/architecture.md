@@ -542,6 +542,18 @@ hue, since luminance is capped -- and well apart from the contours. The red-brow
 found first passed every rule and still ran into the contour lines on a map with terrain; a
 mauve does not.
 
+**An airport is its runways.** The schema carries runways and taxiways as lines of kind
+`aeroway`, told apart only by `kind_detail`, and the map drew neither: an airport was a pale
+area with a route crossing it, which a flyover coming down to the taxiways showed for the
+blank it was. A rule may now name `Details` as well as `Kinds`, and runways are drawn from
+zoom 10 and taxiways from 11, each doubling in width with the zoom from 13 so it keeps its
+width on the ground -- about forty-five metres for a runway and half that for a taxiway --
+and held to a visible line further out. In the roads' ink an airfield read as a knot of
+roads, so they have a role of their own, `RoleAeroway`: a cool grey as printed maps draw
+them, found by search as the path ink was, at the road's lightness. The dark palette names
+none -- no grey near its road passes the contrast rules, and its road is a grey already --
+and draws them in `Road`, as any palette naming no `Aeroway` does.
+
 **A line's name is written along it.** A street's or a river's name is centred on the
 line and turned to its direction, on the first straight enough stretch at least as long as
 the name, tried from the middle outwards, and again every 600 pixels or four lengths of the

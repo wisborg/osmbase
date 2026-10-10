@@ -58,3 +58,35 @@ func TestPath_WidensWithTheMap(t *testing.T) {
 		t.Errorf("a path is %g pixels at zoom 12 and %g at 18; want under 1 and at least 3", w12, w18)
 	}
 }
+
+// Runways and taxiways are drawn, in the aeroway grey, a runway wider than
+// a taxiway; they were not drawn at all.
+func TestAeroways_DrawnRunwaysWiderThanTaxiways(t *testing.T) {
+	s := BasemapStyle()
+	find := func(detail string) Rule {
+		t.Helper()
+		i := slices.IndexFunc(s.Rules, func(r Rule) bool {
+			return r.Layer == "roads" && slices.Equal(r.Kinds, []string{"aeroway"}) && slices.Equal(r.Details, []string{detail})
+		})
+		if i < 0 {
+			t.Fatalf("no %s rule", detail)
+		}
+		return s.Rules[i]
+	}
+	runway, taxiway := find("runway"), find("taxiway")
+	if runway.Paint.Role != RoleAeroway || taxiway.Paint.Role != RoleAeroway {
+		t.Errorf("roles %v and %v, want RoleAeroway", runway.Paint.Role, taxiway.Paint.Role)
+	}
+	at := func(z float64) projection { return projection{zoom: z, tileZoom: uint8(z), tileScale: 1} }
+	for _, z := range []float64{13, 15, 17} {
+		if r, tw := runway.Paint.strokeWidth(at(z)), taxiway.Paint.strokeWidth(at(z)); r <= tw {
+			t.Errorf("at zoom %g a runway is %g wide and a taxiway %g", z, r, tw)
+		}
+	}
+	if light := LightPalette(); light.colour(RoleAeroway) == light.Road {
+		t.Error("the light palette draws runways in the road's ink")
+	}
+	if dark := DarkPalette(); dark.colour(RoleAeroway) != dark.Road {
+		t.Error("a palette naming no Aeroway does not draw runways in Road")
+	}
+}

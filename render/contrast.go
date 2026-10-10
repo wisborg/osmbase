@@ -109,6 +109,10 @@ func (p Palette) context() []namedColour {
 	if (p.Path != color.RGBA{}) {
 		all = append(all, namedColour{name: "Path", c: p.Path, role: RolePath})
 	}
+	// A palette naming no Aeroway draws runways in Road, already here.
+	if (p.Aeroway != color.RGBA{}) {
+		all = append(all, namedColour{name: "Aeroway", c: p.Aeroway, role: RoleAeroway})
+	}
 	drawn := make([]namedColour, 0, len(all))
 	for _, c := range all {
 		if !p.Omits(c.role) {

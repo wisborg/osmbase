@@ -122,10 +122,9 @@ func MeasureAreas(ctx context.Context, src TileSource, o Options, b Bounds, z ui
 					if f.Type != mvt.GeomPolygon || !f.HasID {
 						continue
 					}
-					kind, present := featureKind(f)
 					selected := false
 					for _, rule := range rules {
-						if rule.matches(kind, present) {
+						if rule.matches(f) {
 							selected = true
 							break
 						}

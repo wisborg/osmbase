@@ -64,13 +64,14 @@ func TestRoadSurfaceContrast(t *testing.T) {
 }
 
 // From zoom 15 every road is drawn twice, casing then surface, every casing
-// before any surface so junctions run together; below it as a line. Rail
-// and paths are lines at every zoom -- a path a widening one, but a line.
+// before any surface so junctions run together; below it as a line. Rail,
+// paths, runways and taxiways are lines at every zoom -- widening ones, some
+// of them, but lines.
 func TestBasemapRoadsAreStripsCloseIn(t *testing.T) {
 	s := BasemapStyle()
 	var casing, surface []int
 	for i, r := range s.Rules {
-		if r.Layer != "roads" || !r.appliesAt(lineRoadsTo+1) || slices.Contains(r.Kinds, "rail") || slices.Contains(r.Kinds, "path") {
+		if r.Layer != "roads" || !r.appliesAt(lineRoadsTo+1) || slices.Contains(r.Kinds, "rail") || slices.Contains(r.Kinds, "path") || slices.Contains(r.Kinds, "aeroway") {
 			continue
 		}
 		switch r.Paint.Role {

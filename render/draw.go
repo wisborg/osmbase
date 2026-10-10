@@ -105,8 +105,7 @@ func (d *drawer) appendTile(rule *Rule, dt drawTile) {
 
 	for i := range layer.Features {
 		f := &layer.Features[i]
-		kind, present := featureKind(f)
-		if !rule.matches(kind, present) {
+		if !rule.matches(f) {
 			continue
 		}
 		switch f.Type {
