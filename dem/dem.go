@@ -21,6 +21,7 @@ package dem
 
 import (
 	"bytes"
+	"container/list"
 	"errors"
 	"fmt"
 	"image"
@@ -125,14 +126,16 @@ type TileSource interface {
 // The cache is what makes it usable from a renderer, which asks for each
 // tile once per output pixel row rather than once per render. It holds a
 // fixed number of grids -- a 512-pixel grid is a megabyte -- and forgets the
-// oldest first. A Source is safe for concurrent use when its TileSource is.
+// least recently used first, and a tile asked for by several goroutines at
+// once is decoded once. A Source is safe for concurrent use when its
+// TileSource is.
 type Source struct {
 	tiles TileSource
 	limit int
 
 	mu    sync.Mutex
-	grids map[tileKey]cached
-	order []tileKey
+	grids map[tileKey]*list.Element // of *cached
+	lru   *list.List                // most recently used at the front
 }
 
 type tileKey struct {
@@ -141,18 +144,24 @@ type tileKey struct {
 }
 
 type cached struct {
+	key  tileKey
 	grid Grid
 	ok   bool
+	err  error
+	done chan struct{} // closed once grid, ok and err are set
 }
 
-// DefaultCache is how many decoded tiles a Source keeps: enough for every
-// elevation tile under a 4K view, with its margin, twice over.
-const DefaultCache = 64
+// DefaultCache is how many decoded tiles a Source keeps: a quarter of a
+// gigabyte. Sixty-four was every elevation tile under a 4K view twice over,
+// which is one view; a flyover draws the map's tiles at many zooms at once
+// and lays a mesh over the heights besides, each reading tiles the others
+// had pushed out, and decoded the same ones again and again.
+const DefaultCache = 256
 
 // NewSource returns a Source reading tiles and keeping DefaultCache of them
 // decoded.
 func NewSource(tiles TileSource) *Source {
-	return &Source{tiles: tiles, limit: DefaultCache, grids: map[tileKey]cached{}}
+	return &Source{tiles: tiles, limit: DefaultCache, grids: map[tileKey]*list.Element{}, lru: list.New()}
 }
 
 // Heights is the grid of tile z/x/y. ok is false when the source holds no
@@ -162,30 +171,43 @@ func NewSource(tiles TileSource) *Source {
 func (s *Source) Heights(z uint8, x, y uint32) (heights []float32, size int, ok bool, err error) {
 	k := tileKey{z, x, y}
 	s.mu.Lock()
-	c, hit := s.grids[k]
-	s.mu.Unlock()
-	if hit {
-		return c.grid.Heights, c.grid.Size, c.ok, nil
+	if el, hit := s.grids[k]; hit {
+		s.lru.MoveToFront(el)
+		c := el.Value.(*cached)
+		s.mu.Unlock()
+		<-c.done
+		return c.grid.Heights, c.grid.Size, c.ok, c.err
 	}
+	c := &cached{key: k, done: make(chan struct{})}
+	s.grids[k] = s.lru.PushFront(c)
+	for s.lru.Len() > s.limit {
+		old := s.lru.Back()
+		s.lru.Remove(old)
+		delete(s.grids, old.Value.(*cached).key)
+	}
+	s.mu.Unlock()
+
 	data, ok, err := s.tiles.Tile(z, x, y)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("dem: reading elevation tile %d/%d/%d: %w", z, x, y, err)
-	}
-	var g Grid
-	if ok {
-		if g, err = Decode(data); err != nil {
-			return nil, 0, false, fmt.Errorf("elevation tile %d/%d/%d: %w", z, x, y, err)
+		c.err = fmt.Errorf("dem: reading elevation tile %d/%d/%d: %w", z, x, y, err)
+	} else if ok {
+		if c.grid, err = Decode(data); err != nil {
+			c.err = fmt.Errorf("elevation tile %d/%d/%d: %w", z, x, y, err)
 		}
 	}
-	s.mu.Lock()
-	if _, again := s.grids[k]; !again {
-		s.grids[k] = cached{grid: g, ok: ok}
-		s.order = append(s.order, k)
-		for len(s.order) > s.limit {
-			delete(s.grids, s.order[0])
-			s.order = s.order[1:]
+	c.ok = ok && c.err == nil
+	if c.err != nil {
+		// Not kept: a failed read is tried again next time.
+		s.mu.Lock()
+		if el, ok := s.grids[k]; ok && el.Value == c {
+			s.lru.Remove(el)
+			delete(s.grids, k)
 		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
-	return g.Heights, g.Size, ok, nil
+	close(c.done)
+	if c.err != nil {
+		return nil, 0, false, c.err
+	}
+	return c.grid.Heights, c.grid.Size, c.ok, nil
 }
