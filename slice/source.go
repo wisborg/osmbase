@@ -439,10 +439,27 @@ func (s *Source) Hold(cells []Cell) *Hold {
 // that is the right answer for it: leftovers from a download that died five
 // minutes ago are newer than a cell rendered from last week, and evicting them
 // first would throw away the one thing that makes a fetch resumable.
+//
+// A cell this Store moved the clock of within touchEvery is passed over: the
+// clock moves once per render, not once per tile (see CellInfo.LastUsed),
+// and a program drawing a flight's thousands of tiles -- each a render of
+// its own, a coarse one holding thousands of cells -- read and rewrote the
+// same cell.json files thousands of times a run, for a clock read in days.
 func (s *Source) touch(cells []Cell) error {
 	now := time.Now().UTC()
-	var firstErr error
+	s.store.mu.Lock()
+	var due []Cell
 	for _, c := range cells {
+		k := heldKey{source: s.id, cell: c}
+		if last, ok := s.store.touched[k]; ok && now.Sub(last) < touchEvery {
+			continue
+		}
+		s.store.touched[k] = now
+		due = append(due, c)
+	}
+	s.store.mu.Unlock()
+	var firstErr error
+	for _, c := range due {
 		ci, complete, err := s.Cell(c)
 		if err != nil {
 			if firstErr == nil {
@@ -460,6 +477,9 @@ func (s *Source) touch(cells []Cell) error {
 	}
 	return firstErr
 }
+
+// touchEvery is how often one Store moves a cell's eviction clock at most.
+const touchEvery = time.Hour
 
 // Hold is a render's claim on a set of cells. Release it when the render is
 // finished.

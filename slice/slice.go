@@ -109,6 +109,9 @@ type Store struct {
 	sources map[string]*Source
 	// held counts the in-process holds on each cell. See Source.Hold.
 	held map[heldKey]int
+	// touched is when this Store last moved each cell's eviction clock;
+	// see Source.touch.
+	touched map[heldKey]time.Time
 }
 
 type heldKey struct {
@@ -193,6 +196,7 @@ func newStore(root string, sf storeFile) (*Store, error) {
 		cellZoom: sf.CellZoom,
 		sources:  make(map[string]*Source),
 		held:     make(map[heldKey]int),
+		touched:  make(map[heldKey]time.Time),
 	}, nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/mvt"
@@ -1209,5 +1210,42 @@ func TestFill_ARasterSourceIsStoredUnderItsOwnExtension(t *testing.T) {
 	}
 	if _, ok, _ := again.Tile(12, c.X, c.Y); !ok {
 		t.Error("the tile is not found after reopening the store")
+	}
+}
+
+// TestHold_MovesTheClockOncePerRenderNotPerTile pins the eviction clock's
+// rate. A program drawing a flight draws thousands of tiles, each a render
+// holding the cells under it; moving the clock on every one rewrote the same
+// cell.json files thousands of times a run. One Store moves a cell's clock
+// once within touchEvery, and the next run -- another Store -- moves it again.
+func TestHold_MovesTheClockOncePerRenderNotPerTile(t *testing.T) {
+	st, src := fillCells(t, testCell)
+	lastUsed := func(src *slice.Source) time.Time {
+		t.Helper()
+		ci, _, err := src.Cell(testCell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ci.LastUsed
+	}
+	src.Hold([]slice.Cell{testCell}).Release()
+	first := lastUsed(src)
+	time.Sleep(10 * time.Millisecond)
+	src.Hold([]slice.Cell{testCell}).Release()
+	if got := lastUsed(src); !got.Equal(first) {
+		t.Errorf("a second hold from the same store moved the clock from %v to %v", first, got)
+	}
+
+	again, err := slice.Open(st.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src2, err := again.Source(src.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src2.Hold([]slice.Cell{testCell}).Release()
+	if got := lastUsed(src2); !got.After(first) {
+		t.Errorf("the next run's hold left the clock at %v, want after %v", got, first)
 	}
 }
