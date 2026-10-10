@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"slices"
+	"sync"
 
 	"github.com/wisborg/osmbase/render"
 )
@@ -38,6 +39,25 @@ type plannedName struct {
 	name
 	first int       // the frame alpha[0] is for
 	alpha []float32 // strength in each frame from first on
+
+	// prepared is the name ready to draw, made by the first frame to show
+	// it; see prepare.
+	prepareOnce sync.Once
+	prepared    *render.PreparedLabel
+}
+
+// prepare is the name ready to draw, made once for every frame that shows
+// it. Making it draws the text with the tile's faces, which no other
+// goroutine may be drawing with, so that is done under namesMu; drawing it
+// afterwards uses no face, and frames drawn at the same time draw their
+// names at the same time.
+func (pn *plannedName) prepare() *render.PreparedLabel {
+	pn.prepareOnce.Do(func() {
+		namesMu.Lock()
+		defer namesMu.Unlock()
+		pn.prepared = render.PrepareLineLabel(pn.label)
+	})
+	return pn.prepared
 }
 
 // PlanFrame is frame i of a flight: the scene, the camera and the options
@@ -170,8 +190,6 @@ func (p *Picture) DrawNamesPlanned(pal render.Palette, plan *NamePlan, i int) {
 	if plan == nil {
 		return
 	}
-	namesMu.Lock()
-	defer namesMu.Unlock()
 	for _, id := range plan.order {
 		alpha := plan.strength(id, i)
 		if alpha < 1.0/64 {
@@ -191,6 +209,6 @@ func (p *Picture) DrawNamesPlanned(pal render.Palette, plan *NamePlan, i int) {
 				continue
 			}
 		}
-		p.drawName(pal, n.label, sx/supersample, sy/supersample, angle, alpha)
+		p.drawName(pal, n.prepare(), sx/supersample, sy/supersample, angle, alpha)
 	}
 }

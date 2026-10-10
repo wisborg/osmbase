@@ -59,7 +59,7 @@ func (p *Picture) DrawNames(pal render.Palette) {
 	namesMu.Lock()
 	defer namesMu.Unlock()
 	for _, s := range p.shownNames(1) {
-		p.drawName(pal, s.label, s.x, s.y, s.angle, s.alpha)
+		p.drawName(pal, render.PrepareLineLabel(s.label), s.x, s.y, s.angle, s.alpha)
 	}
 }
 
@@ -142,7 +142,7 @@ func (p *Picture) shownNames(scale float64) []shownName {
 				continue
 			}
 		}
-		s := shownName{name: n, box: alongBox(l, x, y, angle), x: x, y: y, angle: angle}
+		s := shownName{name: n, box: labelBox(l, x, y, angle), x: x, y: y, angle: angle}
 		alpha *= edgeFadeBox(s.box, bounds, 2*height)
 		for _, o := range shown {
 			alpha *= 1 - o.alpha*cover(s.box, o.box, l.Text == o.label.Text)
@@ -156,14 +156,18 @@ func (p *Picture) shownNames(scale float64) []shownName {
 	return shown
 }
 
-// drawName draws one name at alpha strength.
-func (p *Picture) drawName(pal render.Palette, l render.LineLabel, x, y, angle, alpha float64) {
+// drawName draws one name, prepared, at alpha strength. It uses no face,
+// so pictures draw their names at the same time.
+func (p *Picture) drawName(pal render.Palette, l *render.PreparedLabel, x, y, angle, alpha float64) {
+	if l == nil {
+		return
+	}
 	halo := pal.Land
 	if pal.Omits(render.RoleLand) {
 		halo = pal.Background
 	}
-	drawFaded(p.Image, alongBox(l, x, y, angle), alpha, func(dst *image.RGBA) {
-		render.DrawLineLabel(dst, l, x, y, angle, pal, halo)
+	p.drawFaded(alongBox(l, x, y, angle), alpha, func(dst *image.RGBA) {
+		l.Draw(dst, x, y, angle, pal, halo)
 	})
 }
 
@@ -278,10 +282,23 @@ func (p *Picture) screenAngle(c render.Coord, angle float64) (float64, bool) {
 // alongBox is the space a name along a line takes, centred on (x, y) and
 // turned by angle: the box round the turned rectangle, with room for its
 // halo and some air.
-func alongBox(l render.LineLabel, x, y, angle float64) image.Rectangle {
+func alongBox(l *render.PreparedLabel, x, y, angle float64) image.Rectangle {
+	w, h := l.Size()
+	return turnedBox(w+8, h+8, x, y, angle)
+}
+
+// labelBox is alongBox for a name not yet prepared, measured with its face:
+// for the planning, which works under namesMu.
+func labelBox(l render.LineLabel, x, y, angle float64) image.Rectangle {
 	w := float64(font.MeasureString(l.Face, l.Text).Ceil()) + 8
 	m := l.Face.Metrics()
 	h := float64(m.Ascent.Ceil()+m.Descent.Ceil()) + 8
+	return turnedBox(w, h, x, y, angle)
+}
+
+// turnedBox is the box round a w by h rectangle centred at (x, y) and turned
+// by angle.
+func turnedBox(w, h, x, y, angle float64) image.Rectangle {
 	c, s := math.Abs(math.Cos(angle)), math.Abs(math.Sin(angle))
 	hw, hh := (w*c+h*s)/2, (w*s+h*c)/2
 	return image.Rect(int(math.Floor(x-hw)), int(math.Floor(y-hh)), int(math.Ceil(x+hw)), int(math.Ceil(y+hh)))
@@ -290,7 +307,11 @@ func alongBox(l render.LineLabel, x, y, angle float64) image.Rectangle {
 // drawFaded has paint draw onto a copy of the box, and mixes the copy back
 // into img alpha of the way: a name drawn at part strength by code that
 // only draws at full.
-func drawFaded(img *image.RGBA, box image.Rectangle, alpha float64, paint func(dst *image.RGBA)) {
+//
+// The copy is made in a buffer the picture keeps for it, grown as needed,
+// rather than in a new image for every name of every frame.
+func (p *Picture) drawFaded(box image.Rectangle, alpha float64, paint func(dst *image.RGBA)) {
+	img := p.Image
 	r := box.Intersect(img.Bounds())
 	if r.Empty() {
 		return
@@ -299,7 +320,11 @@ func drawFaded(img *image.RGBA, box image.Rectangle, alpha float64, paint func(d
 		paint(img)
 		return
 	}
-	scratch := image.NewRGBA(r)
+	n := 4 * r.Dx() * r.Dy()
+	if cap(p.scratch) < n {
+		p.scratch = make([]uint8, n)
+	}
+	scratch := &image.RGBA{Pix: p.scratch[:n], Stride: 4 * r.Dx(), Rect: r}
 	draw.Draw(scratch, r, img, r.Min, draw.Src)
 	paint(scratch)
 	for y := r.Min.Y; y < r.Max.Y; y++ {

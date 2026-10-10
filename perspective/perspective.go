@@ -171,6 +171,10 @@ type Picture struct {
 	tex   sampler
 	view  render.View
 	hazeM float64
+
+	// scratch is the buffer a name drawn at part strength is drawn in; see
+	// drawFaded.
+	scratch []uint8
 }
 
 // Project is where in the image the ground at c falls, in its pixels,
