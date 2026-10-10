@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -107,6 +108,19 @@ func TestMeasureFillOpenAndCredit(t *testing.T) {
 	}
 	if !strings.Contains(short2, "mapterhorn.com/attribution") || !strings.Contains(full, "Copernicus WorldDEM-30") {
 		t.Errorf("credit %q, notice %q", short2, full)
+	}
+
+	// The same view's sources, owed once through Notice, are its notice --
+	// however many views named them.
+	ids, err := ts.SourcesIn(b, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ts.ShortCredit(ids); got != short2 {
+		t.Errorf("ShortCredit = %q, want Credit's %q", got, short2)
+	}
+	if got := ts.Notice(append(slices.Clone(ids), ids...)); got != full {
+		t.Errorf("Notice of the view's sources twice = %q, want its own notice %q", got, full)
 	}
 }
 

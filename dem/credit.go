@@ -192,9 +192,16 @@ func SourcesIn(coverage TileSource, z uint8, west, south, east, north float64) (
 	for s := range seen {
 		out = append(out, s)
 	}
-	// glo30 is the worldwide fallback, so it goes last: the credit leads
-	// with the data that actually shaped the view where there is finer.
-	slices.SortFunc(out, func(a, b string) int {
+	return SortSources(out), nil
+}
+
+// SortSources puts source ids in the order a credit names them, in place,
+// and returns them: by id, with glo30 -- the worldwide fallback -- last, so
+// the credit leads with the data that actually shaped the view where there
+// is finer. SourcesIn's order; for a caller putting the sources of several
+// views together into one credit.
+func SortSources(ids []string) []string {
+	slices.SortFunc(ids, func(a, b string) int {
 		switch {
 		case a == glo30 && b != glo30:
 			return 1
@@ -203,7 +210,7 @@ func SourcesIn(coverage TileSource, z uint8, west, south, east, north float64) (
 		}
 		return strings.Compare(a, b)
 	})
-	return out, nil
+	return ids
 }
 
 // rect is an axis-aligned rectangle, x0 <= x1 and y0 <= y1.

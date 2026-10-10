@@ -1,6 +1,7 @@
 package dem
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -92,5 +93,14 @@ func TestReadAttributions(t *testing.T) {
 	a, err := ReadAttributions(strings.NewReader(`[{"source":"dk","producer":"Klimadatastyrelsen","license":"CC BY 4.0","resolution":0.4}]`))
 	if err != nil || len(a) != 1 || a[0].Source != "dk" || a[0].Producer != "Klimadatastyrelsen" {
 		t.Fatalf("%+v, %v", a, err)
+	}
+}
+
+// Sources are named by id, with the worldwide fallback last.
+func TestSortSources(t *testing.T) {
+	got := SortSources([]string{"glo30", "zz", "aa", "mm"})
+	want := []string{"aa", "mm", "zz", "glo30"}
+	if !slices.Equal(got, want) {
+		t.Errorf("SortSources = %v, want %v", got, want)
 	}
 }

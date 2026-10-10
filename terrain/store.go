@@ -121,6 +121,48 @@ func (s *Store) Credit(b slice.Bounds, mapZoom uint8) (short, full string, err e
 	return dem.ShortCredit(ids), dem.Credit(ids, s.sources), nil
 }
 
+// SourcesIn is the ids of the elevation sources a view of b drawn at map
+// zoom mapZoom is shaped from: what Credit credits, kept apart, for a
+// program drawing many views -- a flyover's map is hundreds of tiles -- to
+// put together and owe once, with Notice, rather than a notice a view.
+// None for a store with no coverage, whose Notice says only where its
+// terrain came from.
+func (s *Store) SourcesIn(b slice.Bounds, mapZoom uint8) ([]string, error) {
+	if s.coverage == nil {
+		return nil, nil
+	}
+	return dem.SourcesIn(s.coverage, max(mapZoom, 1)-1, b.West, b.South, b.East, b.North)
+}
+
+// ShortCredit is the short credit for a picture drawn from the sources ids:
+// Credit's short credit, for a caller that has asked SourcesIn already.
+func (s *Store) ShortCredit(ids []string) string {
+	if s.coverage == nil {
+		return "Elevation: " + s.elevation.Manifest().Source
+	}
+	return dem.ShortCredit(ids)
+}
+
+// Notice is the full notice owed for the sources ids, from any number of
+// views together -- each source once, in the order one view's notice would
+// name them -- as Credit's full notice is for one: Mapterhorn, each
+// source's producer and licence, Copernicus's dictated sentence. For a
+// store with no coverage it says where the terrain came from.
+func (s *Store) Notice(ids []string) string {
+	if s.coverage == nil {
+		return "Elevation: " + s.elevation.Manifest().Source
+	}
+	seen := map[string]bool{}
+	var u []string
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			u = append(u, id)
+		}
+	}
+	return dem.Credit(dem.SortSources(u), s.sources)
+}
+
 // Shortfall is what a terrain store lacks for one view, measured from the
 // disk alone.
 type Shortfall struct {
