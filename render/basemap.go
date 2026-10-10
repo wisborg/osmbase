@@ -362,6 +362,23 @@ func placeLabelRules() []LabelRule {
 		// often several within one, so a street crossing the view is a dozen
 		// features all called the same thing.
 		{
+			// A runway's number -- "04L/22R", its two headings -- written
+			// along it as a street's name is, from when a runway is long
+			// enough on the map to carry it. A taxiway's letter, of the
+			// same kind, is left out: an airfield has dozens, and they
+			// would bury the numbers that say which runway is which.
+			Layer:     "roads",
+			Kinds:     []string{"aeroway"},
+			Details:   []string{"runway"},
+			Field:     "ref",
+			Placement: PlaceLine,
+			MinZoom:   13, MaxZoom: MaxRuleZoom,
+			Priority:    13,
+			Minor:       true,
+			OncePerName: true,
+			OnRoad:      true,
+		},
+		{
 			Layer:     "roads",
 			Kinds:     []string{"highway"},
 			Field:     "name",

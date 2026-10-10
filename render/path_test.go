@@ -1,6 +1,7 @@
 package render
 
 import (
+	"github.com/wisborg/osmbase/mvt"
 	"image/color"
 	"slices"
 	"testing"
@@ -88,5 +89,29 @@ func TestAeroways_DrawnRunwaysWiderThanTaxiways(t *testing.T) {
 	}
 	if dark := DarkPalette(); dark.colour(RoleAeroway) != dark.Road {
 		t.Error("a palette naming no Aeroway does not draw runways in Road")
+	}
+}
+
+// A runway's number is written along it; a taxiway's letter is not.
+func TestAeroways_RunwayNumbersWritten(t *testing.T) {
+	s := BasemapStyle()
+	feature := func(detail string) *mvt.Feature {
+		return &mvt.Feature{Type: mvt.GeomLineString, Tags: map[string]mvt.Value{
+			"kind":        {Kind: mvt.ValueString, Str: "aeroway"},
+			"kind_detail": {Kind: mvt.ValueString, Str: detail},
+			"ref":         {Kind: mvt.ValueString, Str: "04L/22R"},
+		}}
+	}
+	var runway, taxiway bool
+	for i := range s.Labels {
+		r := &s.Labels[i]
+		if r.Layer != "roads" || r.Field != "ref" {
+			continue
+		}
+		runway = runway || r.matches(feature("runway"))
+		taxiway = taxiway || r.matches(feature("taxiway"))
+	}
+	if !runway || taxiway {
+		t.Errorf("runway numbered %v, taxiway lettered %v; want the runway alone", runway, taxiway)
 	}
 }

@@ -552,7 +552,10 @@ and held to a visible line further out. In the roads' ink an airfield read as a 
 roads, so they have a role of their own, `RoleAeroway`: a cool grey as printed maps draw
 them, found by search as the path ink was, at the road's lightness. The dark palette names
 none -- no grey near its road passes the contrast rules, and its road is a grey already --
-and draws them in `Road`, as any palette naming no `Aeroway` does.
+and draws them in `Road`, as any palette naming no `Aeroway` does. A runway's number --
+its `ref`, "04L/22R", the two headings it is flown on -- is written along it from zoom 13 as
+a street's name is, by a label rule that names `Details` too; a taxiway's letter is not, since
+an airfield has dozens and they would bury the numbers that say which runway is which.
 
 **A line's name is written along it.** A street's or a river's name is centred on the
 line and turned to its direction, on the first straight enough stretch at least as long as

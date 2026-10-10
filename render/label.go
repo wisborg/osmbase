@@ -45,6 +45,11 @@ type LabelRule struct {
 	// layer.
 	Kinds []string
 
+	// Details, when not empty, narrows Kinds to features whose kind_detail
+	// is one of these, as Rule.Details does: a runway's number is written,
+	// a taxiway's letter, of the same kind, is not.
+	Details []string
+
 	// Field is the tag holding the text. "name" in every schema this reads.
 	Field string
 
@@ -183,6 +188,12 @@ func (r *LabelRule) allowsFeature(f *mvt.Feature, at uint8) bool {
 
 // matches reports whether a feature is one this rule labels.
 func (r *LabelRule) matches(f *mvt.Feature) bool {
+	if len(r.Details) > 0 {
+		d, ok := f.Tag("kind_detail")
+		if !ok || d.Kind != mvt.ValueString || !slices.Contains(r.Details, d.Str) {
+			return false
+		}
+	}
 	if len(r.Kinds) == 0 {
 		return true
 	}
