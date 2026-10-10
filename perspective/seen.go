@@ -21,8 +21,9 @@ type TileID struct {
 // those tiles are drawn from before it draws them. frame gives each frame's
 // scene and camera as PlanNames's does, Tiles aside -- the scene's Tiles are
 // not consulted, and need not be able to draw. The frames are drawn small, as
-// a plan's are, with the zooms of the full size. progress, when not nil, is
-// told how many of the frames are done as each is.
+// a plan's are, with the zooms of the full size, many at once: frame is
+// called concurrently, as PlanNames calls it. progress, when not nil, is
+// told how many of the frames are done as each is, one call at a time.
 func TilesSeen(ctx context.Context, frames []int, frame PlanFrame, minZoom, maxZoom uint8, progress func(done, total int)) ([]TileID, error) {
 	none, err := NewTiles(func(context.Context, uint8, uint32, uint32) (*Tile, error) {
 		return nil, fmt.Errorf("perspective: TilesSeen draws no tile")
@@ -30,17 +31,13 @@ func TilesSeen(ctx context.Context, frames []int, frame PlanFrame, minZoom, maxZ
 	if err != nil {
 		return nil, err
 	}
-	seen := map[tileKey]bool{}
-	for n, i := range frames {
-		if progress != nil {
-			progress(n, len(frames))
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		s, c, o, err := frame(i)
+	// Each frame's tiles noted on its own, many frames at once; see
+	// eachFrame.
+	notedIn := make([]map[tileKey]bool, len(frames))
+	err = eachFrame(ctx, len(frames), func(n int) error {
+		s, c, o, err := frame(frames[n])
 		if err != nil {
-			return nil, err
+			return err
 		}
 		s.Tiles, s.Map = none, nil
 		small := o
@@ -48,12 +45,17 @@ func TilesSeen(ctx context.Context, frames []int, frame PlanFrame, minZoom, maxZ
 		small.Height = max(1, int(math.Round(float64(o.Height)/planScale)))
 		pic, err := renderScene(ctx, s, c, small, &planning{scale: float64(o.Width) / float64(small.Width), noted: true})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		maps.Copy(seen, pic.noted)
+		notedIn[n] = pic.noted
+		return nil
+	}, progress)
+	if err != nil {
+		return nil, err
 	}
-	if progress != nil {
-		progress(len(frames), len(frames))
+	seen := map[tileKey]bool{}
+	for _, noted := range notedIn {
+		maps.Copy(seen, noted)
 	}
 	out := make([]TileID, 0, len(seen))
 	for k := range seen {

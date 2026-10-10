@@ -41,14 +41,18 @@ type plannedName struct {
 }
 
 // PlanFrame is frame i of a flight: the scene, the camera and the options
-// it is drawn with.
+// it is drawn with. It is called for many frames at once, from as many
+// goroutines, so it must be safe for that.
 type PlanFrame func(i int) (Scene, Camera, Options, error)
 
 // PlanNames plans the names of a flight of the given number of frames, each
 // drawn as frame says, smoothing each name's strength over smooth frames
 // either side; progress, when not nil, is told how many frames are planned
 // of how many as each is -- a long flight's plan takes minutes, and a
-// program with nothing to show for them looks as if it has hung. Each frame is drawn small, without colour -- enough to know
+// program with nothing to show for them looks as if it has hung. The frames
+// are planned many at once (frame is called concurrently; progress one call
+// at a time), and the plan is the one they would have made in turn. Each
+// frame is drawn small, without colour -- enough to know
 // where its names fall, which zoom the ground there is drawn from, and what
 // a hill hides -- and its names' strengths worked out as DrawNames works
 // them out for a picture of the full size. The tiles the frames are drawn
@@ -56,16 +60,13 @@ type PlanFrame func(i int) (Scene, Camera, Options, error)
 // themselves.
 func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int, progress func(done, total int)) (*NamePlan, error) {
 	plan := &NamePlan{names: map[nameID]*plannedName{}}
-	for i := range frames {
-		if progress != nil {
-			progress(i, frames)
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+	// Each frame's names worked out on its own, many frames at once, and
+	// put together in frame order below; see eachFrame.
+	shownIn := make([][]shownName, frames)
+	err := eachFrame(ctx, frames, func(i int) error {
 		s, c, o, err := frame(i)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		small := o
 		small.Width = max(1, int(math.Round(float64(o.Width)/planScale)))
@@ -73,11 +74,17 @@ func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int, pro
 		scale := float64(o.Width) / float64(small.Width)
 		pic, err := renderScene(ctx, s, c, small, &planning{scale: scale})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		namesMu.Lock()
-		shown := pic.shownNames(scale)
+		shownIn[i] = pic.shownNames(scale)
 		namesMu.Unlock()
+		return nil
+	}, progress)
+	if err != nil {
+		return nil, err
+	}
+	for i, shown := range shownIn {
 		for _, sn := range shown {
 			pn := plan.names[sn.id]
 			if pn == nil {
@@ -89,9 +96,6 @@ func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int, pro
 			}
 			pn.alpha[i-pn.first] = float32(sn.alpha)
 		}
-	}
-	if progress != nil {
-		progress(frames, frames)
 	}
 	// Both totals over the frames the names were shown in before
 	// smoothing, which spreads each over a few more.
