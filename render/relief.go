@@ -337,18 +337,37 @@ func readGrid(src HeightSource, p projection, dz uint8, margin int) (*demGrid, e
 	}
 	n := 1 << dz
 	g.worldSize = float64(size) * float64(n)
-	// The array is exactly the tiles under the view and its margin, and one
-	// pixel more, so the margin's own outermost samples have the grid
-	// sample beyond them to interpolate toward. A sample past the array is
-	// clamped to the nearest one.
-	g.x0, g.y0 = int(tx0)*size, int(ty0)*size
-	g.w, g.h = int(tx1-tx0+1)*size, int(ty1-ty0+1)*size
+	// The array is the samples field reads -- the view and its margin, in
+	// the zoom's samples -- and one more each side, so the outermost has a
+	// sample beyond it to interpolate toward; a sample past the array is
+	// clamped to the nearest one. Only that, not the whole of every tile
+	// under it: a map tile of a flight's pyramid covers a corner of the
+	// elevation tiles it touches, and filled them whole, interpolating each
+	// sample of an ancestor's, it spent more than any other step of drawing
+	// the tile on samples nothing read.
+	wx0 := p.originX + (float64(-margin)+0.5)/p.scale
+	wx1 := p.originX + (float64(p.width+margin)-0.5)/p.scale
+	wy0 := p.originY + (float64(-margin)+0.5)/p.scale
+	wy1 := p.originY + (float64(p.height+margin)-0.5)/p.scale
+	sx0 := max(int(math.Floor(wx0*g.worldSize-0.5))-1, int(tx0)*size)
+	sy0 := max(int(math.Floor(wy0*g.worldSize-0.5))-1, int(ty0)*size)
+	sx1 := min(int(math.Ceil(wx1*g.worldSize-0.5))+1, int(tx1+1)*size-1)
+	sy1 := min(int(math.Ceil(wy1*g.worldSize-0.5))+1, int(ty1+1)*size-1)
+	if sx1 < sx0 || sy1 < sy0 {
+		sx0, sy0, sx1, sy1 = int(tx0)*size, int(ty0)*size, int(tx0)*size, int(ty0)*size
+	}
+	g.x0, g.y0 = sx0, sy0
+	g.w, g.h = sx1-sx0+1, sy1-sy0+1
 	g.v = make([]float32, g.w*g.h)
 	for ref, t := range tiles {
-		bx, by := int(ref.x-tx0)*size, int(ref.y-ty0)*size
-		for j := 0; j < size; j++ {
-			for i := 0; i < size; i++ {
-				g.v[(by+j)*g.w+bx+i] = t.sample(i, j)
+		// The tile's samples, in the zoom's, cut to the array.
+		bx, by := int(ref.x)*size, int(ref.y)*size
+		i0, i1 := max(sx0, bx), min(sx1, bx+size-1)
+		j0, j1 := max(sy0, by), min(sy1, by+size-1)
+		for j := j0; j <= j1; j++ {
+			row := g.v[(j-sy0)*g.w:]
+			for i := i0; i <= i1; i++ {
+				row[i-sx0] = t.sample(i-bx, j-by)
 			}
 		}
 		if t.ok && dz-t.up > g.deepest {
