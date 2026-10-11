@@ -143,3 +143,60 @@ func TestBestHeadingShowsTheRouteLargest(t *testing.T) {
 		}
 	}
 }
+
+// With room asked for above them, the points stay that far below the top
+// margin and are centred in what is left, and are all still in the picture;
+// and BestHeadingRoom keeps the room too.
+func TestFrameRoomKeepsTheTopClear(t *testing.T) {
+	var pts []render.Coord
+	for i := 0; i <= 20; i++ {
+		pts = append(pts, render.Coord{Lat: -33.70 + 0.002*float64(i), Lon: 151.10})
+	}
+	for i := 1; i <= 8; i++ {
+		pts = append(pts, render.Coord{Lat: -33.70, Lon: 151.10 + 0.002*float64(i)})
+	}
+	const room = 0.08 // of the image's height
+	topMax := 1 - 2*room/(1-2*FrameMargin)
+	extents := func(cam Camera, aspect float64) (left, right, bottom, top float64) {
+		left, right, bottom, top = math.Inf(1), math.Inf(-1), math.Inf(1), math.Inf(-1)
+		for _, p := range pts {
+			x, y, ok := where(cam, aspect, p)
+			if !ok {
+				t.Fatal("a point is behind the camera")
+			}
+			left, right = math.Min(left, x), math.Max(right, x)
+			bottom, top = math.Min(bottom, y), math.Max(top, y)
+		}
+		return
+	}
+	for _, aspect := range []float64{16.0 / 9, 9.0 / 16} {
+		for _, heading := range []float64{0, 120, 270} {
+			cam, err := Camera{Heading: heading, Pitch: 35}.FrameRoom(pts, aspect, room)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l, r, b, top := extents(cam, aspect)
+			const slack = 1e-6
+			if l < -1-slack || r > 1+slack || b < -1-slack || top > topMax+slack {
+				t.Errorf("aspect %.2f heading %g: points reach x %.3f..%.3f y %.3f..%.3f; want the top no higher than %.3f",
+					aspect, heading, l, r, b, top, topMax)
+			}
+			if math.Abs((top+b)-(topMax-1)) > 0.02 {
+				t.Errorf("aspect %.2f heading %g: points sit from %.3f to %.3f, not centred below the room", aspect, heading, b, top)
+			}
+		}
+		best, err := Camera{Pitch: 35}.BestHeadingRoom(pts, aspect, room)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, top := extents(best, aspect); top > topMax+1e-6 {
+			t.Errorf("aspect %.2f: BestHeadingRoom reaches %.3f, above %.3f", aspect, top, topMax)
+		}
+	}
+	// No room is Frame.
+	a, _ := Camera{Heading: 45, Pitch: 35}.Frame(pts, 1)
+	b, _ := Camera{Heading: 45, Pitch: 35}.FrameRoom(pts, 1, 0)
+	if a != b {
+		t.Errorf("FrameRoom with no room %+v, Frame %+v", b, a)
+	}
+}

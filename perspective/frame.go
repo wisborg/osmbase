@@ -27,6 +27,16 @@ const FrameMargin = 0.1
 // along the heading until the nearest and furthest sit equally far from the
 // top and bottom edges.
 func (c Camera) Frame(points []render.Coord, aspect float64) (Camera, error) {
+	return c.FrameRoom(points, aspect, 0)
+}
+
+// FrameRoom is Frame keeping room above the points as well: top, a fraction
+// of the image's height, clear below the top margin, with the points
+// centred in what is left. Markers standing up from their places -- a pin
+// on a start that is the northernmost point of a route -- reach above them
+// by more than the margin, and Frame put their heads off the top of the
+// picture.
+func (c Camera) FrameRoom(points []render.Coord, aspect, top float64) (Camera, error) {
 	if len(points) == 0 {
 		return c, errors.New("perspective: there are no points to frame")
 	}
@@ -60,6 +70,13 @@ func (c Camera) Frame(points []render.Coord, aspect float64) (Camera, error) {
 
 	tv := math.Tan(fov*math.Pi/360) * (1 - 2*FrameMargin)
 	th := tv * aspect
+	// The highest the points may reach, in the framed half-height: the top
+	// room, a fraction of the image, is 2*top/(1-2*FrameMargin) of these
+	// units. Never less than half way down, however much is asked.
+	if !(top >= 0) {
+		top = 0
+	}
+	topMax := math.Max(0, 1-2*top/(1-2*FrameMargin))
 	hd := c.Heading * math.Pi / 180
 	ahead := [2]float64{math.Sin(hd), math.Cos(hd)}   // along the heading, east and north
 	across := [2]float64{math.Cos(hd), -math.Sin(hd)} // to the right of it
@@ -101,7 +118,7 @@ func (c Camera) Frame(points []render.Coord, aspect float64) (Camera, error) {
 	nearest := func(fwd, side float64) (float64, error) {
 		fits := func(d float64) bool {
 			l, r, b, t, ok := extent(fwd, side, d)
-			return ok && l >= -1 && r <= 1 && b >= -1 && t <= 1
+			return ok && l >= -1 && r <= 1 && b >= -1 && t <= topMax
 		}
 		lo, hi := span/1000, span
 		for !fits(hi) {
@@ -148,9 +165,12 @@ func (c Camera) Frame(points []render.Coord, aspect float64) (Camera, error) {
 		if err != nil {
 			return c, err
 		}
+		// Centred between the bottom and topMax: b+t is how far the
+		// points' middle is above the middle of the picture, and the
+		// middle of the room they have is (topMax-1)/2 above it.
 		f := balance(func(m float64) (float64, bool) {
 			_, _, b, t, ok := extent(m, side, d)
-			return b + t, ok
+			return b + t - (topMax - 1), ok
 		})
 		sd := balance(func(m float64) (float64, bool) {
 			l, r, _, _, ok := extent(f, m, d)
@@ -265,6 +285,12 @@ const HeadingStep = 15.0
 // opposite each other often do -- the first from north is taken, so the
 // same route is always seen the same way.
 func (c Camera) BestHeading(points []render.Coord, aspect float64) (Camera, error) {
+	return c.BestHeadingRoom(points, aspect, 0)
+}
+
+// BestHeadingRoom is BestHeading keeping top of the image clear above the
+// points, as FrameRoom does.
+func (c Camera) BestHeadingRoom(points []render.Coord, aspect, top float64) (Camera, error) {
 	sample := points
 	if n := len(points); n > 400 {
 		sample = make([]render.Coord, 0, 402)
@@ -276,7 +302,7 @@ func (c Camera) BestHeading(points []render.Coord, aspect float64) (Camera, erro
 	best, heading := math.Inf(1), 0.0
 	for h := 0.0; h < 360; h += HeadingStep {
 		c.Heading = h
-		cam, err := c.Frame(sample, aspect)
+		cam, err := c.FrameRoom(sample, aspect, top)
 		if err != nil {
 			return cam, err
 		}
@@ -287,5 +313,5 @@ func (c Camera) BestHeading(points []render.Coord, aspect float64) (Camera, erro
 		}
 	}
 	c.Heading = heading
-	return c.Frame(points, aspect)
+	return c.FrameRoom(points, aspect, top)
 }
