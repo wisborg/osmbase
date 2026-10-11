@@ -3,6 +3,7 @@ package perspective
 import (
 	"math"
 
+	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/render"
 )
 
@@ -68,6 +69,15 @@ func (c Camera) Footprint(aspect, maxRange float64) render.Bounds {
 // edge fades over, so the fade falls outside what the lens sees. Draped
 // over the footprint alone, the map's near edge lay just behind the bottom
 // of the picture and its fade washed the foreground into the haze.
+//
+// It stops at the edges of the world -- the antimeridian either side and
+// Web Mercator's limit of latitude -- because a map cannot be drawn past
+// them. A camera high over a continent, following a long flight, sees
+// ground half a world wide; the footprint, taken on a flat earth, ran past
+// 180 degrees east from a view over Europe and Asia, and the map refused
+// the whole frame rather than the slice of it that does not exist. Clamped,
+// the far side of the antimeridian is haze, as everything past the map's
+// edge is.
 func (c Camera) MapBounds(aspect float64) render.Bounds {
 	b := c.Footprint(aspect, c.VisibleRange())
 	// The fade takes edgeFraction of the map's shorter side from each edge,
@@ -75,5 +85,8 @@ func (c Camera) MapBounds(aspect float64) render.Bounds {
 	m := edgeFraction / (1 - 2*edgeFraction)
 	dx, dy := (b.East-b.West)*m, (b.North-b.South)*m
 	d := math.Max(dx, dy)
-	return render.Bounds{West: b.West - d, East: b.East + d, South: b.South - d, North: b.North + d}
+	return render.Bounds{
+		West: math.Max(b.West-d, -180), East: math.Min(b.East+d, 180),
+		South: math.Max(b.South-d, -mercator.MaxLatitude), North: math.Min(b.North+d, mercator.MaxLatitude),
+	}
 }

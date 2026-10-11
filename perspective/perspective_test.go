@@ -355,3 +355,27 @@ func TestMapBoundsHoldTheFootprintAndTheFade(t *testing.T) {
 		t.Errorf("the fade reaches into the footprint")
 	}
 }
+
+// A camera high over a continent near the antimeridian sees, on a flat
+// earth, ground past it; the map's bounds stop at the world's edges, so a
+// map can be drawn of them at all.
+func TestMapBoundsStopAtTheEdgesOfTheWorld(t *testing.T) {
+	for _, c := range []Camera{
+		{Target: render.Coord{Lat: 50, Lon: 170}, Distance: 400_000, Pitch: 35, Heading: 90},
+		{Target: render.Coord{Lat: 50, Lon: -170}, Distance: 400_000, Pitch: 35, Heading: 270},
+		{Target: render.Coord{Lat: 80, Lon: 0}, Distance: 400_000, Pitch: 35, Heading: 0},
+	} {
+		mb := c.MapBounds(16.0 / 9)
+		if mb.West < -180 || mb.East > 180 || mb.South < -mercator.MaxLatitude || mb.North > mercator.MaxLatitude {
+			t.Errorf("camera at %+v heading %v: map bounds %+v run off the world", c.Target, c.Heading, mb)
+		}
+		if _, err := (render.View{Bounds: mb, Width: 160, Height: 90}).Resolve(); err != nil {
+			t.Errorf("camera at %+v heading %v: %v", c.Target, c.Heading, err)
+		}
+	}
+	// Away from the edges nothing is clamped.
+	c := Camera{Target: centre, Distance: 1000, Pitch: 25, FOV: 80}
+	if fp := c.Footprint(4.0/3, c.VisibleRange()); !(c.MapBounds(4.0/3).East > fp.East) {
+		t.Error("the map's bounds were clamped far from any edge")
+	}
+}

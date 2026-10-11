@@ -383,6 +383,13 @@ func NewLattice(lat, metres float64) (Lattice, error) {
 // View is the scene view for the ground in b: b grown to whole cells of the
 // lattice, at step pixels a cell, so that Scene.Step = step puts a vertex on
 // every point of the lattice inside it.
+//
+// Grown to whole cells, it never grows past the edge of the world: a cell
+// that would reach over it is left out, and the view stops up to a cell
+// short of the edge instead. The lattice is fixed to the ground, not to the
+// world's edges, so snapping outward from a b that reaches the antimeridian
+// put the view's east edge a fraction of a cell past 180 degrees, which is
+// no longitude.
 func (l Lattice) View(b render.Bounds, step int) (render.View, error) {
 	if step <= 0 {
 		step = DefaultStep
@@ -394,6 +401,18 @@ func (l Lattice) View(b render.Bounds, step int) (render.View, error) {
 	snapLo := func(v float64) float64 { return (math.Floor(v/l.cell+0.5) - 0.5) * l.cell }
 	snapHi := func(v float64) float64 { return (math.Ceil(v/l.cell-0.5) + 0.5) * l.cell }
 	gx0, gy0, gx1, gy1 := snapLo(x0), snapLo(y0), snapHi(x1), snapHi(y1)
+	for gx0 < 0 {
+		gx0 += l.cell
+	}
+	for gy0 < 0 {
+		gy0 += l.cell
+	}
+	for gx1 > 1 {
+		gx1 -= l.cell
+	}
+	for gy1 > 1 {
+		gy1 -= l.cell
+	}
 	cols := int(math.Round((gx1 - gx0) / l.cell))
 	rows := int(math.Round((gy1 - gy0) / l.cell))
 	if cols < 2 || rows < 2 {

@@ -266,3 +266,33 @@ func TestBandsDrawThePictureOneGoroutineDraws(t *testing.T) {
 		}
 	}
 }
+
+// A view reaching the antimeridian or the Mercator limit is grown to whole
+// cells inward there rather than out past it, and is still on the lattice.
+func TestLatticeViewsStopAtTheEdgesOfTheWorld(t *testing.T) {
+	l, err := NewLattice(50, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []render.Bounds{
+		{West: 170, East: 180, South: 40, North: 60},
+		{West: -180, East: -170, South: 40, North: 60},
+		{West: -10, East: 10, South: 80, North: mercator.MaxLatitude},
+		{West: -10, East: 10, South: -mercator.MaxLatitude, North: -80},
+	} {
+		v, err := l.View(b, 4)
+		if err != nil {
+			t.Fatalf("%+v: %v", b, err)
+		}
+		if v.Bounds.West < -180 || v.Bounds.East > 180 || v.Bounds.South < -mercator.MaxLatitude-1e-9 || v.Bounds.North > mercator.MaxLatitude+1e-9 {
+			t.Errorf("%+v: the view %+v runs off the world", b, v.Bounds)
+		}
+		if _, err := v.Resolve(); err != nil {
+			t.Errorf("%+v: %v", b, err)
+		}
+		x0, _ := mercator.Project(v.Bounds.West, 0)
+		if f := x0/l.cell + 0.5; math.Abs(f-math.Round(f)) > 1e-6 {
+			t.Errorf("%+v: the west edge is %.6f cells along, off the lattice's half cell", b, f)
+		}
+	}
+}
