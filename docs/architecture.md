@@ -437,6 +437,17 @@ is what these hosts want, because it lets them reach a person instead of blockin
 of addresses. The contact is `osmbase@wisborg.dk`, which exists for this. Every request
 this library makes carries it, and it belongs in `acquire` where the requests are built.
 
+**Keep to what the hosts' own tool does.** A fetch keeps several range requests in flight
+-- four by default (`acquire.DefaultRequests`, `fetch.Options.Requests`, `osmbase fetch
+--requests`) -- and that number is not ours to pick freely. Mapterhorn, the elevation's
+host, states no limit either, and like Source Cooperative points its users to the PMTiles
+tool's `extract` for taking out an area; that tool keeps four requests in flight unless told
+otherwise (go-pmtiles' `--download-threads`). So four is what both hosts already see from
+the program they recommend, and no more. One at a time, a fetch was all round trips over
+open water -- a cell of sea is a few hundred bytes -- and crawled at under a hundred bytes a
+second for minutes before reaching land. The store is still filled one cell after the next
+in the plan's order; only the reading overlaps.
+
 ## Place names: containment, with an honest fallback
 
 Two sources, and the API says which one answered.

@@ -34,10 +34,11 @@ func terrainLayout(ctx context.Context, source string, stderr io.Writer) (terrai
 }
 
 // terrainOpener opens a terrain archive the way the map's is opened: with the
-// per-request trace on stderr, for the silent part of planning.
-func terrainOpener(stderr io.Writer) terrain.Opener {
+// per-request trace on stderr, for the silent part of planning, and a fetch
+// from it keeping at most requests in flight (zero: the library's default).
+func terrainOpener(stderr io.Writer, requests int) terrain.Opener {
 	return func(source string) (*fetch.Archive, error) {
-		return fetch.Open(source, fetch.Options{Trace: func(line string) {
+		return fetch.Open(source, fetch.Options{Requests: requests, Trace: func(line string) {
 			fmt.Fprintf(stderr, "osmbase: %s\n", line)
 		}})
 	}
@@ -155,7 +156,7 @@ func fillTerrain(ctx context.Context, w io.Writer, s terrain.Shortfall, source s
 		return err
 	}
 	var bar *fetchBar
-	res, err := terrain.Fill(ctx, layout, s.Root, s.Bounds, s.MapZoom(), terrainOpener(w), func(p *terrain.Plan) {
+	res, err := terrain.Fill(ctx, layout, s.Root, s.Bounds, s.MapZoom(), terrainOpener(w, 0), func(p *terrain.Plan) {
 		writeTerrainPlan(w, p, source, s.Root)
 		if p.Empty() {
 			fmt.Fprintln(w, "osmbase: nothing to fetch after all: the archives hold no more of this view than the store does")

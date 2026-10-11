@@ -60,6 +60,7 @@ type fetchFlags struct {
 	store    string
 	dryRun   bool
 	yes      bool
+	requests int
 	place    placeFlags
 
 	terrain       bool
@@ -83,6 +84,7 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs.StringVar(&f.store, "store", "", "directory to keep the copy in (default: an osmbase folder under your user cache directory)")
 	fs.BoolVar(&f.dryRun, "dry-run", false, "say exactly what would be downloaded, then stop")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask before downloading")
+	fs.IntVar(&f.requests, "requests", 0, fmt.Sprintf("most range requests in flight at once, to each host (default %d, as the PMTiles tool's own extract; 1 asks one at a time)", acquire.DefaultRequests))
 	f.place.bind(fs)
 	fs.BoolVar(&f.terrain, "terrain", false, "also fetch elevation for the same area, for a map that shows hills")
 	fs.StringVar(&f.terrainSource, "terrain-source", defaultTerrainSource, "where terrain comes from: a host's address, or a directory of its archives")
@@ -107,7 +109,10 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return err
 	}
 
-	a, err := openArchive(source, stderr)
+	if f.requests < 0 {
+		return usageErrorf("--requests is %d; it is how many requests may be in flight at once, so 1 or more, or 0 for the default", f.requests)
+	}
+	a, err := openArchiveWith(source, stderr, f.requests)
 	if err != nil {
 		return err
 	}
@@ -164,7 +169,7 @@ func fetchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 		tp, err = terrain.Prepare(ctx, layout, tst, acquire.Request{
 			Bounds: bounds, World: f.world, MaxZoom: f.maxZoom, CellZoom: tst.CellZoom(),
-		}, terrainOpener(stderr))
+		}, terrainOpener(stderr, f.requests))
 		if err != nil {
 			return err
 		}

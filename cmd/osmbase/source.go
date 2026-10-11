@@ -79,6 +79,12 @@ type archive struct {
 // normal, and a fetch of a hundred kilobytes from the other side of the world
 // is slow enough that a blank terminal looks like a hang.
 func openArchive(source string, stderr io.Writer) (*archive, error) {
+	return openArchiveWith(source, stderr, 0)
+}
+
+// openArchiveWith is openArchive with a fetch from it keeping at most
+// requests range requests in flight; zero is the library's default.
+func openArchiveWith(source string, stderr io.Writer, requests int) (*archive, error) {
 	usingDefault := source == ""
 	if usingDefault {
 		// Announced BEFORE the open, because the open is what contacts the
@@ -91,7 +97,8 @@ func openArchive(source string, stderr io.Writer) (*archive, error) {
 	}
 
 	a, err := fetch.Open(source, fetch.Options{
-		Default: defaultSource,
+		Default:  defaultSource,
+		Requests: requests,
 		Trace: func(line string) {
 			fmt.Fprintf(stderr, "osmbase: %s\n", line)
 		},

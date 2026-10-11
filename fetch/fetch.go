@@ -81,6 +81,11 @@ type Options struct {
 	// downstream is unreadable: a PNG handed to a protobuf decoder does not
 	// announce itself, it reports something about an undefined field number.
 	RequireVectorTiles bool
+
+	// Requests is the most range requests a fetch from the archive has in
+	// flight at once: zero is acquire.DefaultRequests, the PMTiles tool's
+	// own, and one reads a range at a time.
+	Requests int
 }
 
 // Archive is an opened PMTiles archive together with what a caller needs to
@@ -98,6 +103,8 @@ type Archive struct {
 
 	name   string
 	remote bool
+
+	requests int // see Options.Requests
 
 	size    int64
 	hasSize bool
@@ -132,6 +139,7 @@ func Open(source string, opts Options) (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.requests = opts.Requests
 	if opts.RequireVectorTiles {
 		if t := a.reader.Header().TileType; t != pmtiles.TileTypeMVT {
 			a.Close()
@@ -332,7 +340,7 @@ func (a *Archive) Plan(ctx context.Context, dst *slice.Source, req acquire.Reque
 // have been turned off with Silence, or the two will overwrite each other on
 // the same stream.
 func (a *Archive) Fetch(ctx context.Context, p *acquire.Plan, dst *slice.Source, progress func(acquire.Progress)) (acquire.Result, error) {
-	res, err := acquire.Fetch(ctx, p, a.acquireArchive(), dst, acquire.FetchOptions{Progress: progress})
+	res, err := acquire.Fetch(ctx, p, a.acquireArchive(), dst, acquire.FetchOptions{Progress: progress, Requests: a.requests})
 	if err != nil {
 		return acquire.Result{}, fmt.Errorf("fetch: fetching %d tiles from %s: %w", p.Tiles, a.name, err)
 	}

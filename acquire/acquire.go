@@ -102,6 +102,19 @@ type RangeReader struct {
 	hasSize  bool
 }
 
+// rangeTransport is the HTTP transport every RangeReader shares: Go's
+// default, keeping more idle connections to a host than its two. A fetch
+// keeps DefaultRequests in flight, and over HTTP/1.1, with only two kept
+// between bursts, the others were closed after each and opened again --
+// a TCP and TLS handshake a request, which is the round trip a fetch with
+// several in flight is trying not to wait for. Over HTTP/2 the requests
+// share one connection anyway.
+var rangeTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 16
+	return t
+}()
+
 // NewRangeReader returns a reader over the archive at rawURL.
 //
 // It makes no request: the first one happens when something reads. That means
@@ -125,6 +138,7 @@ func NewRangeReader(rawURL string) (*RangeReader, error) {
 		client: &http.Client{
 			Timeout:       DefaultTimeout,
 			CheckRedirect: checkRedirect,
+			Transport:     rangeTransport,
 		},
 	}, nil
 }
