@@ -59,7 +59,10 @@ func drawPlaceName(img *image.RGBA, l render.PointLabel, x, y float64, pal rende
 	m := l.Face.Metrics()
 	asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
 	ink := pal.Label
-	if l.Minor && pal.LabelMinor != (color.RGBA{}) {
+	switch {
+	case l.Political && pal.BoundaryLabel != (color.RGBA{}):
+		ink = pal.BoundaryLabel
+	case l.Minor && pal.LabelMinor != (color.RGBA{}):
 		ink = pal.LabelMinor
 	}
 	base := fixed.P(int(x)-w/2, int(y)-(asc+desc)/2+asc)

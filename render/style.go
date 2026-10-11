@@ -127,6 +127,13 @@ const (
 	// airport read as a knot of roads. A palette that names no Aeroway draws
 	// them in Road.
 	RoleAeroway
+
+	// RoleBoundary is a border: a country's, drawn solid, and a state's or
+	// a region's, dashed, in a colour of their own -- an atlas's purple --
+	// rather than Ink, the rail's and the darkest map lines', in which a
+	// border shrunk into a flyover's picture was not seen at all. A palette
+	// that names no Boundary draws them in Ink.
+	RoleBoundary
 )
 
 // Palette is the colour for each role.
@@ -196,6 +203,16 @@ type Palette struct {
 	// Aeroway is runways and taxiways; see RoleAeroway. Zero draws them in
 	// Road.
 	Aeroway color.RGBA
+
+	// Boundary is the borders of countries and states; see RoleBoundary.
+	// Zero draws them in Ink, as every palette did before it.
+	Boundary color.RGBA
+
+	// BoundaryLabel is the names of countries and states (LabelRule.
+	// Political), in the border's family: a name, so held to the label's
+	// floor of contrast rather than the map's ceiling. Zero writes them in
+	// Label.
+	BoundaryLabel color.RGBA
 
 	// Omitted names roles this palette does not draw at all.
 	//
@@ -293,6 +310,11 @@ func (p Palette) colour(r Role) color.RGBA {
 			return p.Aeroway
 		}
 		return p.Road
+	case RoleBoundary:
+		if p.Boundary != (color.RGBA{}) {
+			return p.Boundary
+		}
+		return p.Ink
 	}
 	return p.Ink
 }
@@ -624,6 +646,34 @@ func (s Style) ShiftLineLabels(zooms int) Style {
 	for i := range out.Labels {
 		r := &out.Labels[i]
 		if !r.Minor {
+			continue
+		}
+		r.ZoomBias += zooms
+	}
+	return out
+}
+
+// ShiftPlaceLabels returns a copy of the style with the names of places --
+// cities, towns, villages, suburbs -- appearing later (a negative shift) or
+// earlier (a positive one), and the names of countries and states, and of
+// the streets and water, left as they were.
+//
+// It is for a map drawn from many tiles at once, each at the zoom its own
+// ground is seen at: a flyover's picture stands the names of a dozen close
+// tiles in one frame, and at the zoom of the nearest every village is
+// eligible -- a hundred and sixty in one tile of the Thai plain, and the
+// picture was a wall of them. A shift is the same statement LineLabels makes
+// for streets, and composes with each place's own min_zoom in the same way.
+func (s Style) ShiftPlaceLabels(zooms int) Style {
+	if zooms == 0 {
+		return s
+	}
+	out := s
+	out.Labels = make([]LabelRule, len(s.Labels))
+	copy(out.Labels, s.Labels)
+	for i := range out.Labels {
+		r := &out.Labels[i]
+		if r.Minor || r.Political || r.Layer != "places" {
 			continue
 		}
 		r.ZoomBias += zooms

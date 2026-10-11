@@ -391,7 +391,7 @@ func (pl *PreparedLabel) Draw(dst *image.RGBA, x, y, angle float64, p Palette, h
 		halo = p.nameHalo()
 	}
 	at := placed{text: pl.l.Text, face: pl.l.Face, along: true, x: x, y: y, angle: angle, quad: alongQuad(x, y, angle, pl.w, pl.h, int(math.Ceil(haloWidth))+1)}
-	paintAlong(dst, at, pl.mask, pl.haloMask, pl.k, labelInk(p, pl.l.Minor), halo)
+	paintAlong(dst, at, pl.mask, pl.haloMask, pl.k, labelInk(p, pl.l.Minor, pl.l.Political), halo)
 }
 
 // dilate is mask grown by r pixels every way: each pixel the most covered

@@ -167,9 +167,21 @@ func BasemapStyle() Style {
 				Paint: Paint{Role: RoleRoadFill, Widths: []WidthStop{{15, 0.6}, {17, 1.1}, {19, 2.4}, {20, 3}}, Dash: []float32{5, 5}},
 			},
 
+			// Borders: a state's or a region's dashed and thin, a
+			// country's solid and wider, growing with the map, in their own
+			// ink (RoleBoundary). The one dashed line in the darkest ink
+			// that drew them all was not seen on a map of a continent, and
+			// shrunk into a flyover's picture not at all.
 			{
+				// Every border, whatever its kind -- a kind the data adds
+				// later is drawn as a region's rather than not at all --
+				// and a country's drawn solid over its own dashes.
 				Layer: "boundaries", MinZoom: 0, MaxZoom: MaxRuleZoom,
-				Paint: Paint{Role: RoleInk, Width: 0.8, Dash: []float32{5, 3}},
+				Paint: Paint{Role: RoleBoundary, Width: 0.9, Dash: []float32{6, 3}},
+			},
+			{
+				Layer: "boundaries", Kinds: []string{"country"}, MinZoom: 0, MaxZoom: MaxRuleZoom,
+				Paint: Paint{Role: RoleBoundary, Widths: []WidthStop{{3, 1.6}, {8, 2.2}, {12, 3}, {16, 4}}},
 			},
 		}),
 		Labels: placeLabelRules(),
@@ -296,6 +308,7 @@ func placeLabelRules() []LabelRule {
 			MinZoom: 0, MaxZoom: MaxRuleZoom,
 			Priority:  40,
 			SizeScale: 1.5,
+			Political: true,
 		},
 		{
 			Layer:   "places",
@@ -509,6 +522,12 @@ func LightPalette() Palette {
 		// the nearest to the road's lightness the contrast rules allow,
 		// found by search.
 		Aeroway: color.RGBA{R: 0xc6, G: 0xca, B: 0xd6, A: 0xff},
+		// Borders, and the names of countries and states, in an atlas's
+		// purple -- see RoleBoundary: the border the strongest the map's
+		// ceiling allows, the names a muted purple at 6:1, a name's floor
+		// with room to spare. Found by search.
+		Boundary:      color.RGBA{R: 0xc0, G: 0xaa, B: 0xbc, A: 0xff},
+		BoundaryLabel: color.RGBA{R: 0x7c, G: 0x32, B: 0x95, A: 0xff},
 	}
 }
 
@@ -548,6 +567,12 @@ func DarkPalette() Palette {
 		Path: color.RGBA{R: 0x5d, G: 0x30, B: 0x57, A: 0xff},
 		// No Aeroway: no grey near the road's passes the contrast rules
 		// here, and the road is a grey already, so runways are drawn in it.
+		// Borders, and the names of countries and states, in an atlas's
+		// purple -- see RoleBoundary: the border the strongest the map's
+		// ceiling allows, the names a muted purple at 6:1, a name's floor
+		// with room to spare. Found by search.
+		Boundary:      color.RGBA{R: 0x4c, G: 0x39, B: 0x56, A: 0xff},
+		BoundaryLabel: color.RGBA{R: 0xc0, G: 0x71, B: 0xd0, A: 0xff},
 	}
 }
 
@@ -676,6 +701,12 @@ func OutdoorsPalette() Palette {
 		// the nearest to the road's lightness the contrast rules allow,
 		// found by search.
 		Aeroway: color.RGBA{R: 0xb3, G: 0xb7, B: 0xc3, A: 0xff},
+		// Borders, and the names of countries and states, in an atlas's
+		// purple -- see RoleBoundary: the border the strongest the map's
+		// ceiling allows, the names a muted purple at 6:1, a name's floor
+		// with room to spare. Found by search.
+		Boundary:      color.RGBA{R: 0x8a, G: 0x78, B: 0x9b, A: 0xff},
+		BoundaryLabel: color.RGBA{R: 0x6b, G: 0x24, B: 0x65, A: 0xff},
 	}
 }
 

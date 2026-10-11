@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"strings"
 
 	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/raster"
@@ -440,6 +441,9 @@ func (d *drawer) collectLabels(rules []LabelRule, growth []WidthStop, tiles []dr
 		if face == nil {
 			continue
 		}
+		if rule.Political {
+			face = tracked(face, politicalTracking)
+		}
 		for _, dt := range tiles {
 			d.appendTileLabels(&out, rule, dt, at, face, scale)
 		}
@@ -467,7 +471,11 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 		if !ok {
 			continue
 		}
-		// Measured and placed as it will be drawn.
+		// Measured and placed as it will be drawn: a country's or a
+		// state's name in capitals, as an atlas sets it.
+		if rule.Political {
+			text = strings.ToUpper(text)
+		}
 		text = Visual(text)
 		if rule.Placement == PlaceLine {
 			m := face.Metrics()
@@ -476,13 +484,14 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 			for n, sp := range placeAlong(f.Geometry.Lines, tr, w, h, d.facing) {
 				*out = append(*out, candidate{
 					text: text, x: sp.x, y: sp.y, along: true, angle: sp.angle, scale: scale, onRoad: rule.OnRoad,
-					priority: rule.Priority,
-					rank:     labelRank(f),
-					nth:      n,
-					once:     rule.OncePerName,
-					minor:    rule.Minor,
-					face:     face,
-					key:      fmt.Sprintf("%d/%d/%d:%.0f,%.0f", dt.ref.z, dt.ref.x, dt.ref.y, sp.x, sp.y),
+					priority:  rule.Priority,
+					rank:      labelRank(f),
+					nth:       n,
+					once:      rule.OncePerName,
+					minor:     rule.Minor,
+					political: rule.Political,
+					face:      face,
+					key:       fmt.Sprintf("%d/%d/%d:%.0f,%.0f", dt.ref.z, dt.ref.x, dt.ref.y, sp.x, sp.y),
 				})
 			}
 			continue
@@ -491,11 +500,12 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 			p := tr.apply(a.X, a.Y)
 			*out = append(*out, candidate{
 				text: text, x: p.X, y: p.Y,
-				priority: rule.Priority,
-				rank:     labelRank(f),
-				once:     rule.OncePerName,
-				minor:    rule.Minor,
-				face:     face,
+				priority:  rule.Priority,
+				rank:      labelRank(f),
+				once:      rule.OncePerName,
+				minor:     rule.Minor,
+				political: rule.Political,
+				face:      face,
 				// The tile and the coordinate, which together are unique and
 				// stable. Only ever compared, never shown.
 				key: fmt.Sprintf("%d/%d/%d:%d,%d", dt.ref.z, dt.ref.x, dt.ref.y, a.X, a.Y),

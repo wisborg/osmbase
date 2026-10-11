@@ -107,6 +107,13 @@ type LabelRule struct {
 	// the background colour and vanish, which is the worst kind of default.
 	Minor bool
 
+	// Political marks the names of countries, states and regions: written in
+	// capitals, spaced out, and in the palette's BoundaryLabel ink, the way
+	// an atlas sets them apart from the towns. In the same face and ink as a
+	// city's, a country's name on a map of a continent read as one more
+	// city, a little larger. ShiftPlaceLabels leaves them where they are.
+	Political bool
+
 	// OncePerName draws at most one label for any given name.
 	//
 	// It is what separates a line from a place. A road is cut into a feature
@@ -243,6 +250,10 @@ type candidate struct {
 	// rules that differ in both.
 	minor bool
 
+	// political selects the BoundaryLabel ink: a country's or a state's
+	// name; see LabelRule.Political.
+	political bool
+
 	// face is the resolved face for this label. Carried per candidate rather
 	// than passed alongside, because two labels competing for the same space
 	// can now be different sizes, and the box that decides the collision has
@@ -358,7 +369,7 @@ func placeLabels(cands []candidate, pad int, bounds image.Rectangle) []placed {
 		if c.once {
 			drawn[c.text] = append(drawn[c.text], pt{X: c.x, Y: c.y})
 		}
-		out = append(out, placed{text: c.text, box: box, quad: q, face: c.face, minor: c.minor,
+		out = append(out, placed{text: c.text, box: box, quad: q, face: c.face, minor: c.minor, political: c.political,
 			along: c.along, x: c.x, y: c.y, angle: c.angle, scale: c.scale, onRoad: c.onRoad, contour: c.contour})
 	}
 	return out
@@ -385,10 +396,11 @@ func tooNear(others []pt, c candidate) bool {
 
 // placed is a label that will be drawn, with the space it occupies.
 type placed struct {
-	text  string
-	box   image.Rectangle
-	face  font.Face
-	minor bool
+	text      string
+	box       image.Rectangle
+	face      font.Face
+	minor     bool
+	political bool
 
 	// quad is the space the label takes, padded: box's corners, or a
 	// rotated rectangle for a label written along a line, which has no box
@@ -444,10 +456,10 @@ func drawLabel(dst *image.RGBA, l placed, p Palette, pad int, faceFor func(float
 		if l.onRoad {
 			halo = p.nameHalo()
 		}
-		drawAlong(dst, l, labelInk(p, l.minor), halo, big)
+		drawAlong(dst, l, labelInk(p, l.minor, l.political), halo, big)
 		return
 	}
-	d := font.Drawer{Dst: dst, Src: image.NewUniform(labelInk(p, l.minor)), Face: l.face}
+	d := font.Drawer{Dst: dst, Src: image.NewUniform(labelInk(p, l.minor, l.political)), Face: l.face}
 	d.Dot = fixed.P(l.box.Min.X+pad, l.box.Min.Y+pad+l.face.Metrics().Ascent.Ceil())
 	d.DrawString(l.text)
 }
@@ -514,7 +526,10 @@ func lineAnchor(lines [][]mvt.Point) (x, y int32, ok bool) {
 // together that two label colours barely separate. Without this fallback an
 // unset LabelMinor would be a zero RGBA -- transparent black -- and every
 // street name on those palettes would vanish.
-func labelInk(p Palette, minor bool) color.RGBA {
+func labelInk(p Palette, minor, political bool) color.RGBA {
+	if political && p.BoundaryLabel != (color.RGBA{}) {
+		return p.BoundaryLabel
+	}
 	if minor && p.LabelMinor != (color.RGBA{}) {
 		return p.LabelMinor
 	}

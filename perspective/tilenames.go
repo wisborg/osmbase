@@ -91,7 +91,7 @@ func (p *Picture) names() []name {
 	for k, t := range p.used {
 		for i, l := range t.Places {
 			out = append(out, name{id: nameID{kind: 0, key: k, i: i}, place: true,
-				label: render.LineLabel{Text: l.Text, At: l.At, Face: l.Face, Minor: l.Minor}})
+				label: render.LineLabel{Text: l.Text, At: l.At, Face: l.Face, Minor: l.Minor, Political: l.Political}})
 		}
 		for i, l := range t.Lines {
 			kind := 1

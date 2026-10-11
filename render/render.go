@@ -236,6 +236,8 @@ type LineLabel struct {
 	// contour's height; OnRoad, a name written on its road, which is drawn
 	// with a halo in the road's colour.
 	Minor, Contour, OnRoad bool
+	// Political is a country's or a state's name, in BoundaryLabel's ink.
+	Political bool
 }
 
 // PointLabel is the name of a place a render placed but did not draw: what
@@ -245,8 +247,9 @@ type PointLabel struct {
 	Text string
 	At   Coord
 	Face font.Face
-	// Minor is a label drawn in the quieter of the two label inks.
-	Minor bool
+	// Minor is a label drawn in the quieter of the two label inks, and
+	// Political one in BoundaryLabel's: a country's or a state's name.
+	Minor, Political bool
 }
 
 // Renderer draws views from one tile source with one style.
@@ -528,7 +531,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 			}
 			liftedLines = append(liftedLines, LineLabel{
 				Text: l.text, At: Coord{Lat: lat, Lon: lon}, Angle: l.angle,
-				Face: l.face, big: big, Minor: l.minor, Contour: l.contour, OnRoad: l.onRoad,
+				Face: l.face, big: big, Minor: l.minor, Political: l.political, Contour: l.contour, OnRoad: l.onRoad,
 			})
 			continue
 		}
@@ -539,7 +542,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 			cx := float64(l.box.Min.X+l.box.Max.X) / 2
 			cy := float64(l.box.Min.Y+l.box.Max.Y) / 2
 			lon, lat := mercator.Unproject(p.originX+cx/p.scale, p.originY+cy/p.scale)
-			lifted = append(lifted, PointLabel{Text: l.text, At: Coord{Lat: lat, Lon: lon}, Face: l.face, Minor: l.minor})
+			lifted = append(lifted, PointLabel{Text: l.text, At: Coord{Lat: lat, Lon: lon}, Face: l.face, Minor: l.minor, Political: l.political})
 			continue
 		}
 		drawLabel(surface.RGBA(), l, r.palette, r.labelPad, r.faceFor)

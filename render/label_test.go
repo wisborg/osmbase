@@ -337,15 +337,15 @@ func TestLabelInk_FallsBackWhenAPaletteNamesOnlyOne(t *testing.T) {
 	minor := color.RGBA{R: 0x58, G: 0x5e, B: 0x68, A: 0xff}
 
 	two := Palette{Label: major, LabelMinor: minor}
-	if got := labelInk(two, true); got != minor {
+	if got := labelInk(two, true, false); got != minor {
 		t.Errorf("a palette naming two inks drew a minor label in %v, want %v", got, minor)
 	}
-	if got := labelInk(two, false); got != major {
+	if got := labelInk(two, false, false); got != major {
 		t.Errorf("a palette naming two inks drew a major label in %v, want %v", got, major)
 	}
 
 	one := Palette{Label: major}
-	if got := labelInk(one, true); got != major {
+	if got := labelInk(one, true, false); got != major {
 		t.Errorf("a palette naming one ink drew a minor label in %v, want the ink it has, %v: the zero value is transparent black and the name would disappear", got, major)
 	}
 }

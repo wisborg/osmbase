@@ -113,6 +113,10 @@ func (p Palette) context() []namedColour {
 	if (p.Aeroway != color.RGBA{}) {
 		all = append(all, namedColour{name: "Aeroway", c: p.Aeroway, role: RoleAeroway})
 	}
+	// A palette naming no Boundary draws borders in Ink, already here.
+	if (p.Boundary != color.RGBA{}) {
+		all = append(all, namedColour{name: "Boundary", c: p.Boundary, role: RoleBoundary})
+	}
 	drawn := make([]namedColour, 0, len(all))
 	for _, c := range all {
 		if !p.Omits(c.role) {
@@ -171,6 +175,9 @@ func (p Palette) labels() []namedColour {
 	}
 	if (p.LabelMinor != color.RGBA{}) {
 		out = append(out, namedColour{name: "LabelMinor", c: p.LabelMinor, role: RoleLabelMinor})
+	}
+	if (p.BoundaryLabel != color.RGBA{}) {
+		out = append(out, namedColour{name: "BoundaryLabel", c: p.BoundaryLabel, role: RoleLabel})
 	}
 	return out
 }
