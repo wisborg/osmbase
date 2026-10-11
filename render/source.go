@@ -164,7 +164,7 @@ func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, covera
 				cov.total += onSurface.area()
 			}
 
-			ref, data, ok, err := r.walkUp(want)
+			ref, tile, ok, err := r.walkUp(want, decoded)
 			if err != nil {
 				return nil, coverage{}, err
 			}
@@ -180,22 +180,6 @@ func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, covera
 				if ref != want {
 					cov.over += onSurface.area()
 				}
-			}
-
-			tile, seen := decoded[ref]
-			if !seen {
-				t, err := mvt.Decode(data)
-				if err != nil {
-					// A tile that will not decode is not absence. Absence is a
-					// tile the store has not got, and it has a picture: the
-					// hatch. This is a tile the store HAS and cannot read,
-					// which means either the bytes are damaged or they are not
-					// vector tiles at all, and hatching over it would hide the
-					// one fact worth reporting.
-					return nil, coverage{}, fmt.Errorf("render: decoding tile %s: %w", ref, err)
-				}
-				tile = &t
-				decoded[ref] = tile
 			}
 
 			// Clipped to the tile's own square on the seams, and to the padded
@@ -222,19 +206,57 @@ func (r *Renderer) gather(ctx context.Context, p projection) ([]drawTile, covera
 // library exists to remove, happening at the moment the user least expected it.
 // The TileSource interface is what makes that structural -- there is nothing
 // here to fetch with.
-func (r *Renderer) walkUp(want tileRef) (tileRef, []byte, bool, error) {
+//
+// The tile comes back decoded, each decoded once a render -- decoded keeps
+// them -- and, with a TileCache, once while it is in use across renders.
+func (r *Renderer) walkUp(want tileRef, decoded map[tileRef]*mvt.Tile) (tileRef, *mvt.Tile, bool, error) {
 	for ref := want; ; ref = ref.parent() {
-		data, ok, err := r.src.Tile(ref.z, ref.x, ref.y)
+		if t, seen := decoded[ref]; seen {
+			return ref, t, true, nil
+		}
+		var (
+			t   *mvt.Tile
+			ok  bool
+			err error
+		)
+		if r.cache != nil {
+			t, ok, err = r.cache.get(r.src, ref)
+		} else {
+			t, ok, _, err = readTile(r.src, ref)
+		}
 		if err != nil {
-			return tileRef{}, nil, false, fmt.Errorf("render: reading tile %s: %w", ref, err)
+			return tileRef{}, nil, false, err
 		}
 		if ok {
-			return ref, data, true, nil
+			decoded[ref] = t
+			return ref, t, true, nil
 		}
 		if ref.z == 0 {
 			return tileRef{}, nil, false, nil
 		}
 	}
+}
+
+// readTile reads tile ref from src and decodes it, false where src does not
+// hold it, with the size of its bytes as read.
+func readTile(src TileSource, ref tileRef) (*mvt.Tile, bool, int, error) {
+	data, ok, err := src.Tile(ref.z, ref.x, ref.y)
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("render: reading tile %s: %w", ref, err)
+	}
+	if !ok {
+		return nil, false, 0, nil
+	}
+	t, err := mvt.Decode(data)
+	if err != nil {
+		// A tile that will not decode is not absence. Absence is a tile the
+		// store has not got, and it has a picture: the hatch. This is a tile
+		// the store HAS and cannot read, which means either the bytes are
+		// damaged or they are not vector tiles at all, and hatching over it
+		// would hide the one fact worth reporting.
+		return nil, false, 0, fmt.Errorf("render: decoding tile %s: %w", ref, err)
+	}
+	return &t, true, len(data), nil
 }
 
 // outward rounds a surface rectangle to whole pixels, never inward.

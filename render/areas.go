@@ -88,20 +88,12 @@ func MeasureAreas(ctx context.Context, src TileSource, o Options, b Bounds, z ui
 				return nil, fmt.Errorf("render: measuring areas at zoom %d: %w", z, err)
 			}
 			want := tileRef{z: z, x: tx, y: ty}
-			ref, data, ok, err := r.walkUp(want)
+			ref, tile, ok, err := r.walkUp(want, decoded)
 			if err != nil {
 				return nil, err
 			}
 			if !ok {
 				continue
-			}
-			tile, seen := decoded[ref]
-			if !seen {
-				t, err := mvt.Decode(data)
-				if err != nil {
-					return nil, fmt.Errorf("render: decoding tile %s: %w", ref, err)
-				}
-				tile, decoded[ref] = &t, &t
 			}
 			// The wanted tile's own square, also for an ancestor's geometry
 			// drawn in its place: the ancestor's pieces reach over its

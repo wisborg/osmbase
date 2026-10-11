@@ -70,6 +70,13 @@ var ErrNoCoverage = errors.New("no tile covers this view at any zoom")
 
 // Options are what a Renderer draws with.
 type Options struct {
+	// TileCache, when set, keeps the tiles decoded from the source between
+	// renders, for a caller drawing many views of one map; see TileCache.
+	// It must be the source's own, never shared with another source's
+	// renderer. Nil reads and decodes every tile a render needs, every
+	// render.
+	TileCache *TileCache
+
 	// Style is the ordered rule set. The zero Style has no rules and draws
 	// nothing but the background, which New refuses.
 	Style Style
@@ -249,6 +256,7 @@ type PointLabel struct {
 // TileSource is, which is the source's own contract to state.
 type Renderer struct {
 	src           TileSource
+	cache         *TileCache
 	style         Style
 	palette       Palette
 	credit        string
@@ -298,7 +306,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 		pad = DefaultLabelPadding
 	}
 	return &Renderer{
-		src: src, style: o.Style, palette: o.Palette, credit: o.Attribution,
+		src: src, cache: o.TileCache, style: o.Style, palette: o.Palette, credit: o.Attribution,
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
 		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels, liftAll: o.LiftLabels,
 		labelsFacing: o.LabelsFacing * math.Pi / 180, areas: o.Areas, interval: o.ContourInterval,
