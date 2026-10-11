@@ -47,18 +47,31 @@ type Line struct {
 	Dash []float32
 }
 
-// Marker is a dot over the map with an optional label beside it.
+// Marker is a dot over the map, or a pin, a numbered disc or an icon (see
+// MarkerShape), with an optional label beside it.
 type Marker struct {
 	At Coord
-	// Ink is the dot's colour, and Radius its radius in image pixels.
+	// Shape is what is drawn; the zero value is a dot.
+	Shape MarkerShape
+	// Ink is the dot's colour, and Radius its radius in image pixels: for a
+	// pin its head's, for a numbered disc the least it is drawn at, and for
+	// an arrow or a plane half its length. A start or finish pin is in its
+	// own green or red, whatever Ink says.
 	Ink    color.RGBA
 	Radius float64
 	// Halo and HaloInk are as a Line's, round the dot and round the label's
-	// letters.
+	// letters. A shape's outline is white, at least Halo wide.
 	Halo    float64
 	HaloInk color.RGBA
+	// Text is written inside a numbered pin or disc, in the label's face;
+	// the marker grows to hold it.
+	Text string
+	// Heading is the way an arrow or a plane points, in degrees clockwise
+	// from straight up in the image.
+	Heading float64
 	// Label is written to the right of the dot, or to its left when there
-	// is no room on the right. Empty writes nothing.
+	// is no room on the right -- beside a pin's head, not its tip. Empty
+	// writes nothing.
 	Label string
 }
 
@@ -98,7 +111,7 @@ func Draw(img *image.RGBA, v View, d Drawing, face font.Face) error {
 		}
 	}
 	for _, m := range d.Markers {
-		if m.Halo > 0 && m.Radius > 0 {
+		if m.Shape == ShapeDot && m.Halo > 0 && m.Radius > 0 {
 			o.dot(s, m.At, m.Radius+m.Halo, m.HaloInk)
 		}
 	}
@@ -111,8 +124,15 @@ func Draw(img *image.RGBA, v View, d Drawing, face font.Face) error {
 		o.gradient(s, g)
 	}
 	for _, m := range d.Markers {
-		if m.Radius > 0 {
+		if m.Radius <= 0 {
+			continue
+		}
+		if m.Shape == ShapeDot {
 			o.dot(s, m.At, m.Radius, m.Ink)
+			continue
+		}
+		if c := o.pixel(m.At); o.near(c, m) {
+			drawShape(s, &o.path, m, c, face)
 		}
 	}
 	if face != nil {
@@ -151,13 +171,18 @@ func DrawMarkers(img *image.RGBA, markers []Marker, at func(Coord) (x, y float64
 	s := raster.NewSurfaceOn(img)
 	var path raster.Path
 	for _, p := range ps {
-		if p.m.Halo > 0 && p.m.Radius > 0 {
+		if p.m.Shape == ShapeDot && p.m.Halo > 0 && p.m.Radius > 0 {
 			dotAt(s, &path, p.c, p.m.Radius+p.m.Halo, p.m.HaloInk)
 		}
 	}
 	for _, p := range ps {
-		if p.m.Radius > 0 {
+		if p.m.Radius <= 0 {
+			continue
+		}
+		if p.m.Shape == ShapeDot {
 			dotAt(s, &path, p.c, p.m.Radius, p.m.Ink)
+		} else {
+			drawShape(s, &path, p.m, p.c, face)
 		}
 	}
 	if face != nil {
@@ -264,6 +289,14 @@ func (o *overlayDrawer) dot(s *raster.Surface, at Coord, r float64, ink color.RG
 	dotAt(s, &o.path, c, r, ink)
 }
 
+// near reports whether a shape at c can reach into the picture: one far off
+// it is not drawn, as a dot far off it is not.
+func (o *overlayDrawer) near(c pt, m Marker) bool {
+	reach := (pinHeight + 2) * math.Max(m.Radius, 1) * 3
+	b := o.p.surface().inflate(reach)
+	return c.X >= b.MinX && c.X <= b.MaxX && c.Y >= b.MinY && c.Y <= b.MaxY
+}
+
 // dotAt fills a circle of radius r at c, in surface pixels.
 func dotAt(s *raster.Surface, path *raster.Path, c pt, r float64, ink color.RGBA) {
 	path.Reset()
@@ -285,9 +318,10 @@ func (o *overlayDrawer) label(dst *image.RGBA, m Marker, face font.Face) {
 
 // labelAt is label with the marker at c, in image pixels.
 func labelAt(dst *image.RGBA, m Marker, c pt, face font.Face) {
+	c, reach := labelAnchor(m, c, face)
 	m.Label = Visual(m.Label)
 	adv := font.MeasureString(face, m.Label).Ceil()
-	gap := int(m.Radius+m.Halo) + 3
+	gap := int(reach) + 3
 	x := int(c.X) + gap
 	if x+adv > dst.Bounds().Max.X {
 		x = int(c.X) - gap - adv
@@ -307,6 +341,6 @@ func labelAt(dst *image.RGBA, m Marker, c pt, face font.Face) {
 			}
 		}
 	}
-	d := font.Drawer{Dst: dst, Src: image.NewUniform(m.Ink), Face: face, Dot: fixed.P(x, y)}
+	d := font.Drawer{Dst: dst, Src: image.NewUniform(shapeInk(m)), Face: face, Dot: fixed.P(x, y)}
 	d.DrawString(m.Label)
 }
