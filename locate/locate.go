@@ -142,6 +142,12 @@ func (l Level) Zoom() (uint8, bool) {
 // would silently renumber every value already written to a file.
 func (l Level) MarshalJSON() ([]byte, error) { return json.Marshal(l.String()) }
 
+// MarshalYAML writes a level as its name in YAML too, for MarshalJSON's
+// reason: a program writing both formats -- course's summary -- wrote
+// "country" in one and 0 in the other. Recognised by its signature, so
+// this package needs no YAML library of its own.
+func (l Level) MarshalYAML() (any, error) { return l.String(), nil }
+
 // Source says how a match was arrived at.
 type Source uint8
 
@@ -178,18 +184,22 @@ func (s Source) String() string {
 // Level.MarshalJSON.
 func (s Source) MarshalJSON() ([]byte, error) { return json.Marshal(s.String()) }
 
+// MarshalYAML writes a source as its name in YAML too; see
+// Level.MarshalYAML.
+func (s Source) MarshalYAML() (any, error) { return s.String(), nil }
+
 // Match is one level's answer.
 type Match struct {
-	Level Level  `json:"level"`
-	Name  string `json:"name"`
+	Level Level  `json:"level" yaml:"level"`
+	Name  string `json:"name" yaml:"name"`
 
 	// Kind is the schema's own kind_detail where it has one -- "city",
 	// "state", "suburb" -- and is empty otherwise. Passed through rather than
 	// normalised: it is the producer's own description and this package has no
 	// better one.
-	Kind string `json:"kind,omitempty"`
+	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`
 
-	Source Source `json:"source"`
+	Source Source `json:"source" yaml:"source"`
 
 	// DistanceM is how far the evidence was, in metres, and is 0 for a
 	// Contained match. It is the number that makes a Near match usable: "400 m"
@@ -200,7 +210,7 @@ type Match struct {
 	// here has: the distance is to a LABEL ANCHOR placed by a cartographer
 	// somewhere near the middle of a town, and a millimetre on that is noise
 	// dressed as data.
-	DistanceM float64 `json:"distance_m"`
+	DistanceM float64 `json:"distance_m" yaml:"distance_m"`
 
 	// Attribution is what this answer's source asks to be said about it,
 	// empty when it asks for nothing.
@@ -215,7 +225,7 @@ type Match struct {
 	// domain" in as many words, because a reader can act on knowing that two
 	// names in one answer came from different places under different terms,
 	// and cannot act on silence.
-	Attribution string `json:"attribution,omitempty"`
+	Attribution string `json:"attribution,omitempty" yaml:"attribution,omitempty"`
 
 	// rank orders candidates before distance does, where a level prefers
 	// one kind of answer to a nearer one: a suburb to a neighbourhood, a
