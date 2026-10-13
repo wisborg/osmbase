@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"sync"
 )
 
 // frame is the image being drawn and its depth buffer: for each pixel, how
@@ -29,12 +30,36 @@ type frame struct {
 	rowLo, rowHi int
 }
 
+// framePix is the supersampled images of frames drawn and done with, for
+// the next frame to draw in. A frame's image is four times the picture's
+// pixels and lives only until it is averaged down to the picture: a
+// flyover drew thousands, each a fresh 33 MB at 1080p cleared to zero only
+// to be painted over by the sky, and the clearing and collecting of them
+// were a tenth of rendering one.
+var framePix sync.Pool
+
+// newFrame is a frame w by h, its image's pixels whatever they were: the
+// sky is painted over every one of them (paintSky) before the ground is
+// drawn. release gives the image back once the picture is taken from it.
 func newFrame(w, h int, sky, horizon color.RGBA) *frame {
-	f := &frame{img: image.NewRGBA(image.Rect(0, 0, w, h)), depth: make([]float64, w*h), w: w, h: h, sky: sky, hz: horizon, rowLo: 0, rowHi: h}
+	var img *image.RGBA
+	if p, ok := framePix.Get().(*image.RGBA); ok && p.Rect.Dx() == w && p.Rect.Dy() == h {
+		img = p
+	} else {
+		img = image.NewRGBA(image.Rect(0, 0, w, h))
+	}
+	f := &frame{img: img, depth: make([]float64, w*h), w: w, h: h, sky: sky, hz: horizon, rowLo: 0, rowHi: h}
 	for i := range f.depth {
 		f.depth[i] = math.Inf(1)
 	}
 	return f
+}
+
+// release gives the frame's image back for another frame to draw in; the
+// frame is not drawn in or read afterwards.
+func (f *frame) release() {
+	framePix.Put(f.img)
+	f.img = nil
 }
 
 // paintSky fills the frame behind the ground: a gradient from the sky
@@ -107,9 +132,9 @@ func (f *frame) triangle(cv view, tex sampler, haze color.RGBA, hazeM float64, a
 	if a.front && b.front && c.front {
 		// Most triangles: whole, and most of them in another band, which
 		// their rows say before anything is filled.
-		lo := math.Floor(math.Min(a.s.y, math.Min(b.s.y, c.s.y)))
-		hi := math.Ceil(math.Max(a.s.y, math.Max(b.s.y, c.s.y)))
-		if int(math.Max(float64(f.rowLo), lo)) > int(math.Min(float64(f.rowHi-1), hi)) {
+		lo := math.Floor(min(a.s.y, b.s.y, c.s.y))
+		hi := math.Ceil(max(a.s.y, b.s.y, c.s.y))
+		if int(max(float64(f.rowLo), lo)) > int(min(float64(f.rowHi-1), hi)) {
 			return
 		}
 		f.fillScreen(cv, tex, haze, hazeM, a.s, b.s, c.s)

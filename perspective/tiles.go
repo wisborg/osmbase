@@ -176,7 +176,9 @@ func ownNames(t *Tile, k tileKey) *Tile {
 
 // lodBias shifts the zoom each pixel is drawn from: 0 is one tile pixel to
 // one pixel of the supersampled frame, which the supersampling averages into
-// two to one in the image. Negative is sharper and shimmers sooner.
+// two to one in the image. Positive is sharper and shimmers sooner;
+// negative draws from coarser zooms, which are not only softer but drawn to
+// a coarser map's style -- fewer, heavier roads -- and cheaper.
 const lodBias = 0.0
 
 // pyramidSampler is a frame's view of a pyramid: the scene's map pixels
@@ -232,7 +234,7 @@ func newPyramidSampler(ctx context.Context, t *Tiles, v render.View) (*pyramidSa
 func (s *pyramidSampler) at(u, v, span float64) color.RGBA {
 	wx, wy := s.x0+u/s.scale, s.y0+v/s.scale
 	// The zoom at which one tile pixel is span map pixels.
-	lod := math.Log2(s.scale/(TileSize*math.Max(span, 1e-9))) + lodBias + s.lodShift
+	lod := math.Log2(s.scale/(TileSize*max(span, 1e-9))) + lodBias + s.lodShift
 	lo, hi := float64(s.t.minZoom), float64(s.t.maxZoom)
 	lod = max(lo, min(hi, lod))
 	s.lastLOD = float32(lod)
@@ -281,25 +283,33 @@ func (s *pyramidSampler) sample(z uint8, wx, wy float64) color.RGBA {
 	gx, gy := wx*n-0.5, wy*n-0.5
 	x0, y0 := math.Floor(gx), math.Floor(gy)
 	fx, fy := gx-x0, gy-y0
-	var r, g, b [4]float64
 	px, py := int64(x0), int64(y0)
 	if last := int64(TileSize)<<z - 1; px >= 0 && py >= 0 && px < last && py < last &&
 		px%TileSize != TileSize-1 && py%TileSize != TileSize-1 {
 		// All four in one tile, as nearly every sample's are: that tile's
-		// pixels read directly, rather than the tile looked for four times.
+		// pixels read directly, rather than the tile looked for four times;
+		// and read as the two rows of two pixels they are, with the
+		// arithmetic written out, where a loop over the four filled three
+		// arrays -- this is run twice for most pixels of every frame, and
+		// the loop was the most expensive line of drawing one.
 		img := s.tileImage(z, uint32(px/TileSize), uint32(py/TileSize))
 		if img == nil {
 			return color.RGBA{}
 		}
 		o := img.PixOffset(int(px%TileSize), int(py%TileSize))
-		for i, d := range [4]int{0, 4, img.Stride, img.Stride + 4} {
-			p := img.Pix[o+d : o+d+3 : o+d+3]
-			r[i], g[i], b[i] = float64(p[0]), float64(p[1]), float64(p[2])
+		p := img.Pix[o : o+8 : o+8]
+		q := img.Pix[o+img.Stride : o+img.Stride+8 : o+img.Stride+8]
+		lerp := func(c0, c1, c2, c3 uint8) uint8 {
+			top := float64(c0) + (float64(c1)-float64(c0))*fx
+			bot := float64(c2) + (float64(c3)-float64(c2))*fx
+			return uint8(top + (bot-top)*fy + 0.5)
 		}
-	} else {
-		for i, d := range [4][2]float64{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
-			r[i], g[i], b[i] = s.texel(z, int64(x0+d[0]), int64(y0+d[1]))
-		}
+		return color.RGBA{R: lerp(p[0], p[4], q[0], q[4]), G: lerp(p[1], p[5], q[1], q[5]), B: lerp(p[2], p[6], q[2], q[6]), A: 0xff}
+	}
+	// Across a tile's edge, or the world's: each pixel found on its own.
+	var r, g, b [4]float64
+	for i, d := range [4][2]float64{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
+		r[i], g[i], b[i] = s.texel(z, int64(x0+d[0]), int64(y0+d[1]))
 	}
 	lerp := func(c [4]float64) uint8 {
 		top := c[0] + (c[1]-c[0])*fx

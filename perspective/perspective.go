@@ -363,6 +363,35 @@ func renderScene(ctx context.Context, s Scene, c Camera, o Options, plan *planni
 		}(len(m.v)*k/n, len(m.v)*(k+1)/n)
 	}
 	wg.Wait()
+	// The rows each cell of the mesh may cover, worked out once: every band
+	// looked at every triangle of the mesh to find the few in its rows, and
+	// with a band to every 64 rows of a supersampled frame that was more
+	// work than some bands had pixels. A cell is passed over by a band it
+	// is wholly outside; the triangles of one it is not still say for
+	// themselves (frame.triangle). A cell with a corner behind the camera,
+	// or without a height, is looked at by every band, as before.
+	cells := (m.rows - 1) * (m.cols - 1)
+	cellLo, cellHi := make([]int32, cells), make([]int32, cells)
+	for k := range n {
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for j := lo; j < hi; j++ {
+				for i := 0; i+1 < m.cols; i++ {
+					a, b, cc, d := &pl[j*m.cols+i], &pl[j*m.cols+i+1], &pl[(j+1)*m.cols+i+1], &pl[(j+1)*m.cols+i]
+					c := j*(m.cols-1) + i
+					if !(a.front && b.front && cc.front && d.front) {
+						cellLo[c], cellHi[c] = 0, int32(h)
+						continue
+					}
+					y0 := math.Floor(min(a.s.y, b.s.y, cc.s.y, d.s.y))
+					y1 := math.Ceil(max(a.s.y, b.s.y, cc.s.y, d.s.y))
+					cellLo[c], cellHi[c] = int32(max(-1, min(float64(h), y0))), int32(max(-1, min(float64(h), y1)))
+				}
+			}
+		}((m.rows-1)*k/n, (m.rows-1)*(k+1)/n)
+	}
+	wg.Wait()
 	var next atomic.Int64
 	for k := range n {
 		wg.Add(1)
@@ -375,8 +404,12 @@ func renderScene(ctx context.Context, s Scene, c Camera, o Options, plan *planni
 				}
 				band := *f
 				band.rowLo, band.rowHi = h*b/bands, h*(b+1)/bands
+				lo, hi := int32(band.rowLo), int32(band.rowHi-1)
 				for j := 0; j+1 < m.rows; j++ {
 					for i := 0; i+1 < m.cols; i++ {
+						if c := j*(m.cols-1) + i; cellHi[c] < lo || cellLo[c] > hi {
+							continue
+						}
 						a, b, cc, d := &pl[j*m.cols+i], &pl[j*m.cols+i+1], &pl[(j+1)*m.cols+i+1], &pl[(j+1)*m.cols+i]
 						band.triangle(cam, tex, haze, hazeM, a, b, cc)
 						band.triangle(cam, tex, haze, hazeM, a, cc, d)
@@ -387,7 +420,9 @@ func renderScene(ctx context.Context, s Scene, c Camera, o Options, plan *planni
 	}
 	wg.Wait()
 
-	pic := &Picture{Image: f.downsample(o.Width, o.Height), mesh: m, cam: cam, depth: f.depth, w: w, h: h, tex: samplers[0], view: s.View, hazeM: hazeM}
+	img := f.downsample(o.Width, o.Height)
+	f.release()
+	pic := &Picture{Image: img, mesh: m, cam: cam, depth: f.depth, w: w, h: h, tex: samplers[0], view: s.View, hazeM: hazeM}
 	if s.Tiles != nil {
 		pic.lod, pic.used, pic.noted = f.lod, map[tileKey]*Tile{}, map[tileKey]bool{}
 		for _, p := range pyrs {
