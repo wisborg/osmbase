@@ -442,44 +442,108 @@ func dilate(mask *image.Alpha, r int) *image.Alpha {
 	return out
 }
 
-// dilateRound is mask grown by r pixels every way, round: each pixel the
-// most covered within r of it, with the last half pixel of the reach eased
-// off so the halo's edge is smooth.
+// dilateRound is mask grown by r pixels every way, round: each pixel as
+// covered as its distance from the nearest half-covered pixel of mask says
+// -- in full within r - 0.5 of it, fading over the next pixel so the
+// halo's edge is smooth -- and never less covered than mask is there.
+//
+// The distance is an exact Euclidean distance transform (Felzenszwalb and
+// Huttenlocher's, a pass along each row and each column), which costs a
+// few operations a pixel whatever r is. Tested against every pixel within
+// r instead, as it first was, a name's halo cost as many operations a
+// pixel as a disc of radius r has pixels -- and a name is drawn at four
+// times its size to be turned smoothly, so a country's name with its halo
+// was hundreds of taps over a mask of a hundred and fifty thousand pixels.
+// Preparing the names took more of a long flyover's time than drawing
+// them.
 func dilateRound(mask *image.Alpha, r float64) *image.Alpha {
 	if r <= 0 {
 		return mask
 	}
-	type tap struct {
-		dx, dy int
-		w      float64
-	}
-	var taps []tap
-	n := int(math.Ceil(r + 0.5))
-	for dy := -n; dy <= n; dy++ {
-		for dx := -n; dx <= n; dx++ {
-			if w := math.Min(1, r+0.5-math.Hypot(float64(dx), float64(dy))); w > 0 {
-				taps = append(taps, tap{dx, dy, w})
+	b := mask.Rect
+	w, h := b.Dx(), b.Dy()
+	inf := float64(w*w + h*h + 1)
+	d := make([]float64, w*h)
+	for y := range h {
+		for x := range w {
+			if mask.Pix[mask.PixOffset(b.Min.X+x, b.Min.Y+y)] >= 128 {
+				d[y*w+x] = 0
+			} else {
+				d[y*w+x] = inf
 			}
 		}
 	}
-	b := mask.Rect
+	line := make([]float64, max(w, h))
+	out1 := make([]float64, max(w, h))
+	scratch := newEDT(max(w, h))
+	for x := range w {
+		for y := range h {
+			line[y] = d[y*w+x]
+		}
+		scratch.transform(line[:h], out1[:h])
+		for y := range h {
+			d[y*w+x] = out1[y]
+		}
+	}
+	for y := range h {
+		scratch.transform(d[y*w:(y+1)*w], out1[:w])
+		copy(d[y*w:(y+1)*w], out1[:w])
+	}
 	out := image.NewAlpha(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			m := 0.0
-			for _, t := range taps {
-				sx, sy := x+t.dx, y+t.dy
-				if sx < b.Min.X || sy < b.Min.Y || sx >= b.Max.X || sy >= b.Max.Y {
-					continue
-				}
-				if a := mask.Pix[mask.PixOffset(sx, sy)]; a != 0 {
-					m = math.Max(m, float64(a)*t.w)
-				}
+	for y := range h {
+		for x := range w {
+			off := mask.PixOffset(b.Min.X+x, b.Min.Y+y)
+			a := math.Min(1, r+0.5-math.Sqrt(d[y*w+x]))
+			v := mask.Pix[off]
+			if a > 0 {
+				v = max(v, uint8(a*255+0.5))
 			}
-			out.Pix[out.PixOffset(x, y)] = uint8(m + 0.5)
+			out.Pix[off] = v
 		}
 	}
 	return out
+}
+
+// meet is where the parabolas rooted at samples q and p of f cross.
+func (e *edt) meet(f []float64, q, p int) float64 {
+	return ((f[q] + float64(q*q)) - (f[p] + float64(p*p))) / float64(2*q-2*p)
+}
+
+// edt is the scratch of a one-dimensional squared distance transform.
+type edt struct {
+	v []int
+	z []float64
+}
+
+func newEDT(n int) *edt { return &edt{v: make([]int, n), z: make([]float64, n+1)} }
+
+// transform writes to out, for each i, the least of f[j] + (i-j)² over j:
+// the lower envelope of parabolas rooted at each sample.
+func (e *edt) transform(f, out []float64) {
+	n := len(f)
+	if n == 0 {
+		return
+	}
+	k := 0
+	e.v[0] = 0
+	e.z[0], e.z[1] = math.Inf(-1), math.Inf(1)
+	for q := 1; q < n; q++ {
+		s := e.meet(f, q, e.v[k])
+		for s <= e.z[k] {
+			k--
+			s = e.meet(f, q, e.v[k])
+		}
+		k++
+		e.v[k], e.z[k], e.z[k+1] = q, s, math.Inf(1)
+	}
+	k = 0
+	for q := range n {
+		for e.z[k+1] < float64(q) {
+			k++
+		}
+		p := e.v[k]
+		out[q] = float64((q-p)*(q-p)) + f[p]
+	}
 }
 
 // maskAt is mask's coverage at (x, y), between its pixels' centres

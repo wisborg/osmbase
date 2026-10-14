@@ -284,3 +284,67 @@ func TestDilateRoundIsRound(t *testing.T) {
 		}
 	}
 }
+
+// On a solid shape -- every pixel covered or not -- the halo grown by
+// distance is the halo grown by testing every pixel within r, to a step of
+// eight-bit coverage.
+func TestDilateRoundMatchesTheDisc(t *testing.T) {
+	mask := image.NewAlpha(image.Rect(0, 0, 90, 40))
+	for y := 12; y < 28; y++ {
+		for x := 10; x < 80; x++ {
+			// Letters, roughly: bars with gaps, and a diagonal.
+			if (x/7)%2 == 0 || x-y == 30 {
+				mask.SetAlpha(x, y, color.Alpha{A: 255})
+			}
+		}
+	}
+	for _, r := range []float64{1.5, 3.6, 7.2, 14.4} {
+		got, want := dilateRound(mask, r), discDilate(mask, r)
+		for i := range got.Pix {
+			if d := int(got.Pix[i]) - int(want.Pix[i]); d < -1 || d > 1 {
+				t.Fatalf("r %.1f: pixel %d is %d, the disc says %d", r, i, got.Pix[i], want.Pix[i])
+			}
+		}
+	}
+}
+
+// discDilate is dilateRound as it was first written: every pixel within r
+// tested, the last half pixel eased.
+func discDilate(mask *image.Alpha, r float64) *image.Alpha {
+	b := mask.Rect
+	out := image.NewAlpha(b)
+	n := int(math.Ceil(r + 0.5))
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			m := 0.0
+			for dy := -n; dy <= n; dy++ {
+				for dx := -n; dx <= n; dx++ {
+					w := math.Min(1, r+0.5-math.Hypot(float64(dx), float64(dy)))
+					sx, sy := x+dx, y+dy
+					if w <= 0 || sx < b.Min.X || sy < b.Min.Y || sx >= b.Max.X || sy >= b.Max.Y {
+						continue
+					}
+					m = math.Max(m, float64(mask.AlphaAt(sx, sy).A)*w)
+				}
+			}
+			out.SetAlpha(x, y, color.Alpha{A: uint8(m + 0.5)})
+		}
+	}
+	return out
+}
+
+func BenchmarkDilateRound(b *testing.B) {
+	// A country's name drawn four times its size: 144 by 1200 pixels, its
+	// halo a fifth of its height.
+	mask := image.NewAlpha(image.Rect(0, 0, 1200, 144))
+	for y := 30; y < 114; y++ {
+		for x := 40; x < 1160; x++ {
+			if (x/24)%3 == 0 {
+				mask.SetAlpha(x, y, color.Alpha{A: 255})
+			}
+		}
+	}
+	for b.Loop() {
+		dilateRound(mask, 14.4)
+	}
+}
