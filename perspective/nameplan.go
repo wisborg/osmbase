@@ -55,7 +55,7 @@ func (pn *plannedName) prepare() *render.PreparedLabel {
 	pn.prepareOnce.Do(func() {
 		namesMu.Lock()
 		defer namesMu.Unlock()
-		pn.prepared = render.PrepareLineLabel(pn.label)
+		pn.prepared = prepareName(pn.label)
 	})
 	return pn.prepared
 }
@@ -104,12 +104,20 @@ func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int, pro
 	if err != nil {
 		return nil, err
 	}
+	places := placeIDs{byName: map[string][]*placeID{}}
+	fine := map[nameID]*placeID{}
 	for i, shown := range shownIn {
 		for _, sn := range shown {
-			pn := plan.names[sn.id]
+			id := sn.id
+			if sn.place {
+				k := places.of(sn)
+				id, fine[k.id] = k.id, k
+			}
+			pn := plan.names[id]
 			if pn == nil {
 				pn = &plannedName{name: sn.name, first: i}
-				plan.names[sn.id] = pn
+				pn.id = id
+				plan.names[id] = pn
 			}
 			for len(pn.alpha) <= i-pn.first {
 				pn.alpha = append(pn.alpha, 0)
@@ -121,6 +129,17 @@ func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int, pro
 	// smoothing, which spreads each over a few more.
 	var changeBefore, changeAfter, steps float64
 	for id, pn := range plan.names {
+		if !lasts(pn.alpha, 2*smooth+1) {
+			delete(plan.names, id)
+			continue
+		}
+		// A place is drawn where the finest zoom that names it puts it,
+		// in every frame: where each zoom put it, it moved by the
+		// difference -- a kilometre, at a zoom of a country -- as each
+		// gave way to the next.
+		if k := fine[id]; k != nil {
+			pn.label.At = k.fine
+		}
 		plan.order = append(plan.order, id)
 		changeBefore += totalChange(pn.alpha)
 		steps += float64(len(pn.alpha) + 1)
@@ -132,6 +151,71 @@ func PlanNames(ctx context.Context, frames int, frame PlanFrame, smooth int, pro
 	}
 	slices.SortFunc(plan.order, func(a, b nameID) int { return a.compare(b) })
 	return plan, nil
+}
+
+// placeIDs give each place of a flight one name, whichever zoom's tile
+// named it: a frame shows a place once however many zooms name it (see
+// samePlace), and as the camera moves on, which of them it is taken from
+// changes -- the coarser zoom's tile while it is in sight, the finer one's
+// after -- and smoothed as names of their own, the place would fade out as
+// one and back in as the other. Ids are handed out in the order places are
+// first seen, which is the order they are drawn in.
+type placeIDs struct {
+	byName map[string][]*placeID
+	n      int
+}
+
+// placeID is a place of a flight: where the coarsest and the finest zoom
+// that named it put it, and its id.
+type placeID struct {
+	at, fine render.Coord
+	z, fineZ uint8
+	id       nameID
+}
+
+// of is the place sn shows, met for the first time or again.
+func (p *placeIDs) of(sn shownName) *placeID {
+	z := sn.id.key.z
+	for _, k := range p.byName[sn.label.Text] {
+		if nearEnough(k.at, sn.label.At, min(k.z, z)) || nearEnough(k.fine, sn.fineAt, min(k.fineZ, sn.fineZ)) {
+			if z < k.z {
+				k.at, k.z = sn.label.At, z
+			}
+			if sn.fineZ > k.fineZ {
+				k.fine, k.fineZ = sn.fineAt, sn.fineZ
+			}
+			return k
+		}
+	}
+	k := &placeID{at: sn.label.At, z: z, fine: sn.fineAt, fineZ: sn.fineZ, id: nameID{kind: 0, i: p.n}}
+	p.n++
+	p.byName[sn.label.Text] = append(p.byName[sn.label.Text], k)
+	return k
+}
+
+// lasts says whether a name shown as strongly as v says, frame by frame, is
+// shown at half strength or more for at least frames frames in a row: long
+// enough to be read.
+//
+// Where a flight's video races -- the cruise of a long flight, hours to a
+// minute -- the ground runs down the picture, and a town's name with it, in
+// half a second. Smoothed over the frames either side it never reached full
+// strength, and at that pace it could not have been read if it had: every
+// such name was a grey flash, dozens of them, in the way of the few that
+// stayed long enough to read. A name gone from the plan is gone from every
+// frame, so leaving one out flickers nothing.
+func lasts(v []float32, frames int) bool {
+	run := 0
+	for _, a := range v {
+		if a < 0.5 {
+			run = 0
+			continue
+		}
+		if run++; run >= frames {
+			return true
+		}
+	}
+	return false
 }
 
 // smoothed is v, with smooth frames of nothing either side, averaged over

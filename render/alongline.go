@@ -266,15 +266,16 @@ const haloWidth = 1.5
 // that drawing. A halo, if not the zero colour, goes under the glyphs first,
 // haloWidth round them.
 func drawAlong(dst *image.RGBA, l placed, ink, halo color.RGBA, big font.Face) {
-	mask, haloMask, k := alongMasks(l.text, l.face, big, halo != (color.RGBA{}))
+	mask, haloMask, k := alongMasks(l.text, l.face, big, halo != (color.RGBA{}), haloWidth, false)
 	paintAlong(dst, l, mask, haloMask, k, ink, halo)
 }
 
 // alongMasks is the text drawn in face, or in big when big draws it half as
 // large again or more, with a margin for its halo: the text's coverage, the
-// halo's when withHalo, and how many times the size of face it was drawn.
-// It is the only part of drawing a name along a line that uses a face.
-func alongMasks(text string, face, big font.Face, withHalo bool) (mask, haloMask *image.Alpha, k float64) {
+// halo's, haloW pixels round it -- round at the corners when round -- when
+// withHalo, and how many times the size of face it was drawn. It is the only
+// part of drawing a name along a line that uses a face.
+func alongMasks(text string, face, big font.Face, withHalo bool, haloW float64, round bool) (mask, haloMask *image.Alpha, k float64) {
 	adv := font.MeasureString(face, text)
 	k = 1.0
 	if big != nil {
@@ -283,14 +284,18 @@ func alongMasks(text string, face, big font.Face, withHalo bool) (mask, haloMask
 		}
 	}
 	m := face.Metrics()
-	margin := int(math.Ceil(haloWidth*k)) + 2
+	margin := int(math.Ceil(haloW*k)) + 2
 	w := font.MeasureString(face, text).Ceil()
 	asc, desc := m.Ascent.Ceil(), m.Descent.Ceil()
 	mask = image.NewAlpha(image.Rect(0, 0, w+2*margin, asc+desc+2*margin))
 	d := font.Drawer{Dst: mask, Src: image.Opaque, Face: face, Dot: fixed.P(margin, margin+asc)}
 	d.DrawString(text)
 	if withHalo {
-		haloMask = dilate(mask, int(math.Round(haloWidth*k)))
+		if round {
+			haloMask = dilateRound(mask, haloW*k)
+		} else {
+			haloMask = dilate(mask, int(math.Round(haloW*k)))
+		}
 	}
 	return mask, haloMask, k
 }
@@ -357,22 +362,34 @@ type PreparedLabel struct {
 	w, h           float64
 	mask, haloMask *image.Alpha
 	k              float64
+	halo           float64 // how far the halo reaches round the glyphs
 }
 
 // PrepareLineLabel prepares l to be drawn; see PreparedLabel. It uses l's
 // faces, and so must not run while anything else draws with them. nil for
 // a label with no face or no text, which draws nothing.
 func PrepareLineLabel(l LineLabel) *PreparedLabel {
+	return PrepareLineLabelHalo(l, haloWidth)
+}
+
+// PrepareLineLabelHalo is PrepareLineLabel with a halo reaching width
+// pixels round the glyphs rather than a map's pixel and a half, and round
+// rather than square: a name stood on a busy picture rather than set among
+// a map's lines, which reads only where the ground round each letter is
+// wiped out. Grown square that far, a halo fills the gaps between letters
+// and above the short ones, and the name sits on a pale box.
+func PrepareLineLabelHalo(l LineLabel, width float64) *PreparedLabel {
 	if l.Face == nil || l.Text == "" {
 		return nil
 	}
 	m := l.Face.Metrics()
 	pl := &PreparedLabel{
-		l: l,
-		w: float64(font.MeasureString(l.Face, l.Text).Ceil()),
-		h: float64(m.Ascent.Ceil() + m.Descent.Ceil()),
+		l:    l,
+		w:    float64(font.MeasureString(l.Face, l.Text).Ceil()),
+		h:    float64(m.Ascent.Ceil() + m.Descent.Ceil()),
+		halo: width,
 	}
-	pl.mask, pl.haloMask, pl.k = alongMasks(l.Text, l.Face, l.big, true)
+	pl.mask, pl.haloMask, pl.k = alongMasks(l.Text, l.Face, l.big, true, width, true)
 	return pl
 }
 
@@ -390,7 +407,7 @@ func (pl *PreparedLabel) Draw(dst *image.RGBA, x, y, angle float64, p Palette, h
 	if pl.l.OnRoad {
 		halo = p.nameHalo()
 	}
-	at := placed{text: pl.l.Text, face: pl.l.Face, along: true, x: x, y: y, angle: angle, quad: alongQuad(x, y, angle, pl.w, pl.h, int(math.Ceil(haloWidth))+1)}
+	at := placed{text: pl.l.Text, face: pl.l.Face, along: true, x: x, y: y, angle: angle, quad: alongQuad(x, y, angle, pl.w, pl.h, int(math.Ceil(pl.halo))+1)}
 	paintAlong(dst, at, pl.mask, pl.haloMask, pl.k, labelInk(p, pl.l.Minor, pl.l.Political), halo)
 }
 
@@ -420,6 +437,46 @@ func dilate(mask *image.Alpha, r int) *image.Alpha {
 				m = max(m, tmp.AlphaAt(x, d).A)
 			}
 			out.SetAlpha(x, y, color.Alpha{A: m})
+		}
+	}
+	return out
+}
+
+// dilateRound is mask grown by r pixels every way, round: each pixel the
+// most covered within r of it, with the last half pixel of the reach eased
+// off so the halo's edge is smooth.
+func dilateRound(mask *image.Alpha, r float64) *image.Alpha {
+	if r <= 0 {
+		return mask
+	}
+	type tap struct {
+		dx, dy int
+		w      float64
+	}
+	var taps []tap
+	n := int(math.Ceil(r + 0.5))
+	for dy := -n; dy <= n; dy++ {
+		for dx := -n; dx <= n; dx++ {
+			if w := math.Min(1, r+0.5-math.Hypot(float64(dx), float64(dy))); w > 0 {
+				taps = append(taps, tap{dx, dy, w})
+			}
+		}
+	}
+	b := mask.Rect
+	out := image.NewAlpha(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			m := 0.0
+			for _, t := range taps {
+				sx, sy := x+t.dx, y+t.dy
+				if sx < b.Min.X || sy < b.Min.Y || sx >= b.Max.X || sy >= b.Max.Y {
+					continue
+				}
+				if a := mask.Pix[mask.PixOffset(sx, sy)]; a != 0 {
+					m = math.Max(m, float64(a)*t.w)
+				}
+			}
+			out.Pix[out.PixOffset(x, y)] = uint8(m + 0.5)
 		}
 	}
 	return out

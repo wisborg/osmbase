@@ -2,6 +2,7 @@ package perspective
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"math"
 	"testing"
@@ -68,11 +69,13 @@ func TestPlannedNamesChangeNoFasterThanTheWindow(t *testing.T) {
 			img.Pix[i] = 0xff
 		}
 		tile := &Tile{Image: img}
-		// A place in the middle of every tile.
+		// A place in the middle of every tile, named for its zoom: the
+		// middles of tiles three zooms apart are a few hundred metres
+		// apart, and two places of one name that near are one place.
 		n := math.Exp2(float64(z))
 		lon := (float64(x)+0.5)/n*360 - 180
 		lat := math.Atan(math.Sinh(math.Pi*(1-2*(float64(y)+0.5)/n))) * 180 / math.Pi
-		tile.Places = []render.PointLabel{{Text: "Here", At: render.Coord{Lat: lat, Lon: lon}, Face: basicfont.Face7x13}}
+		tile.Places = []render.PointLabel{{Text: fmt.Sprintf("Here %d", z), At: render.Coord{Lat: lat, Lon: lon}, Face: basicfont.Face7x13}}
 		return tile, nil
 	}, 13, 16, 0)
 	if err != nil {
@@ -123,5 +126,23 @@ func TestPlannedNamesChangeNoFasterThanTheWindow(t *testing.T) {
 	}
 	if changed == 0 {
 		t.Error("a planned frame drew no names")
+	}
+}
+
+// A name lasts when it is shown at half strength or more for the frames
+// asked for in a row, however strongly before and after.
+func TestANameLastsWhenShownLongEnoughInARow(t *testing.T) {
+	for _, c := range []struct {
+		v    []float32
+		want bool
+	}{
+		{[]float32{0.2, 0.6, 0.9, 0.9, 0.6, 0.2}, true},
+		{[]float32{0.6, 0.9, 0.4, 0.9, 0.6, 0.9}, false},
+		{[]float32{0.3, 0.4, 0.45, 0.4, 0.3, 0.2}, false},
+		{[]float32{0.5, 0.5, 0.5, 0.5}, true},
+	} {
+		if got := lasts(c.v, 4); got != c.want {
+			t.Errorf("lasts(%v, 4) = %v, want %v", c.v, got, c.want)
+		}
 	}
 }

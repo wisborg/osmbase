@@ -220,3 +220,66 @@ func TestANameBehindACrestIsShownByTheShareSeen(t *testing.T) {
 		t.Errorf("half behind a crest a name is shown at %.2f (ok %v), in the open at %.2f; want part of it", part, ok, full)
 	}
 }
+
+// A place every zoom names, each zoom's tile putting it a little apart as
+// its own grid rounds it, is one name wherever it is in the picture: shown
+// once, and in full across the stretch where one zoom gives way to the
+// next, rather than as two names each fading through a third.
+func TestAPlaceTheZoomsAllNameIsOneName(t *testing.T) {
+	cam := Camera{Target: render.Coord{Lat: -33.70, Lon: 151.10}, Distance: 800, Heading: 0, Pitch: 25}
+	for step := range 17 {
+		// From under the camera to the distance, through the stretch of
+		// the ground of every zoom and of every two -- but not past the
+		// coarsest zoom's, where the ground is drawn from coarser than any
+		// tile and its names are faded for that.
+		town := render.Coord{Lat: cam.Target.Lat - 0.004 + float64(step)*0.0005, Lon: cam.Target.Lon}
+		tiles, err := NewTiles(func(_ context.Context, z uint8, x, y uint32) (*Tile, error) {
+			img := image.NewRGBA(image.Rect(0, 0, TileSize, TileSize))
+			for i := range img.Pix {
+				img.Pix[i] = 0xff
+			}
+			grid := 360 / math.Exp2(float64(z)) / 256
+			at := render.Coord{Lat: town.Lat + 0.4*grid, Lon: town.Lon - 0.4*grid}
+			return &Tile{Image: img, Places: []render.PointLabel{{Text: "Town", At: at, Face: basicfont.Face7x13}}}, nil
+		}, 13, 16, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := Scene{Tiles: tiles, View: cam.MapView(cam.MapBounds(4.0/3), 300, 1024), Heights: Level}
+		pic, err := Render(s, cam, Options{Width: 400, Height: 300, HazeMetres: 1e9})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var shown []shownName
+		for _, sn := range pic.shownNames(1) {
+			if sn.label.Text == "Town" {
+				shown = append(shown, sn)
+			}
+		}
+		// In full, but for the fade every name gets where the map runs
+		// out at its edge.
+		u, v, err := pic.view.Pixel(town)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fade := pic.tex.edgeFade(u, v)
+		switch {
+		case len(shown) > 1:
+			t.Errorf("step %d: the town is shown %d times, want once", step, len(shown))
+		case len(shown) == 1 && shown[0].alpha < 0.95*(1-fade*fade):
+			t.Errorf("step %d: the town is shown at %.2f, want in full", step, shown[0].alpha)
+		}
+	}
+}
+
+// Two places of one name a long way apart are two places.
+func TestTwoPlacesOfOneNameApartAreTwo(t *testing.T) {
+	a := render.Coord{Lat: 52.40, Lon: 16.90}
+	found := []shownName{{name: name{id: nameID{key: tileKey{z: 9}}, label: render.LineLabel{Text: "Nowa Wieś", At: a}}}}
+	if _, ok := samePlace(found, []int{0}, render.Coord{Lat: a.Lat + 0.002, Lon: a.Lon}, 10); !ok {
+		t.Error("a place a fifth of a kilometre from where the coarser zoom put it is not taken as the same place")
+	}
+	if _, ok := samePlace(found, []int{0}, render.Coord{Lat: a.Lat + 0.2, Lon: a.Lon}, 10); ok {
+		t.Error("a place of the same name twenty kilometres away is taken as the same place")
+	}
+}

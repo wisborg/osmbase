@@ -262,3 +262,25 @@ func TestPlaceAlongReadsUprightForTheViewerFacing(t *testing.T) {
 		}
 	}
 }
+
+// A round halo reaches as far along the axes as a square one, its last
+// half pixel eased off, and not into the corners a square one fills.
+func TestDilateRoundIsRound(t *testing.T) {
+	mask := image.NewAlpha(image.Rect(0, 0, 21, 21))
+	mask.SetAlpha(10, 10, color.Alpha{A: 255})
+	out := dilateRound(mask, 3)
+	for _, c := range []struct {
+		x, y int
+		want uint8
+	}{
+		{12, 10, 255}, // two along an axis
+		{13, 10, 128}, // three: the eased edge
+		{14, 10, 0},   // four
+		{12, 12, 171}, // two along each, 2.8 away
+		{13, 13, 0},   // three along each, 4.2 away: a square's corner
+	} {
+		if a := out.AlphaAt(c.x, c.y).A; a != c.want {
+			t.Errorf("%d,%d from the pixel: %d, want %d", c.x-10, c.y-10, a, c.want)
+		}
+	}
+}

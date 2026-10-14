@@ -59,7 +59,7 @@ func (p *Picture) DrawNames(pal render.Palette) {
 	namesMu.Lock()
 	defer namesMu.Unlock()
 	for _, s := range p.shownNames(1) {
-		p.drawName(pal, render.PrepareLineLabel(s.label), s.x, s.y, s.angle, s.alpha)
+		p.drawName(pal, prepareName(s.label), s.x, s.y, s.angle, s.alpha)
 	}
 }
 
@@ -113,6 +113,11 @@ type shownName struct {
 	x, y  float64
 	angle float64
 	alpha float64
+
+	// fineAt is where the finest zoom that names a place puts it, and
+	// fineZ that zoom; see samePlace.
+	fineAt render.Coord
+	fineZ  uint8
 }
 
 // shownNames are the names shown on the picture and how strongly; see
@@ -120,10 +125,14 @@ type shownName struct {
 // the picture's size each way -- 1 for the picture itself, more for a
 // picture drawn small to plan a full-size frame's names, whose boxes have
 // to be measured as they will be drawn.
+//
+// A place named by the tiles of two zooms is one name, as strong as the two
+// zooms together: see samePlace.
 func (p *Picture) shownNames(scale float64) []shownName {
 	b := p.Image.Bounds()
 	bounds := image.Rect(0, 0, int(math.Round(float64(b.Dx())*scale)), int(math.Round(float64(b.Dy())*scale)))
-	var shown []shownName
+	var found []shownName
+	places := map[string][]int{} // a place's name to where it is in found
 	for _, n := range p.names() {
 		l := n.label
 		if l.Face == nil {
@@ -135,6 +144,17 @@ func (p *Picture) shownNames(scale float64) []shownName {
 		if !ok {
 			continue
 		}
+		if n.place {
+			if j, ok := samePlace(found, places[l.Text], l.At, n.id.key.z); ok {
+				f := &found[j]
+				f.alpha = math.Min(1, f.alpha+alpha)
+				if n.id.key.z > f.fineZ {
+					f.fineAt, f.fineZ = l.At, n.id.key.z
+				}
+				continue
+			}
+			places[l.Text] = append(places[l.Text], len(found))
+		}
 		x, y = x*scale, y*scale
 		angle := 0.0
 		if !n.place {
@@ -142,18 +162,55 @@ func (p *Picture) shownNames(scale float64) []shownName {
 				continue
 			}
 		}
-		s := shownName{name: n, box: labelBox(l, x, y, angle), x: x, y: y, angle: angle}
-		alpha *= edgeFadeBox(s.box, bounds, 2*height)
+		box := labelBox(l, x, y, angle)
+		found = append(found, shownName{name: n, box: box, x: x, y: y, angle: angle,
+			alpha: alpha * edgeFadeBox(box, bounds, 2*height), fineAt: l.At, fineZ: n.id.key.z})
+	}
+	var shown []shownName
+	for _, s := range found {
 		for _, o := range shown {
-			alpha *= 1 - o.alpha*cover(s.box, o.box, l.Text == o.label.Text)
+			s.alpha *= 1 - o.alpha*cover(s.box, o.box, s.label.Text == o.label.Text)
 		}
-		if alpha < 1.0/64 {
+		if s.alpha < 1.0/64 {
 			continue
 		}
-		s.alpha = alpha
 		shown = append(shown, s)
 	}
 	return shown
+}
+
+// nearEnough says whether two places of one name, at a and b, are the same
+// place, one of them named by a tile of zoom z, the coarser: the same point
+// of the data, which each zoom's tile rounds to a grid of its own -- a
+// 256th of the tile, so Poznań is a kilometre from where zoom 7 puts it at
+// zoom 8, and half that again at zoom 9 -- and so as far apart as twice
+// that grid, which is well short of the distance between two places of
+// one name that a map at that zoom would both name.
+func nearEnough(a, b render.Coord, z uint8) bool {
+	d := 2 * 360 / math.Exp2(float64(z)) / 256
+	return math.Abs(a.Lat-b.Lat) < d && math.Abs(a.Lon-b.Lon) < d
+}
+
+// samePlace is which of the places found at the given places of found, all
+// of one name, is the place a tile of zoom z puts at c, if one is.
+//
+// A town is named by the tile of every zoom it is a town at, and as the
+// camera nears it the coarser zoom's tile gives way to the finer one's over
+// a stretch of the ground. Taken as two names, each was shown as strongly
+// as its zoom is in the ground's colour there, so across the stretch the
+// one fading out and the one fading in were each at a third or so, the
+// second hidden further by the first -- and the town's name sank to half
+// strength and came back each time a zoom gave way to the next: in motion,
+// every town on the way pulsed. Taken as one name, the two zooms' strengths
+// add up to the whole of it.
+func samePlace(found []shownName, at []int, c render.Coord, z uint8) (int, bool) {
+	for _, j := range at {
+		f := found[j]
+		if nearEnough(f.label.At, c, min(f.id.key.z, z)) {
+			return j, true
+		}
+	}
+	return 0, false
 }
 
 // drawName draws one name, prepared, at alpha strength. It uses no face,
@@ -169,6 +226,20 @@ func (p *Picture) drawName(pal render.Palette, l *render.PreparedLabel, x, y, an
 	p.drawFaded(alongBox(l, x, y, angle), alpha, func(dst *image.RGBA) {
 		l.Draw(dst, x, y, angle, pal, halo)
 	})
+}
+
+// prepareName prepares a name to be stood on a picture: with a halo a fifth
+// of its height round each letter. A map's pixel and a half was enough
+// among a map's own lines, set to leave room for them; stood over a
+// picture of a country's fields, forests and roads, shrunk and shaded,
+// and then through a video's encoding, a name with no more than that
+// round it was lost in the ground's pattern.
+func prepareName(l render.LineLabel) *render.PreparedLabel {
+	if l.Face == nil {
+		return nil
+	}
+	m := l.Face.Metrics()
+	return render.PrepareLineLabelHalo(l, max(1.5, 0.2*float64(m.Ascent.Ceil()+m.Descent.Ceil())))
 }
 
 // namesMu is held while names are drawn; see DrawNames.
@@ -243,12 +314,18 @@ func (p *Picture) nameStrength(c render.Coord, z uint8, r float64) (alpha, x, y 
 	// The zoom's weight in the colour there, from the blend of the two
 	// zooms either side; eased over the middle of the blend.
 	w := 1 - math.Abs(lodSum/lodN-float64(z))
-	alpha = smoothstep((w-0.35)/0.3) * seen / float64(len(nameSamples))
+	alpha = smoothstep((w-0.4)/0.2) * seen / float64(len(nameSamples))
 	u, v, err := p.view.Pixel(c)
 	if err != nil {
 		return 0, 0, 0, false
 	}
-	alpha *= 1 - math.Max(p.tex.edgeFade(u, v), hazeAt(depth, p.hazeM))
+	// Faded with the ground, but later: a name is the last of the ground to
+	// go into the haze. Faded as the ground is, a name half way into it was
+	// drawn at half strength, and over a cruise, where the haze lies at the
+	// same distance for minutes, every name crossing the far half of the
+	// picture crawled through it as a ghost.
+	fade := math.Max(p.tex.edgeFade(u, v), hazeAt(depth, p.hazeM))
+	alpha *= 1 - fade*fade
 	if alpha < 1.0/64 {
 		return 0, 0, 0, false
 	}
