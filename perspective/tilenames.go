@@ -181,13 +181,17 @@ func (p *Picture) shownNames(scale float64) []shownName {
 
 // nearEnough says whether two places of one name, at a and b, are the same
 // place, one of them named by a tile of zoom z, the coarser: the same point
-// of the data, which each zoom's tile rounds to a grid of its own -- a
-// 256th of the tile, so Poznań is a kilometre from where zoom 7 puts it at
-// zoom 8, and half that again at zoom 9 -- and so as far apart as twice
-// that grid, which is well short of the distance between two places of
-// one name that a map at that zoom would both name.
+// of the data, which each zoom's tile puts a few of its own pixels off --
+// rounded to a 256th of the tile, and lifted with the name's box, centred a
+// little above its point -- so Poland's name was 5 km from zoom 6's at zoom
+// 7, half that again at zoom 8, and on, as the point shown each time was
+// the same few pixels off it on a map twice the scale. Six 256ths of the
+// coarser zoom's tile takes that in -- 30 km at zoom 5, 1 km at zoom 10 --
+// and is short of two places of one name that a map of that zoom would
+// both show. Two 256ths, tried first, missed it: each zoom's copy was
+// smoothed as a name of its own, and dipped as each gave way to the next.
 func nearEnough(a, b render.Coord, z uint8) bool {
-	d := 2 * 360 / math.Exp2(float64(z)) / 256
+	d := 6 * 360 / math.Exp2(float64(z)) / 256
 	return math.Abs(a.Lat-b.Lat) < d && math.Abs(a.Lon-b.Lon) < d
 }
 
