@@ -6,8 +6,10 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"slices"
 	"strings"
 
+	"github.com/wisborg/osmbase/mercator"
 	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/raster"
 )
@@ -36,6 +38,9 @@ type drawer struct {
 	facing float64
 	// areas is Options.Areas: nil, or what the stack ranks areas by.
 	areas *Areas
+	// major is Options.MajorDivision, and extra Options.ExtraPlaces.
+	major func(Coord) bool
+	extra []ExtraPlace
 	path  raster.Path
 	clip  clipper
 
@@ -104,9 +109,15 @@ func (d *drawer) appendTile(rule *Rule, dt drawTile) {
 	width := rule.Paint.strokeWidth(d.p)
 	dash := d.scaleDash(rule.Paint.Dash, rule.Paint.dashScale(d.p, width))
 
+	if rule.MajorDivision && d.major == nil {
+		return
+	}
 	for i := range layer.Features {
 		f := &layer.Features[i]
 		if !rule.matches(f) {
+			continue
+		}
+		if rule.MajorDivision && !d.major(lineMiddle(f, dt.ref, extent)) {
 			continue
 		}
 		switch f.Type {
@@ -123,6 +134,25 @@ func (d *drawer) appendTile(rule *Rule, dt drawTile) {
 		// without its name is a dot nobody can read; the name comes back as
 		// data instead. See docs/architecture.md, "What this library is not".
 	}
+}
+
+// lineMiddle is the place of the middle point of f's first line, in
+// tile dt of the given extent: where a border is asked whether it is a
+// major division's (Options.MajorDivision). A feature with no line is asked
+// at the tile's middle.
+func lineMiddle(f *mvt.Feature, ref tileRef, extent uint32) Coord {
+	tr, err := mercator.NewTileTransform(ref.z, ref.x, ref.y, extent)
+	if err != nil {
+		return Coord{}
+	}
+	x, y := int32(extent/2), int32(extent/2)
+	if len(f.Geometry.Lines) > 0 && len(f.Geometry.Lines[0]) > 0 {
+		line := f.Geometry.Lines[0]
+		p := line[len(line)/2]
+		x, y = p.X, p.Y
+	}
+	lon, lat := tr.LonLat(x, y)
+	return Coord{Lat: lat, Lon: lon}
 }
 
 // featureKind reads the attribute a style selects on, reporting whether the
@@ -453,17 +483,24 @@ func (d *drawer) collectLabels(rules []LabelRule, growth []WidthStop, tiles []dr
 
 func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile, at uint8, face font.Face, scale float64) {
 	layer, ok := dt.tile.Layer(rule.Layer)
-	if !ok {
-		return
+	extent := uint32(mvt.DefaultExtent)
+	if ok && layer.Extent != 0 {
+		extent = layer.Extent
 	}
-	extent := layer.Extent
-	if extent == 0 {
-		extent = mvt.DefaultExtent
+	var features []mvt.Feature
+	if ok {
+		features = layer.Features
+	}
+	if extras := d.extraFeatures(rule.Layer, dt.ref, extent); len(extras) > 0 {
+		features = append(slices.Clip(features), extras...)
+	}
+	if len(features) == 0 {
+		return
 	}
 	tr := d.p.tileTransform(dt.ref.z, dt.ref.x, dt.ref.y, extent)
 
-	for i := range layer.Features {
-		f := &layer.Features[i]
+	for i := range features {
+		f := &features[i]
 		if !rule.matches(f) || !rule.labels(f.Type) || !rule.allowsFeature(f, at) {
 			continue
 		}
@@ -512,6 +549,26 @@ func (d *drawer) appendTileLabels(out *[]candidate, rule *LabelRule, dt drawTile
 			})
 		}
 	}
+}
+
+// extraFeatures are the Options.ExtraPlaces of the named layer that fall in
+// tile ref, as point features of a layer of the given extent.
+func (d *drawer) extraFeatures(layer string, ref tileRef, extent uint32) []mvt.Feature {
+	var out []mvt.Feature
+	n := float64(uint64(1) << ref.z)
+	for _, e := range d.extra {
+		if e.Layer != layer {
+			continue
+		}
+		wx, wy := mercator.Project(e.At.Lon, e.At.Lat)
+		tx, ty := (wx*n-float64(ref.x))*float64(extent), (wy*n-float64(ref.y))*float64(extent)
+		if tx < 0 || ty < 0 || tx >= float64(extent) || ty >= float64(extent) {
+			continue
+		}
+		out = append(out, mvt.Feature{Type: mvt.GeomPoint, Tags: e.Tags,
+			Geometry: mvt.Geometry{Points: []mvt.Point{{X: int32(tx), Y: int32(ty)}}}})
+	}
+	return out
 }
 
 // labelText reads the field a rule names, rejecting anything that is not a

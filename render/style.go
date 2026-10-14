@@ -134,6 +134,14 @@ const (
 	// border shrunk into a flyover's picture was not seen at all. A palette
 	// that names no Boundary draws them in Ink.
 	RoleBoundary
+
+	// RoleBoundaryStrong is a border drawn to be seen from far off: in the
+	// ink of the names of countries and states, BoundaryLabel, the darkest
+	// of the map's purples, rather than Boundary, which is pale enough to
+	// sit under a map's roads. A palette that names no BoundaryLabel draws
+	// them in Boundary, and one that names neither in Ink. See
+	// Style.EmphasisePolitical.
+	RoleBoundaryStrong
 )
 
 // Palette is the colour for each role.
@@ -315,6 +323,14 @@ func (p Palette) colour(r Role) color.RGBA {
 			return p.Boundary
 		}
 		return p.Ink
+	case RoleBoundaryStrong:
+		if p.BoundaryLabel != (color.RGBA{}) {
+			return p.BoundaryLabel
+		}
+		if p.Boundary != (color.RGBA{}) {
+			return p.Boundary
+		}
+		return p.Ink
 	}
 	return p.Ink
 }
@@ -474,6 +490,13 @@ type Rule struct {
 	// MinZoom and MaxZoom bound the zooms this rule draws at, both inclusive
 	// and both required. A rule with no deepest zoom says MaxRuleZoom.
 	MinZoom, MaxZoom uint8
+
+	// MajorDivision, when set, narrows the rule to the borders
+	// Options.MajorDivision says are a major division's -- a state of the
+	// United States or of Australia rather than a region of Denmark -- and
+	// draws nothing where the render was given no such test. See
+	// Options.MajorDivision.
+	MajorDivision bool
 
 	Paint Paint
 }
@@ -677,6 +700,82 @@ func (s Style) ShiftPlaceLabels(zooms int) Style {
 			continue
 		}
 		r.ZoomBias += zooms
+	}
+	return out
+}
+
+// EmphasisePolitical returns a copy of the style with the borders and the
+// names of countries made to be seen first, and the borders of a major
+// country's states -- see Options.MajorDivision -- drawn among them:
+//
+//   - a country's border is a line in the dark ink of the countries' names
+//     (RoleBoundaryStrong), wider than a map's, over a band of the land's
+//     colour either side that parts it from whatever ground it crosses;
+//   - a major division's border is a dashed line in the same ink, between
+//     a country's and a minor region's in weight; other regions' borders
+//     keep their faint dashes;
+//   - a country's name is larger than a state's, where a map sets them at
+//     one size.
+//
+// It is for a map that moves across borders: a flyover. A map of one view
+// shows a country's name or its states' by its zoom, and draws its borders
+// to sit under its roads, which is right there. Flown over, a border is the
+// one line that says where the flight is, and in the map's pale purple it
+// was a thread lost in the shading of the ground beside it; and a country's
+// name and a state's at one size read as the same kind of thing.
+func (s Style) EmphasisePolitical() Style {
+	out := s
+	out.Rules = nil
+	for _, r := range s.Rules {
+		if r.Layer == "boundaries" && slices.Equal(r.Kinds, []string{"country"}) {
+			out.Rules = append(out.Rules,
+				Rule{Layer: "boundaries", Kinds: []string{"region"}, MajorDivision: true, MinZoom: r.MinZoom, MaxZoom: r.MaxZoom,
+					Paint: Paint{Role: RoleBoundaryStrong, Widths: majorDivisionWidths, Dash: []float32{3, 2}}},
+				Rule{Layer: "boundaries", Kinds: []string{"country"}, MinZoom: r.MinZoom, MaxZoom: r.MaxZoom,
+					Paint: Paint{Role: RoleLand, Widths: widen(strongCountryWidths, 2*borderBand)}},
+				Rule{Layer: "boundaries", Kinds: []string{"country"}, MinZoom: r.MinZoom, MaxZoom: r.MaxZoom,
+					Paint: Paint{Role: RoleBoundaryStrong, Widths: strongCountryWidths}},
+			)
+			continue
+		}
+		out.Rules = append(out.Rules, r)
+	}
+	out.Labels = nil
+	for _, l := range s.Labels {
+		if !l.Political || !slices.Contains(l.Kinds, "country") {
+			out.Labels = append(out.Labels, l)
+			continue
+		}
+		country, divisions := l, l
+		country.Kinds = []string{"country"}
+		country.SizeScale, country.Priority = countryNameScale, l.Priority+5
+		divisions.Kinds = slices.DeleteFunc(slices.Clone(l.Kinds), func(k string) bool { return k == "country" })
+		divisions.SizeScale = divisionNameScale
+		out.Labels = append(out.Labels, country, divisions)
+	}
+	return out
+}
+
+// The weights EmphasisePolitical draws borders and names at: a country's
+// border, in output pixels at each zoom; the band of land either side of
+// it; a major division's border; and the size of a country's name and a
+// state's, against a map's ordinary name.
+var (
+	strongCountryWidths = []WidthStop{{3, 2.2}, {8, 3}, {12, 3.6}, {16, 4.6}}
+	majorDivisionWidths = []WidthStop{{3, 1.3}, {8, 1.8}, {12, 2.4}, {16, 3}}
+)
+
+const (
+	borderBand        = 1.2
+	countryNameScale  = 2.0
+	divisionNameScale = 1.25
+)
+
+// widen is stops, each wider by extra.
+func widen(stops []WidthStop, extra float32) []WidthStop {
+	out := slices.Clone(stops)
+	for i := range out {
+		out[i].Width += extra
 	}
 	return out
 }

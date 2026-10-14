@@ -55,6 +55,7 @@ import (
 	"math"
 
 	"github.com/wisborg/osmbase/mercator"
+	"github.com/wisborg/osmbase/mvt"
 	"github.com/wisborg/osmbase/raster"
 )
 
@@ -217,6 +218,38 @@ type Options struct {
 	// Fixed, every view draws the same lines. It does not draw contours at a
 	// zoom too shallow for any.
 	ContourInterval float64
+
+	// MajorDivision says whether a border running through at -- a
+	// country's first division's, admin level 4 -- is a major one, which
+	// the rules marked MajorDivision draw. nil, and they draw none.
+	//
+	// The tiles cannot say. Their borders carry their admin level and
+	// nothing else, so the line between two American states and the one
+	// between two Danish regions are the same feature; but the first is a
+	// name a viewer knows and a line worth drawing strongly, and the second
+	// is neither. Which countries' divisions are which is the caller's to
+	// know -- Natural Earth ranks them -- and it is asked one point of each
+	// border, the middle of its first line.
+	MajorDivision func(at Coord) bool
+
+	// ExtraPlaces are places to name that the tiles do not hold: each
+	// labelled by the style's rules for its layer as a feature of that
+	// layer with its tags would be, from every tile of the view it falls
+	// in. A caller that wants a country named somewhere other than the one
+	// point the data names it at -- either side of a border a route
+	// crosses -- gives the point and the country's own tags here.
+	ExtraPlaces []ExtraPlace
+}
+
+// ExtraPlace is a place to name that the tiles do not hold; see
+// Options.ExtraPlaces.
+type ExtraPlace struct {
+	// Layer is the layer it is named as one of: "places".
+	Layer string
+	At    Coord
+	// Tags are what a feature there would carry: its kind, its name and
+	// its names in other languages, its min_zoom.
+	Tags map[string]mvt.Value
 }
 
 // LineLabel is a name written along a line that a render placed but did not
@@ -275,6 +308,8 @@ type Renderer struct {
 	liftAll       bool
 	areas         *Areas
 	interval      float64
+	major         func(Coord) bool
+	extra         []ExtraPlace
 }
 
 // faceFor is the face a rule's labels are drawn in, falling back to the base
@@ -313,6 +348,7 @@ func New(src TileSource, o Options) (*Renderer, error) {
 		labelFace: o.LabelFace, labelFaces: o.LabelFaceFor, labelPad: pad,
 		language: o.Language, terrain: o.Terrain, terrainCredit: o.TerrainAttribution, terrainNotice: o.TerrainNotice, liftPoints: o.LiftPointLabels, liftAll: o.LiftLabels,
 		labelsFacing: o.LabelsFacing * math.Pi / 180, areas: o.Areas, interval: o.ContourInterval,
+		major: o.MajorDivision, extra: o.ExtraPlaces,
 	}, nil
 }
 
@@ -432,7 +468,7 @@ func (r *Renderer) Render(ctx context.Context, v View) (*Result, error) {
 	surface := raster.NewSurface(p.width, p.height)
 	surface.Background(r.palette.Background)
 
-	d := drawer{p: p, palette: r.palette, language: r.language, facing: r.labelsFacing, areas: r.areas}
+	d := drawer{p: p, palette: r.palette, language: r.language, facing: r.labelsFacing, areas: r.areas, major: r.major, extra: r.extra}
 
 	// Labels are placed before anything is drawn -- where they go depends
 	// on the tiles and the contours, not on the pixels -- because the
