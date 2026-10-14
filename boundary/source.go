@@ -491,6 +491,12 @@ func Available(storeRoot, detail string) bool {
 	return err == nil && len(regions) > 0
 }
 
+// Outlines are the areas of one of the store's Natural Earth files: its
+// countries, its states and regions, or its waters. nil where the store
+// does not hold the file or it would not load; loaded once, as a lookup
+// loads it.
+func (s *Source) Outlines(layer Layer) *Set { return s.set(layer) }
+
 // set loads one file, once, remembering a failure so a broken file is not
 // re-read and re-reported for every coordinate in a route.
 func (s *Source) set(layer Layer) *Set {

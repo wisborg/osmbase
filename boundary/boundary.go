@@ -33,6 +33,19 @@ type Area struct {
 	// through rather than normalised.
 	Kind string
 
+	// Country, Wikidata and Rank are what Natural Earth says of the area,
+	// empty or 0 where the file does not: the three-letter code of the
+	// country it is or is in, its Wikidata id, and its scalerank -- how
+	// large a map first shows it, smaller sooner. A state's rank is the
+	// rank of its country's states: 2 for the United States', Australia's
+	// or India's, 7 for Denmark's regions.
+	Country, Wikidata string
+	Rank              int
+	// Label is where Natural Earth would name the area, and HasLabel says
+	// whether the file gives one.
+	Label    Coord
+	HasLabel bool
+
 	// polygons are the parts of the area, each with its own box.
 	polygons []polygon
 
@@ -131,6 +144,13 @@ func (s *Set) Provenance() Provenance { return s.prov }
 
 // Len is how many areas the set holds.
 func (s *Set) Len() int { return len(s.areas) }
+
+// Areas are the areas the set holds, in the file's order. The slice is the
+// caller's; the areas in it share their outlines with the set's.
+func (s *Set) Areas() []Area { return slices.Clone(s.areas) }
+
+// Contains reports whether the area holds the coordinate.
+func (a *Area) Contains(lat, lon float64) bool { return a.contains(lat, lon) }
 
 // Containing returns every area holding the coordinate, largest first.
 //
@@ -432,12 +452,36 @@ func Read(r io.Reader, kind string, fromFeature bool) (*Set, error) {
 		}
 		a := newArea(name, k, polys)
 		a.names = namesOf(f.Properties, name)
+		a.Country = firstText(f.Properties, "ADM0_A3", "adm0_a3")
+		a.Wikidata = firstText(f.Properties, "WIKIDATAID", "wikidataid")
+		var lx, ly float64
+		if json.Unmarshal(f.Properties["LABEL_X"], &lx) == nil && json.Unmarshal(f.Properties["LABEL_Y"], &ly) == nil {
+			a.Label, a.HasLabel = Coord{Lat: ly, Lon: lx}, true
+		}
+		if raw, ok := f.Properties["scalerank"]; ok {
+			var rank float64
+			if json.Unmarshal(raw, &rank) == nil {
+				a.Rank = int(rank)
+			}
+		}
 		set.areas = append(set.areas, a)
 	}
 	if len(set.areas) == 0 {
 		return nil, fmt.Errorf("boundary: the %s file holds no named areas; it is not the file this expects", kind)
 	}
 	return set, nil
+}
+
+// firstText is the first of keys whose property is a string that is not
+// blank, or "".
+func firstText(props map[string]json.RawMessage, keys ...string) string {
+	for _, k := range keys {
+		var v string
+		if raw, ok := props[k]; ok && json.Unmarshal(raw, &v) == nil && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // featureKind reads a feature's own kind, falling back to the file's.
