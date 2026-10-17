@@ -3,7 +3,10 @@ package inflate
 import (
 	"go/build"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/wisborg/osmbase/internal/importcheck"
 )
 
 // slice imports this package and promises, by its import list, that a store
@@ -21,5 +24,14 @@ func TestPackage_ImportsNothingThatCouldFetch(t *testing.T) {
 		if !slices.Contains(allowed, imp) {
 			t.Errorf("inflate imports %q, which is not one of %v", imp, allowed)
 		}
+	}
+
+	// And what those compile in: the standard library's packages are
+	// trusted to stay off the network, but the claim is checked, not
+	// assumed, as it is for slice.
+	banned := []string{"net", "net/http", "net/url", "os/exec", "github.com/wisborg/osmbase/"}
+	root, g := importcheck.Load(t)
+	for p, chain := range g.Reaches(root, banned) {
+		t.Errorf("inflate compiles in %q, by %s", p, strings.Join(chain, " -> "))
 	}
 }

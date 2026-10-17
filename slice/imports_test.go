@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/wisborg/osmbase/internal/importcheck"
 )
 
 // TestPackage_HasNoWayToFetchAnything is a structural test, not a behavioural
@@ -22,25 +24,28 @@ import (
 // A reader should be able to check that by reading the import list, and this
 // is that check, written down.
 //
-// build.ImportDir with mode 0 reads the package's own files and not its tests,
-// which is the right boundary: a fixture may open an archive, and a store may
-// not.
+// Its own files and not its tests are what count -- build.ImportDir with mode
+// 0 for the import list, importcheck for everything compiled in -- which is
+// the right boundary: a fixture may open an archive, and a store may not.
 func TestPackage_HasNoWayToFetchAnything(t *testing.T) {
 	pkg, err := build.ImportDir(".", 0)
 	if err != nil {
 		t.Fatalf("reading this package's imports: %v", err)
 	}
 
+	// Banned anywhere in what the package compiles in, not only among its
+	// own imports: a store that imported nothing from the network would
+	// still fetch if a package it imported did.
 	banned := []string{
 		"github.com/wisborg/osmbase/acquire",
 		"github.com/wisborg/osmbase/pmtiles",
 		"github.com/wisborg/osmbase/render",
 		"net/http", "net", "net/url", "os/exec",
 	}
-	for _, imp := range pkg.Imports {
-		if slices.Contains(banned, imp) {
-			t.Errorf("slice imports %q; the store is filled by a caller that opened an archive, and a miss must never become a fetch", imp)
-		}
+	root, g := importcheck.Load(t)
+	for pkg, chain := range g.Reaches(root, banned) {
+		t.Errorf("slice compiles in %q, by %s; the store is filled by a caller that opened an archive, and a miss must never become a fetch",
+			pkg, strings.Join(chain, " -> "))
 	}
 
 	// The positive half. Two packages of this module are the store's

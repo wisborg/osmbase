@@ -54,12 +54,18 @@ package inside either of them.
 | `osmbase/perspective` | The map draped over a mesh of the ground's heights and drawn in perspective from a camera: the still a flyover is made of. Also what a program draping its own drawing needs around that: a camera framing a route, the map to draw for a camera, place names stood upright. Pure Go, z-buffered, imports only `render` and `mercator` |
 | `internal/protobuf` | The protobuf wire reader MVT and PBF both use |
 | `internal/inflate` | Decompression bounded while it expands, shared by `pmtiles`, `slice` and `osmpbf`; imports nothing that could fetch |
+| `internal/importcheck` | For tests only: what a package compiles in, from `go list -deps`, and the chain of imports by which it reaches a banned one |
 | `cmd/osmbase` | Standalone CLI: `inspect`, `tile`, `geojson`, `fetch`, `boundaries`, `render` (with `--place`), `locate` |
 | `osmbasetest` | Synthetic archives, tiles, slices and OSM extracts, mirroring `fitactivity/fittest` |
 
 The network lives in exactly one package, and that package is named after what it does.
 A reader wondering whether this library can reach the internet at render time should be
 able to answer it by reading the import list.
+The import list is the reader's check; the tests' is wider. `render`, `slice` and
+`internal/inflate` each have a structural test that fails if the network, a process, or
+the archive is anywhere in what they compile in, not only among their own imports: a
+package that imports nothing from the network still fetches if one of its imports does,
+and that is where a change made for another reason would break the promise.
 
 ## The data source: vector tiles, not raw OSM
 

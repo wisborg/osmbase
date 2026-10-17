@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/wisborg/osmbase/internal/importcheck"
 )
 
 // TestPackage_ReachesNeitherTheArchiveNorTheNetwork is a structural test, not a
@@ -18,24 +20,27 @@ import (
 // change cannot quietly add a fetch on a cache miss. A reader should be able to
 // check that by reading the import list, and this is that check, written down.
 //
-// build.ImportDir with mode 0 reads the package's own files and not its tests,
-// which is the right boundary: a fixture may use anything, and a render may
-// not.
+// Its own files and not its tests are what count -- build.ImportDir with mode
+// 0 for the import list, importcheck for everything compiled in -- which is
+// the right boundary: a fixture may use anything, and a render may not.
 func TestPackage_ReachesNeitherTheArchiveNorTheNetwork(t *testing.T) {
 	pkg, err := build.ImportDir(".", 0)
 	if err != nil {
 		t.Fatalf("reading this package's imports: %v", err)
 	}
 
+	// Banned anywhere in what the package compiles in, not only among its
+	// own imports: a renderer that imported nothing from the network would
+	// still fetch if raster or mvt did.
 	banned := []string{
 		"github.com/wisborg/osmbase/pmtiles",
 		"github.com/wisborg/osmbase/acquire",
 		"net/http", "net", "net/url", "os/exec",
 	}
-	for _, imp := range pkg.Imports {
-		if slices.Contains(banned, imp) {
-			t.Errorf("render imports %q; the renderer talks to a TileSource and to nothing else, and a miss must never become a fetch", imp)
-		}
+	root, g := importcheck.Load(t)
+	for pkg, chain := range g.Reaches(root, banned) {
+		t.Errorf("render compiles in %q, by %s; the renderer talks to a TileSource and to nothing else, and a miss must never become a fetch",
+			pkg, strings.Join(chain, " -> "))
 	}
 
 	// The positive half. Only these three packages of this module are the
