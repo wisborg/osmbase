@@ -97,6 +97,11 @@ tidy:
 #
 # Asked of the DIRECT and indirect requires and of what is actually compiled,
 # not of the whole module graph, which lists modules nothing here reaches.
+#
+# A package is outside the standard library when its first path element has
+# a dot in it. Matching a host as one word, a dot and one more word would
+# miss every host with two dots -- go.yaml.in, go.uber.org, cloud.google.com
+# -- and a package from one would compile in unreported.
 ## deps: check nothing but the admitted modules crept in, and output only into cmd/
 ##
 ## A module beyond these is still a failure here, and a visible edit to this
@@ -109,10 +114,10 @@ deps:
 	  if [ -n "$$bad" ]; then echo "deps: FAILED -- go.mod requires modules not admitted:"; echo "$$bad"; exit 1; fi
 	@lib=$$(go list ./... | grep -v '/cmd/'); \
 	  admitted='^github.com/wisborg/osmbase'; for m in $(LIBRARY_MODULES); do admitted="$$admitted|^$$m"; done; \
-	  bad=$$(go list -deps $$lib | grep -E '^[a-z0-9-]+\.[a-z]+/' | grep -Ev "$$admitted" || true); \
+	  bad=$$(go list -deps $$lib | grep -E '^[^/]*\.[^/]*/' | grep -Ev "$$admitted" || true); \
 	  if [ -n "$$bad" ]; then echo "deps: FAILED -- these non-stdlib packages are compiled into the library:"; echo "$$bad"; exit 1; fi
 	@admitted='^github.com/wisborg/osmbase'; for m in $(LIBRARY_MODULES) $(COMMAND_MODULES); do admitted="$$admitted|^$$m"; done; \
-	  bad=$$(go list -deps ./cmd/... | grep -E '^[a-z0-9-]+\.[a-z]+/' | grep -Ev "$$admitted" || true); \
+	  bad=$$(go list -deps ./cmd/... | grep -E '^[^/]*\.[^/]*/' | grep -Ev "$$admitted" || true); \
 	  if [ -n "$$bad" ]; then echo "deps: FAILED -- these non-stdlib packages are compiled into the command:"; echo "$$bad"; exit 1; fi
 	@echo "deps: the library compiles in x/image and x/text only; the command adds output, go-runewidth and uax29"
 
